@@ -171,14 +171,25 @@ function rowToToolCall(row: ToolCallRow): StoredToolCall {
 }
 
 /**
- * Schema migration. Bumps user_version so re-running is idempotent. M3 adds
- * the 'tool' role to turns.role and a tool_call_id column on both turns and
- * tool_calls. Existing M1/M2 databases get migrated in-place (data preserved).
+ * Schema migration. Bumps user_version so re-running is idempotent.
+ *
+ * v2 (M3): adds the 'tool' role to turns.role and a tool_call_id column on
+ *   both turns and tool_calls.
+ * v3: repairs a regression in earlier v2 builds where `ALTER TABLE turns
+ *   RENAME TO turns_v1` rewrote `tool_calls.turn_id` to reference the
+ *   now-dropped `turns_v1`, leaving a dangling FK that crashes every
+ *   prepare against `tool_calls`. v2 itself is now guarded with
+ *   legacy_alter_table=ON so the bug can't recur on fresh migrations.
  */
 function migrate(db: Db): void {
   const version = (db.pragma('user_version', { simple: true }) as number) ?? 0
-  if (version >= 2) return
+  if (version >= 3) return
 
+  if (version < 2) runV2Migration(db)
+  if (version < 3) runV3Migration(db)
+}
+
+function runV2Migration(db: Db): void {
   const turnsExists = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='turns'")
     .get()
@@ -186,51 +197,110 @@ function migrate(db: Db): void {
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_calls'")
     .get()
 
-  const tx = db.transaction(() => {
-    if (turnsExists) {
-      const turnsCols = db.pragma('table_info(turns)') as Array<{ name: string }>
-      const hasToolCallId = turnsCols.some((c) => c.name === 'tool_call_id')
-      const sql = db
-        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='turns'")
-        .get() as { sql?: string } | undefined
-      const hasToolRole = sql?.sql?.includes("'tool'") ?? false
+  // legacy_alter_table=ON prevents SQLite from rewriting FK references in
+  // *other* tables when we rename `turns` here. Without it, tool_calls.turn_id
+  // gets pointed at turns_v1 — the bug v3 has to repair.
+  const prevLegacy = db.pragma('legacy_alter_table', { simple: true }) as number
+  db.pragma('legacy_alter_table = ON')
+  try {
+    const tx = db.transaction(() => {
+      if (turnsExists) {
+        const turnsCols = db.pragma('table_info(turns)') as Array<{ name: string }>
+        const hasToolCallId = turnsCols.some((c) => c.name === 'tool_call_id')
+        const sql = db
+          .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='turns'")
+          .get() as { sql?: string } | undefined
+        const hasToolRole = sql?.sql?.includes("'tool'") ?? false
 
-      if (!hasToolCallId || !hasToolRole) {
-        db.exec('ALTER TABLE turns RENAME TO turns_v1;')
+        if (!hasToolCallId || !hasToolRole) {
+          db.exec('ALTER TABLE turns RENAME TO turns_v1;')
+          db.exec(`
+            CREATE TABLE turns (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+              role TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'tool')),
+              content TEXT NOT NULL,
+              token_count INTEGER NOT NULL,
+              created_at INTEGER NOT NULL,
+              compressed_from TEXT,
+              tool_call_id TEXT
+            );
+          `)
+          db.exec(`
+            INSERT INTO turns (id, session_id, role, content, token_count, created_at, compressed_from)
+            SELECT id, session_id, role, content, token_count, created_at, compressed_from FROM turns_v1;
+          `)
+          db.exec('DROP TABLE turns_v1;')
+          db.exec('CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, created_at);')
+        }
+      }
+
+      if (toolCallsExists) {
+        const tcCols = db.pragma('table_info(tool_calls)') as Array<{ name: string }>
+        if (!tcCols.some((c) => c.name === 'tool_call_id')) {
+          db.exec('ALTER TABLE tool_calls ADD COLUMN tool_call_id TEXT;')
+          db.exec(
+            'CREATE INDEX IF NOT EXISTS idx_tool_calls_llm_id ON tool_calls(tool_call_id);',
+          )
+        }
+      }
+
+      db.pragma('user_version = 2')
+    })
+    tx()
+  } finally {
+    db.pragma(`legacy_alter_table = ${prevLegacy ? 'ON' : 'OFF'}`)
+  }
+}
+
+function runV3Migration(db: Db): void {
+  const tcSql = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tool_calls'")
+    .get() as { sql?: string } | undefined
+  // Only rebuild if the buggy v2 migration left a dangling FK. A clean
+  // tool_calls table already references `turns` — nothing to do.
+  const needsRepair = tcSql?.sql?.includes('turns_v1') ?? false
+
+  if (needsRepair) {
+    // PRAGMA foreign_keys is a no-op inside a transaction, so we set it here.
+    // Disabling FKs lets us drop the stale tool_calls without cascading.
+    db.pragma('foreign_keys = OFF')
+    try {
+      const tx = db.transaction(() => {
         db.exec(`
-          CREATE TABLE turns (
+          CREATE TABLE tool_calls_new (
             id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-            role TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'tool')),
-            content TEXT NOT NULL,
-            token_count INTEGER NOT NULL,
-            created_at INTEGER NOT NULL,
-            compressed_from TEXT,
-            tool_call_id TEXT
+            tool_call_id TEXT,
+            turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+            tool TEXT NOT NULL,
+            args_json TEXT NOT NULL,
+            result_json TEXT,
+            ok INTEGER,
+            duration_ms INTEGER,
+            created_at INTEGER NOT NULL
           );
         `)
         db.exec(`
-          INSERT INTO turns (id, session_id, role, content, token_count, created_at, compressed_from)
-          SELECT id, session_id, role, content, token_count, created_at, compressed_from FROM turns_v1;
+          INSERT INTO tool_calls_new (id, tool_call_id, turn_id, tool, args_json, result_json, ok, duration_ms, created_at)
+          SELECT id, tool_call_id, turn_id, tool, args_json, result_json, ok, duration_ms, created_at FROM tool_calls;
         `)
-        db.exec('DROP TABLE turns_v1;')
-        db.exec('CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, created_at);')
-      }
+        db.exec('DROP TABLE tool_calls;')
+        db.exec('ALTER TABLE tool_calls_new RENAME TO tool_calls;')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_tool_calls_turn ON tool_calls(turn_id);')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_tool_calls_llm_id ON tool_calls(tool_call_id);')
+        const violations = db.pragma('foreign_key_check') as unknown[]
+        if (violations.length > 0) {
+          throw new Error(`FK check failed after v3 repair: ${JSON.stringify(violations)}`)
+        }
+        db.pragma('user_version = 3')
+      })
+      tx()
+    } finally {
+      db.pragma('foreign_keys = ON')
     }
-
-    if (toolCallsExists) {
-      const tcCols = db.pragma('table_info(tool_calls)') as Array<{ name: string }>
-      if (!tcCols.some((c) => c.name === 'tool_call_id')) {
-        db.exec('ALTER TABLE tool_calls ADD COLUMN tool_call_id TEXT;')
-        db.exec(
-          'CREATE INDEX IF NOT EXISTS idx_tool_calls_llm_id ON tool_calls(tool_call_id);',
-        )
-      }
-    }
-
-    db.pragma('user_version = 2')
-  })
-  tx()
+  } else {
+    db.pragma('user_version = 3')
+  }
 }
 
 export function createConversationStore(db: Db): ConversationStore {
