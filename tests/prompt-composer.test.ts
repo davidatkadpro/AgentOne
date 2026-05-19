@@ -77,11 +77,12 @@ describe('composeSystemMessage', () => {
       storageLayoutHint: 'storage',
     })
 
-    const idxBase = msg.content.indexOf('A')
-    const idxProfile = msg.content.indexOf('B')
-    const idxSkills = msg.content.indexOf('Default skills')
-    const idxCategories = msg.content.indexOf('Skill categories')
-    const idxStorage = msg.content.indexOf('Storage layout')
+    const content = msg.content ?? ''
+    const idxBase = content.indexOf('A')
+    const idxProfile = content.indexOf('B')
+    const idxSkills = content.indexOf('Default skills')
+    const idxCategories = content.indexOf('Skill categories')
+    const idxStorage = content.indexOf('Storage layout')
 
     expect(idxBase).toBeLessThan(idxProfile)
     expect(idxProfile).toBeLessThan(idxSkills)

@@ -37,6 +37,7 @@ const ROLE_LABEL: Record<Role, string> = {
   system: 'SYSTEM',
   user: 'USER',
   assistant: 'ASSISTANT',
+  tool: 'TOOL',
 }
 
 /**
@@ -175,7 +176,7 @@ export class ContextManager {
 
   private async callCompressor(toCompress: Message[]): Promise<string> {
     const transcript = toCompress
-      .map((m) => `${ROLE_LABEL[m.role]}: ${m.content}`)
+      .map((m) => `${ROLE_LABEL[m.role]}: ${m.content ?? ''}`)
       .join('\n\n')
 
     const res = await this.cfg.compressorProvider.chat({

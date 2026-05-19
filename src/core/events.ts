@@ -39,6 +39,55 @@ export type AgentEvent =
       bytesAfter: number
       ts: number
     }
+  | {
+      type: 'tool.called'
+      sessionId: string
+      turnId: string
+      toolCallId: string
+      tool: string
+      args: unknown
+      ts: number
+    }
+  | {
+      type: 'tool.completed'
+      sessionId: string
+      turnId: string
+      toolCallId: string
+      tool: string
+      ok: boolean
+      durationMs: number
+      ts: number
+    }
+  | {
+      type: 'tool.failed'
+      sessionId: string
+      turnId: string
+      toolCallId: string
+      tool: string
+      code: string
+      message: string
+      ts: number
+    }
+  | {
+      type: 'skill.loading'
+      sessionId: string
+      name: string
+      ts: number
+    }
+  | {
+      type: 'skill.loaded'
+      sessionId: string
+      name: string
+      toolsRegistered: string[]
+      ts: number
+    }
+  | {
+      type: 'skill.load_failed'
+      sessionId: string
+      name: string
+      reason: string
+      ts: number
+    }
 
 export type EventType = AgentEvent['type']
 export type EventByType<T extends EventType> = Extract<AgentEvent, { type: T }>

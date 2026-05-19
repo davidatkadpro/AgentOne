@@ -13,7 +13,15 @@ export function countTokens(text: string): number {
 }
 
 export function countMessageTokens(message: Message): number {
-  return countTokens(message.content) + MESSAGE_OVERHEAD
+  const contentTokens = countTokens(message.content ?? '')
+  let toolTokens = 0
+  if (message.tool_calls) {
+    for (const tc of message.tool_calls) {
+      toolTokens += countTokens(tc.function.name) + countTokens(tc.function.arguments) + 8
+    }
+  }
+  if (message.tool_call_id) toolTokens += 6
+  return contentTokens + toolTokens + MESSAGE_OVERHEAD
 }
 
 export function countMessagesTokens(messages: Message[]): number {

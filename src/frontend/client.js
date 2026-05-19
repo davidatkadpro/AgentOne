@@ -5,20 +5,47 @@ const sendBtn = document.getElementById('send')
 const newBtn = document.getElementById('new-session')
 
 let currentSessionId = null
-let assistantBuffer = ''
-let assistantNode = null
+let activeAssistant = null
 let ws = null
 
 function setSendEnabled(enabled) {
   sendBtn.disabled = !enabled || !currentSessionId
 }
 
-function renderTurn(role, content) {
+function clearLog() {
+  logEl.innerHTML = ''
+  activeAssistant = null
+}
+
+function renderEmpty(text = 'Start a new conversation to begin.') {
+  const empty = document.createElement('div')
+  empty.className = 'empty'
+  empty.textContent = text
+  logEl.appendChild(empty)
+}
+
+function ensureAssistantNode() {
+  if (activeAssistant) return activeAssistant
   const div = document.createElement('div')
-  div.className = `turn ${role}`
+  div.className = 'turn assistant'
   const head = document.createElement('div')
   head.className = 'role'
-  head.textContent = role
+  head.textContent = 'assistant'
+  const body = document.createElement('div')
+  body.className = 'body'
+  div.appendChild(head)
+  div.appendChild(body)
+  logEl.appendChild(div)
+  activeAssistant = { wrapper: div, body, text: '' }
+  return activeAssistant
+}
+
+function renderUserTurn(content) {
+  const div = document.createElement('div')
+  div.className = 'turn user'
+  const head = document.createElement('div')
+  head.className = 'role'
+  head.textContent = 'user'
   const body = document.createElement('div')
   body.className = 'body'
   body.textContent = content
@@ -26,15 +53,57 @@ function renderTurn(role, content) {
   div.appendChild(body)
   logEl.appendChild(div)
   logEl.scrollTop = logEl.scrollHeight
-  return body
 }
 
-function renderMeta(text, isError = false) {
+function renderAssistantTurnStatic(content, toolCalls = []) {
   const div = document.createElement('div')
-  div.className = `meta${isError ? ' error' : ''}`
+  div.className = 'turn assistant'
+  const head = document.createElement('div')
+  head.className = 'role'
+  head.textContent = 'assistant'
+  const body = document.createElement('div')
+  body.className = 'body'
+  body.textContent = content
+  div.appendChild(head)
+  div.appendChild(body)
+  for (const tc of toolCalls) {
+    const chip = document.createElement('div')
+    chip.className = 'tool-chip done ' + (tc.ok === false ? 'failed' : '')
+    chip.textContent = `${tc.tool}${tc.ok === false ? ' ✕' : ' ✓'}${tc.durationMs ? ' (' + tc.durationMs + 'ms)' : ''}`
+    div.appendChild(chip)
+  }
+  logEl.appendChild(div)
+  logEl.scrollTop = logEl.scrollHeight
+}
+
+function renderMeta(text, kind = 'info') {
+  const div = document.createElement('div')
+  div.className = `meta ${kind}`
   div.textContent = text
   logEl.appendChild(div)
   logEl.scrollTop = logEl.scrollHeight
+}
+
+function attachToolChip(tool, toolCallId) {
+  const slot = ensureAssistantNode()
+  const chip = document.createElement('div')
+  chip.className = 'tool-chip running'
+  chip.dataset.toolCallId = toolCallId
+  chip.textContent = `${tool} …`
+  slot.wrapper.appendChild(chip)
+  logEl.scrollTop = logEl.scrollHeight
+}
+
+function finaliseToolChip(toolCallId, ok, durationMs) {
+  const slot = activeAssistant
+  if (!slot) return
+  const chip = slot.wrapper.querySelector(`[data-tool-call-id="${toolCallId}"]`)
+  if (!chip) return
+  chip.classList.remove('running')
+  chip.classList.add('done')
+  if (!ok) chip.classList.add('failed')
+  const label = chip.textContent.replace(/\s*…$/, '')
+  chip.textContent = `${label} ${ok ? '✓' : '✕'}${durationMs ? ' (' + durationMs + 'ms)' : ''}`
 }
 
 async function loadSessions() {
@@ -51,26 +120,33 @@ async function loadSessions() {
       sessionsEl.appendChild(item)
     }
   } catch (err) {
-    renderMeta(`Failed to load sessions: ${err.message}`, true)
+    renderMeta(`Failed to load sessions: ${err.message}`, 'error')
   }
 }
 
 async function openSession(id) {
   currentSessionId = id
   setSendEnabled(true)
-  logEl.innerHTML = ''
+  clearLog()
   try {
     const res = await fetch(`/api/sessions/${id}`)
     const data = await res.json()
-    for (const t of data.turns) renderTurn(t.role, t.content)
+    const callsByTurn = data.toolCalls || {}
+    for (const t of data.turns) {
+      if (t.role === 'user') renderUserTurn(t.content)
+      else if (t.role === 'assistant') {
+        const calls = callsByTurn[t.id] || []
+        renderAssistantTurnStatic(
+          t.content,
+          calls.map((c) => ({ tool: c.tool, ok: c.ok, durationMs: c.durationMs })),
+        )
+      }
+    }
     if (data.turns.length === 0) {
-      const empty = document.createElement('div')
-      empty.className = 'empty'
-      empty.textContent = 'Conversation is empty. Send a message to begin.'
-      logEl.appendChild(empty)
+      renderEmpty('Conversation is empty. Send a message to begin.')
     }
   } catch (err) {
-    renderMeta(`Failed to open session: ${err.message}`, true)
+    renderMeta(`Failed to open session: ${err.message}`, 'error')
   }
   await loadSessions()
   subscribeWs(id)
@@ -81,12 +157,12 @@ async function createSession() {
     const res = await fetch('/api/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agentProfile: 'default' }),
+      body: JSON.stringify({ agentProfile: '_base' }),
     })
     const data = await res.json()
     if (data.session) await openSession(data.session.id)
   } catch (err) {
-    renderMeta(`Failed to create session: ${err.message}`, true)
+    renderMeta(`Failed to create session: ${err.message}`, 'error')
   }
 }
 
@@ -106,7 +182,7 @@ function connectWs() {
     handleEvent(msg)
   })
   ws.addEventListener('close', () => {
-    renderMeta('Disconnected. Retrying in 2s…', true)
+    renderMeta('Disconnected. Retrying in 2s…', 'error')
     setTimeout(connectWs, 2000)
   })
 }
@@ -121,18 +197,41 @@ function handleEvent(e) {
   if (!currentSessionId || e.sessionId !== currentSessionId) return
   switch (e.type) {
     case 'message.assistant.started':
-      assistantBuffer = ''
-      assistantNode = renderTurn('assistant', '')
+      activeAssistant = null
+      ensureAssistantNode()
       break
-    case 'message.assistant.delta':
-      if (!assistantNode) assistantNode = renderTurn('assistant', '')
-      assistantBuffer += e.delta
-      assistantNode.textContent = assistantBuffer
+    case 'message.assistant.delta': {
+      const slot = ensureAssistantNode()
+      slot.text += e.delta
+      slot.body.textContent = slot.text
       logEl.scrollTop = logEl.scrollHeight
       break
+    }
     case 'message.assistant.completed':
-      assistantNode = null
+      activeAssistant = null
       setSendEnabled(true)
+      break
+    case 'tool.called':
+      attachToolChip(e.tool, e.toolCallId)
+      break
+    case 'tool.completed':
+      finaliseToolChip(e.toolCallId, true, e.durationMs)
+      break
+    case 'tool.failed':
+      finaliseToolChip(e.toolCallId, false)
+      renderMeta(`${e.tool} failed: ${e.code} — ${e.message}`, 'error')
+      break
+    case 'skill.loading':
+      renderMeta(`Loading skill: ${e.name}…`)
+      break
+    case 'skill.loaded':
+      renderMeta(
+        `Loaded skill ${e.name}` +
+          (e.toolsRegistered.length ? ` (+${e.toolsRegistered.length} tool${e.toolsRegistered.length === 1 ? '' : 's'})` : ''),
+      )
+      break
+    case 'skill.load_failed':
+      renderMeta(`Skill ${e.name} failed to load: ${e.reason}`, 'error')
       break
     case 'context.compressing':
       renderMeta('Compressing context…')
@@ -143,7 +242,7 @@ function handleEvent(e) {
       )
       break
     case 'context.compression_failed':
-      renderMeta(`Compression failed: ${e.reason}. Falling back to truncation.`, true)
+      renderMeta(`Compression failed: ${e.reason}. Falling back to truncation.`, 'error')
       break
   }
 }
@@ -153,7 +252,7 @@ async function send() {
   const text = inputEl.value.trim()
   if (!text) return
   inputEl.value = ''
-  renderTurn('user', text)
+  renderUserTurn(text)
   setSendEnabled(false)
   try {
     const res = await fetch(`/api/sessions/${currentSessionId}/messages`, {
@@ -163,11 +262,11 @@ async function send() {
     })
     if (!res.ok) {
       const body = await res.text()
-      renderMeta(`Server error: ${body}`, true)
+      renderMeta(`Server error: ${body}`, 'error')
       setSendEnabled(true)
     }
   } catch (err) {
-    renderMeta(`Send failed: ${err.message}`, true)
+    renderMeta(`Send failed: ${err.message}`, 'error')
     setSendEnabled(true)
   }
 }

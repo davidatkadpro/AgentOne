@@ -1,8 +1,20 @@
-export type Role = 'system' | 'user' | 'assistant'
+export type Role = 'system' | 'user' | 'assistant' | 'tool'
+
+export interface ToolCallSpec {
+  id: string
+  type: 'function'
+  function: {
+    name: string
+    arguments: string
+  }
+}
 
 export interface Message {
   role: Role
-  content: string
+  content: string | null
+  tool_calls?: ToolCallSpec[]
+  tool_call_id?: string
+  name?: string
 }
 
 export interface Turn {
@@ -13,6 +25,7 @@ export interface Turn {
   tokenCount: number
   createdAt: number
   compressedFrom?: string | null
+  toolCallId?: string | null
 }
 
 export interface Session {
@@ -35,6 +48,15 @@ export interface ModelProfile {
   }
 }
 
+export interface ToolDefinition {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+  }
+}
+
 export interface ChatRequest {
   model: string
   messages: Message[]
@@ -42,6 +64,9 @@ export interface ChatRequest {
   maxTokens?: number
   topP?: number
   stream?: boolean
+  tools?: ToolDefinition[]
+  /** OpenAI 'auto' | 'none' | { type: 'function', function: { name } } */
+  toolChoice?: 'auto' | 'none'
 }
 
 export interface ChatChunk {
@@ -49,12 +74,15 @@ export interface ChatChunk {
   done: boolean
   inputTokens?: number
   outputTokens?: number
-  finishReason?: 'stop' | 'length' | 'error'
+  finishReason?: 'stop' | 'length' | 'tool_calls' | 'error'
+  /** Present only on the final chunk (done=true). Assembled from streaming deltas. */
+  toolCalls?: ToolCallSpec[]
 }
 
 export interface ChatResponse {
   content: string
   inputTokens: number
   outputTokens: number
-  finishReason: 'stop' | 'length' | 'error'
+  finishReason: 'stop' | 'length' | 'tool_calls' | 'error'
+  toolCalls?: ToolCallSpec[]
 }

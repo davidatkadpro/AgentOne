@@ -4,12 +4,13 @@ import fastifyStatic from '@fastify/static'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { z } from 'zod'
+import { readFile } from 'node:fs/promises'
 
 import { loadConfigFromEnv, type ServerConfig } from './config.js'
 import { EventBus } from '../core/events.js'
 import { loadBasePrompt } from '../profiles/base-prompt.js'
 import { loadModelProfiles } from '../profiles/model-profile.js'
-import { composeSystemMessage } from '../context/prompt-composer.js'
+import { loadAgentProfile } from '../profiles/agent-profile.js'
 import { ContextManager } from '../context/context-manager.js'
 import { LMStudioProvider } from '../providers/lmstudio.js'
 import { createDatabase } from '../storage/db.js'
@@ -17,13 +18,14 @@ import { createConversationStore, type ConversationStore } from '../storage/sqli
 import { LocalFolderAdapter } from '../storage/local-folder.js'
 import { WikiEngine } from '../memory/wiki/engine.js'
 import { Orchestrator } from '../orchestrator/turn.js'
+import { loadSkillIndex } from '../skills/loader.js'
 import type { ModelProfile } from '../core/types.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const SendMessageBody = z.object({ text: z.string().min(1) })
 const CreateSessionBody = z.object({
-  agentProfile: z.string().default('default'),
+  agentProfile: z.string().default('_base'),
   title: z.string().nullable().optional(),
 })
 const SessionIdParams = z.object({ id: z.string().uuid() })
@@ -32,15 +34,12 @@ const WsClientMessage = z.union([
   z.object({ op: z.literal('unsubscribe'), sessionId: z.string() }),
 ])
 
-// Events excluded from the durable event log — these are high-frequency
-// and reconstructable from the persisted assistant turn.
 const TRANSIENT_EVENT_TYPES = new Set(['message.assistant.delta'])
 
 export interface AppDeps {
   config: ServerConfig
   bus: EventBus
   store: ConversationStore
-  contextManager: ContextManager
   orchestrator: Orchestrator
   conversationModel: ModelProfile
   wiki: WikiEngine
@@ -62,6 +61,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       contextWindow: deps.conversationModel.contextWindow,
       storageRoot: deps.config.storageRoot,
       wikiPrefix: deps.config.wikiPrefix,
+      agentProfile: deps.config.agentProfile,
     }
   })
 
@@ -99,7 +99,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       reply.code(404)
       return { error: 'Not found' }
     }
-    return { session, turns: deps.store.listTurns(params.data.id) }
+    const turns = deps.store.listTurns(params.data.id)
+    const toolCalls: Record<string, ReturnType<typeof deps.store.listToolCalls>> = {}
+    for (const turn of turns) {
+      if (turn.role !== 'assistant') continue
+      const calls = deps.store.listToolCalls(turn.id)
+      if (calls.length > 0) toolCalls[turn.id] = calls
+    }
+    return { session, turns, toolCalls }
   })
 
   app.post('/api/sessions/:id/messages', async (req, reply) => {
@@ -119,10 +126,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       return { error: 'Invalid body', details: body.error.flatten() }
     }
     const handle = await deps.orchestrator.handleUserMessage(params.data.id, body.data.text)
-    // Drive the generator so its finally-block persists the assistant turn and
-    // emits completion. Deltas already reach the UI via WS observers.
     void drain(handle.stream)
-    return { ok: true, assistantTurnId: handle.assistantTurnId }
+    return { ok: true }
   })
 
   app.register(async function (instance) {
@@ -162,9 +167,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 }
 
 async function drain(stream: AsyncIterable<string>): Promise<void> {
-  // The orchestrator's stream emits deltas as observer events; the only
-  // reason to iterate here is to drive its generator past completion so the
-  // finally-block persists the assistant turn.
+  // The orchestrator's stream emits deltas as observer events; iterating
+  // here only drives its generator past completion so the finally-block
+  // persists the assistant turn.
   for await (const _ of stream) void _
 }
 
@@ -194,18 +199,29 @@ export async function bootstrap(): Promise<void> {
     })
   })
 
-  const [basePrompt, modelProfiles] = await Promise.all([
+  const [basePrompt, modelProfiles, agentProfile, skillIndex] = await Promise.all([
     loadBasePrompt(config.basePromptPath),
     loadModelProfiles(config.modelProfilesDir),
+    loadAgentProfile(config.agentProfilesDir, config.agentProfile),
+    loadSkillIndex({ root: config.skillsDir }),
   ])
 
-  const conversationModel = modelProfiles.get(config.defaultModelProfile)
+  const conversationModelId =
+    agentProfile.defaultModel === 'local-fast' || agentProfile.defaultModel === ''
+      ? config.defaultModelProfile
+      : agentProfile.defaultModel
+  const compressorModelId =
+    agentProfile.compressorModel ?? config.compressorModelProfile
+
+  const conversationModel = modelProfiles.get(conversationModelId)
   if (!conversationModel) {
-    throw new Error(`Default model profile not found: ${config.defaultModelProfile}`)
+    throw new Error(
+      `Conversation Model Profile not found: ${conversationModelId} (referenced by agent profile ${agentProfile.id})`,
+    )
   }
-  const compressorModel = modelProfiles.get(config.compressorModelProfile)
+  const compressorModel = modelProfiles.get(compressorModelId)
   if (!compressorModel) {
-    throw new Error(`Compressor model profile not found: ${config.compressorModelProfile}`)
+    throw new Error(`Compressor Model Profile not found: ${compressorModelId}`)
   }
 
   const provider = new LMStudioProvider({ baseUrl: config.lmStudioBaseUrl })
@@ -217,22 +233,37 @@ export async function bootstrap(): Promise<void> {
     eventBus: bus,
   })
 
-  const systemMessage = composeSystemMessage({ basePrompt })
+  // The agent profile may also reference its own system_prompt_file, layered
+  // on top of the base prompt. Compose at orchestrator level so per-session
+  // state can also see it; here we just thread basePrompt through and let
+  // the orchestrator apply the agent profile system prompt as part of
+  // composeSystemMessage when we extend it (deferred for M3).
+  let effectiveBasePrompt = basePrompt
+  if (agentProfile.systemPromptFile) {
+    try {
+      const extra = (await readFile(agentProfile.systemPromptFile, 'utf-8')).trim()
+      if (extra) effectiveBasePrompt = `${basePrompt}\n\n${extra}`
+    } catch {
+      // Profile names a system_prompt_file that doesn't exist; tolerate.
+    }
+  }
 
   const orchestrator = new Orchestrator({
     store,
     contextManager,
     provider,
-    model: conversationModel,
+    conversationModel,
     eventBus: bus,
-    systemMessage,
+    skillIndex,
+    profile: agentProfile,
+    basePrompt: effectiveBasePrompt,
+    services: { storage, wiki },
   })
 
   const app = await buildApp({
     config,
     bus,
     store,
-    contextManager,
     orchestrator,
     conversationModel,
     wiki,
@@ -242,6 +273,10 @@ export async function bootstrap(): Promise<void> {
   await app.listen({ port: config.port, host: '127.0.0.1' })
   // eslint-disable-next-line no-console
   console.log(`AgentOne listening on http://127.0.0.1:${config.port}`)
+  // eslint-disable-next-line no-console
+  console.log(
+    `  profile=${agentProfile.id}  model=${conversationModel.id}  skills=${skillIndex.skills.size}`,
+  )
 }
 
 const entryUrl = pathToFileURL(process.argv[1] ?? '').href

@@ -142,9 +142,11 @@ describe('ContextManager', () => {
 
     // Subsequent prepare with shorter history still includes the summary.
     const next = await cm.prepare('s1', system, [{ role: 'user', content: 'follow-up' }])
-    expect(next.messages.some((m) => m.role === 'system' && m.content.includes(SUMMARY_TEXT))).toBe(
-      true,
-    )
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && (m.content ?? '').includes(SUMMARY_TEXT),
+      ),
+    ).toBe(true)
   })
 
   it('reset clears stored summary for the session', async () => {

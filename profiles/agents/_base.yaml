@@ -1,0 +1,16 @@
+id: _base
+description: Base profile — every other Agent Profile extends this.
+default_model: local-fast
+compressor_model: local-compressor
+default_skills:
+  - system/filesystem
+  - system/shell
+  - system/web
+  - system/memory
+permissions:
+  skills:
+    allow:
+      - system/*
+    deny: []
+  experts:
+    allow: []

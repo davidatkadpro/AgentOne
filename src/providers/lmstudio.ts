@@ -1,18 +1,25 @@
 import { setTimeout as delay } from 'node:timers/promises'
-import type { ChatChunk, ChatRequest, ChatResponse } from '../core/types.js'
+import type {
+  ChatChunk,
+  ChatRequest,
+  ChatResponse,
+  Message,
+  ToolCallSpec,
+} from '../core/types.js'
 import { ProviderError, type Provider, type ProviderCapabilities } from './base.js'
 
 export interface LMStudioConfig {
   baseUrl: string
-  /** Optional fetch override for testing. */
   fetchImpl?: typeof fetch
-  /** Optional max attempts on transient network errors. Defaults to 3. */
   maxRetries?: number
 }
 
 interface OpenAIChatResponse {
   choices: Array<{
-    message?: { content?: string }
+    message?: {
+      content?: string
+      tool_calls?: OpenAIToolCall[]
+    }
     finish_reason?: string
   }>
   usage?: {
@@ -21,9 +28,25 @@ interface OpenAIChatResponse {
   }
 }
 
+interface OpenAIToolCall {
+  id?: string
+  type?: 'function'
+  function?: { name?: string; arguments?: string }
+}
+
+interface OpenAIToolCallDelta {
+  index: number
+  id?: string
+  type?: 'function'
+  function?: { name?: string; arguments?: string }
+}
+
 interface OpenAIStreamChunk {
   choices: Array<{
-    delta?: { content?: string }
+    delta?: {
+      content?: string
+      tool_calls?: OpenAIToolCallDelta[]
+    }
     finish_reason?: string | null
   }>
   usage?: {
@@ -36,7 +59,7 @@ const TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504])
 
 export class LMStudioProvider implements Provider {
   readonly id = 'lmstudio'
-  readonly capabilities: ProviderCapabilities = { streaming: true, tools: false }
+  readonly capabilities: ProviderCapabilities = { streaming: true, tools: true }
   private readonly fetchImpl: typeof fetch
   private readonly maxRetries: number
 
@@ -55,6 +78,7 @@ export class LMStudioProvider implements Provider {
       inputTokens: json.usage?.prompt_tokens ?? 0,
       outputTokens: json.usage?.completion_tokens ?? 0,
       finishReason: mapFinishReason(choice.finish_reason),
+      toolCalls: choice.message?.tool_calls?.map(normaliseToolCall),
     }
   }
 
@@ -64,7 +88,8 @@ export class LMStudioProvider implements Provider {
 
     let inputTokens = 0
     let outputTokens = 0
-    let finishReason: 'stop' | 'length' | 'error' = 'stop'
+    let finishReason: 'stop' | 'length' | 'tool_calls' | 'error' = 'stop'
+    const toolCallBuffers = new Map<number, { id: string; name: string; arguments: string }>()
 
     for await (const event of parseSSE(res.body)) {
       if (event === '[DONE]') break
@@ -78,6 +103,17 @@ export class LMStudioProvider implements Provider {
       if (!choice) continue
       const deltaText = choice.delta?.content ?? ''
       if (deltaText) yield { delta: deltaText, done: false }
+
+      if (choice.delta?.tool_calls) {
+        for (const tc of choice.delta.tool_calls) {
+          const buf = toolCallBuffers.get(tc.index) ?? { id: '', name: '', arguments: '' }
+          if (tc.id) buf.id = tc.id
+          if (tc.function?.name) buf.name += tc.function.name
+          if (tc.function?.arguments) buf.arguments += tc.function.arguments
+          toolCallBuffers.set(tc.index, buf)
+        }
+      }
+
       if (choice.finish_reason) finishReason = mapFinishReason(choice.finish_reason)
       if (parsed.usage) {
         inputTokens = parsed.usage.prompt_tokens ?? inputTokens
@@ -85,18 +121,24 @@ export class LMStudioProvider implements Provider {
       }
     }
 
-    yield { delta: '', done: true, inputTokens, outputTokens, finishReason }
+    const toolCalls = assembleToolCalls(toolCallBuffers)
+    yield { delta: '', done: true, inputTokens, outputTokens, finishReason, toolCalls }
   }
 
   private toBody({ req, stream }: { req: ChatRequest; stream: boolean }): Record<string, unknown> {
-    return {
+    const body: Record<string, unknown> = {
       model: req.model,
-      messages: req.messages,
+      messages: req.messages.map(serialiseMessage),
       temperature: req.temperature ?? 0.4,
       max_tokens: req.maxTokens ?? 2048,
       top_p: req.topP ?? 1,
       stream,
     }
+    if (req.tools && req.tools.length > 0) {
+      body.tools = req.tools
+      body.tool_choice = req.toolChoice ?? 'auto'
+    }
+    return body
   }
 
   private async callWithRetry(path: string, body: unknown): Promise<Response> {
@@ -136,8 +178,49 @@ export class LMStudioProvider implements Provider {
   }
 }
 
-function mapFinishReason(reason: string | null | undefined): 'stop' | 'length' | 'error' {
+function normaliseToolCall(tc: OpenAIToolCall): ToolCallSpec {
+  return {
+    id: tc.id ?? '',
+    type: 'function',
+    function: {
+      name: tc.function?.name ?? '',
+      arguments: tc.function?.arguments ?? '',
+    },
+  }
+}
+
+function assembleToolCalls(
+  buffers: Map<number, { id: string; name: string; arguments: string }>,
+): ToolCallSpec[] | undefined {
+  if (buffers.size === 0) return undefined
+  const indices = [...buffers.keys()].sort((a, b) => a - b)
+  return indices.map((i) => {
+    const buf = buffers.get(i)!
+    return {
+      id: buf.id,
+      type: 'function',
+      function: { name: buf.name, arguments: buf.arguments },
+    }
+  })
+}
+
+/**
+ * OpenAI-compatible wire format requires omitting null content on assistant
+ * messages that carry tool_calls (some endpoints reject null explicitly), and
+ * requires `tool_call_id` on tool-role messages.
+ */
+function serialiseMessage(m: Message): Record<string, unknown> {
+  const out: Record<string, unknown> = { role: m.role }
+  if (m.content !== null && m.content !== undefined) out.content = m.content
+  if (m.tool_calls && m.tool_calls.length > 0) out.tool_calls = m.tool_calls
+  if (m.tool_call_id) out.tool_call_id = m.tool_call_id
+  if (m.name) out.name = m.name
+  return out
+}
+
+function mapFinishReason(reason: string | null | undefined): 'stop' | 'length' | 'tool_calls' | 'error' {
   if (reason === 'length') return 'length'
+  if (reason === 'tool_calls') return 'tool_calls'
   if (reason === 'stop' || reason === null || reason === undefined) return 'stop'
   return 'error'
 }
