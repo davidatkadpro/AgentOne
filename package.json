@@ -5,8 +5,8 @@
   "type": "module",
   "description": "Local, event-driven agent runtime with persistent memory",
   "scripts": {
-    "dev": "tsx watch src/server/index.ts",
-    "start": "tsx src/server/index.ts",
+    "dev": "node --env-file-if-exists=.env --watch --import tsx src/server/index.ts",
+    "start": "node --env-file-if-exists=.env --import tsx src/server/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
