@@ -1,3 +1,5 @@
+import { parseSlashInput } from './slash-parser.js'
+
 const sessionsEl = document.getElementById('sessions')
 const logEl = document.getElementById('log')
 const inputEl = document.getElementById('input')
@@ -251,6 +253,11 @@ async function send() {
   if (!currentSessionId) return
   const text = inputEl.value.trim()
   if (!text) return
+  if (text.startsWith('/')) {
+    inputEl.value = ''
+    await runSlashCommand(text)
+    return
+  }
   inputEl.value = ''
   renderUserTurn(text)
   setSendEnabled(false)
@@ -269,6 +276,118 @@ async function send() {
     renderMeta(`Send failed: ${err.message}`, 'error')
     setSendEnabled(true)
   }
+}
+
+
+async function runSlashCommand(raw) {
+  const parsed = parseSlashInput(raw)
+  renderUserTurn(raw)
+  // Confirm gate for destructive commands.
+  if (parsed.name === 'clear') {
+    if (!confirm('Delete every turn in this session? This cannot be undone.')) {
+      renderMeta('Cancelled.')
+      return
+    }
+    parsed.args.confirm = true
+  }
+  try {
+    const res = await fetch(`/api/sessions/${currentSessionId}/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: parsed.name, args: parsed.args, text: parsed.text }),
+    })
+    if (!res.ok) {
+      const body = await res.text()
+      renderMeta(`Server error: ${body}`, 'error')
+      return
+    }
+    const data = await res.json()
+    await renderCommandResult(data.result)
+  } catch (err) {
+    renderMeta(`Command failed: ${err.message}`, 'error')
+  }
+}
+
+async function renderCommandResult(result) {
+  if (!result) return
+  switch (result.kind) {
+    case 'text':
+      renderMeta(result.content)
+      return
+    case 'session_list':
+      renderSessionList(result.sessions)
+      return
+    case 'session_switch':
+      renderMeta(`Created session ${result.session.id.slice(0, 8)} — switching.`)
+      await openSession(result.session.id)
+      return
+    case 'session_cleared':
+      renderMeta(`Cleared ${result.turnsDeleted} turn${result.turnsDeleted === 1 ? '' : 's'} from this session.`)
+      clearLog()
+      renderEmpty('Conversation is empty. Send a message to begin.')
+      return
+    case 'skill_loaded':
+      if (result.alreadyLoaded) {
+        renderMeta(`Skill ${result.skill} is already loaded in this session.`)
+      } else {
+        renderMeta(
+          `Loaded skill ${result.skill}` +
+            (result.toolsRegistered.length
+              ? ` (+${result.toolsRegistered.length} tool${result.toolsRegistered.length === 1 ? '' : 's'})`
+              : ''),
+        )
+      }
+      return
+    case 'context_compacted':
+      renderMeta(
+        `Compacted: ${result.tokensBefore} → ${result.tokensAfter} tokens (saved ${
+          result.tokensBefore - result.tokensAfter
+        })`,
+      )
+      return
+    case 'skill_invoked':
+      renderMeta(
+        `${result.alreadyLoaded ? 'Reused' : 'Loaded'} skill ${result.skill}` +
+          (result.forwarded ? ' — forwarding text to model…' : ''),
+      )
+      return
+    case 'error':
+      renderMeta(result.message, 'error')
+      return
+    default:
+      renderMeta(`Unknown command result: ${JSON.stringify(result)}`, 'error')
+  }
+}
+
+function renderSessionList(sessions) {
+  const div = document.createElement('div')
+  div.className = 'cmd-session-list'
+  if (sessions.length === 0) {
+    div.textContent = 'No sessions yet.'
+    div.className += ' empty'
+    logEl.appendChild(div)
+    return
+  }
+  for (const s of sessions) {
+    const row = document.createElement('div')
+    row.className = 'cmd-session' + (s.id === currentSessionId ? ' current' : '')
+    const title = document.createElement('span')
+    title.className = 'title'
+    title.textContent = s.title || s.id.slice(0, 8)
+    const meta = document.createElement('span')
+    meta.className = 'meta-cells'
+    const when = new Date(s.createdAt).toLocaleString()
+    meta.textContent = ` · ${s.turnCount} turns · ${when}`
+    row.appendChild(title)
+    row.appendChild(meta)
+    row.title = s.id
+    row.addEventListener('click', () => {
+      if (s.id !== currentSessionId) openSession(s.id)
+    })
+    div.appendChild(row)
+  }
+  logEl.appendChild(div)
+  logEl.scrollTop = logEl.scrollHeight
 }
 
 newBtn.addEventListener('click', createSession)

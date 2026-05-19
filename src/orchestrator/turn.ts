@@ -87,6 +87,129 @@ export class Orchestrator {
     this.sessions.delete(sessionId)
   }
 
+  /**
+   * Manually load a non-default skill into an existing session. Returns
+   * enough detail for the caller to distinguish: already-loaded, freshly
+   * loaded with N tools, denied by permissions, or load-failed with a reason.
+   */
+  async loadSkillIntoSession(
+    sessionId: string,
+    skillName: string,
+  ): Promise<
+    | { alreadyLoaded: true; toolsRegistered: [] }
+    | { alreadyLoaded: false; loaded: true; toolsRegistered: string[] }
+    | { alreadyLoaded: false; loaded: false; reason: string }
+  > {
+    const state = await this.getSessionState(sessionId)
+    if (state.loadedSkills.has(skillName)) {
+      return { alreadyLoaded: true, toolsRegistered: [] }
+    }
+    const result = await this.loadSkillIntoRegistry({
+      skillName,
+      registry: state.registry,
+      loadedSkills: state.loadedSkills,
+      permissions: state.permissions,
+      sessionId,
+    })
+    if (!result.loaded) {
+      return { alreadyLoaded: false, loaded: false, reason: result.reason ?? 'unknown' }
+    }
+    return { alreadyLoaded: false, loaded: true, toolsRegistered: result.toolsRegistered }
+  }
+
+  /**
+   * Build the current history-as-messages and ask the ContextManager to
+   * compress regardless of threshold. Returns the token deltas.
+   */
+  async compactSession(
+    sessionId: string,
+  ): Promise<{ tokensBefore: number; tokensAfter: number; changed: boolean }> {
+    const state = await this.getSessionState(sessionId)
+    const turns = this.cfg.store.listTurns(sessionId)
+    const toolCallsMap = this.cfg.store.listToolCallsBySession(sessionId)
+    const history = turnsToMessages(turns, toolCallsMap)
+    return this.cfg.contextManager.compactNow(sessionId, state.systemMessage, history)
+  }
+
+  private async loadSkillIntoRegistry(args: {
+    skillName: string
+    registry: ToolRegistry
+    loadedSkills: Set<string>
+    permissions: PermissionGate
+    sessionId: string
+  }): Promise<{ toolsRegistered: string[]; loaded: boolean; reason?: string }> {
+    const { skillName, registry, loadedSkills, permissions, sessionId } = args
+    const manifest = this.cfg.skillIndex.skills.get(skillName)
+    if (!manifest) {
+      const reason = 'not found in skill index'
+      await this.cfg.eventBus.emit({
+        type: 'skill.load_failed',
+        sessionId,
+        name: skillName,
+        reason,
+        ts: Date.now(),
+      })
+      return { toolsRegistered: [], loaded: false, reason }
+    }
+    const decision = permissions.canLoadSkill(skillName)
+    if (decision.verdict === 'deny') {
+      return {
+        toolsRegistered: [],
+        loaded: false,
+        reason: `permission denied: ${decision.reason}`,
+      }
+    }
+    await this.cfg.eventBus.emit({
+      type: 'skill.loading',
+      sessionId,
+      name: skillName,
+      ts: Date.now(),
+    })
+    try {
+      const tools = await importSkillTools(manifest)
+      const registered: string[] = []
+      for (const t of tools) {
+        if (registry.has(t.id)) {
+          await this.cfg.eventBus.emit({
+            type: 'skill.load_failed',
+            sessionId,
+            name: skillName,
+            reason: `tool id collision: ${t.id}`,
+            ts: Date.now(),
+          })
+          continue
+        }
+        registry.register({
+          id: t.id,
+          description: t.description,
+          parameters: t.module.parameters,
+          handler: t.module.handler,
+          source: skillName,
+        })
+        registered.push(t.id)
+      }
+      loadedSkills.add(skillName)
+      await this.cfg.eventBus.emit({
+        type: 'skill.loaded',
+        sessionId,
+        name: skillName,
+        toolsRegistered: registered,
+        ts: Date.now(),
+      })
+      return { toolsRegistered: registered, loaded: true }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      await this.cfg.eventBus.emit({
+        type: 'skill.load_failed',
+        sessionId,
+        name: skillName,
+        reason,
+        ts: Date.now(),
+      })
+      return { toolsRegistered: [], loaded: false, reason }
+    }
+  }
+
   private getSessionState(sessionId: string): Promise<SessionState> {
     const existing = this.sessions.get(sessionId)
     if (existing) {
@@ -133,58 +256,13 @@ export class Orchestrator {
     }
 
     for (const skillName of this.cfg.profile.defaultSkills) {
-      const manifest = this.cfg.skillIndex.skills.get(skillName)
-      if (!manifest) {
-        await this.cfg.eventBus.emit({
-          type: 'skill.load_failed',
-          sessionId,
-          name: skillName,
-          reason: 'not found in skill index',
-          ts: Date.now(),
-        })
-        continue
-      }
-      if (permissions.canLoadSkill(skillName).verdict === 'deny') continue
-      try {
-        const tools = await importSkillTools(manifest)
-        const registered: string[] = []
-        for (const t of tools) {
-          if (registry.has(t.id)) {
-            await this.cfg.eventBus.emit({
-              type: 'skill.load_failed',
-              sessionId,
-              name: skillName,
-              reason: `tool id collision: ${t.id}`,
-              ts: Date.now(),
-            })
-            continue
-          }
-          registry.register({
-            id: t.id,
-            description: t.description,
-            parameters: t.module.parameters,
-            handler: t.module.handler,
-            source: skillName,
-          })
-          registered.push(t.id)
-        }
-        loadedSkills.add(skillName)
-        await this.cfg.eventBus.emit({
-          type: 'skill.loaded',
-          sessionId,
-          name: skillName,
-          toolsRegistered: registered,
-          ts: Date.now(),
-        })
-      } catch (err) {
-        await this.cfg.eventBus.emit({
-          type: 'skill.load_failed',
-          sessionId,
-          name: skillName,
-          reason: err instanceof Error ? err.message : String(err),
-          ts: Date.now(),
-        })
-      }
+      await this.loadSkillIntoRegistry({
+        skillName,
+        registry,
+        loadedSkills,
+        permissions,
+        sessionId,
+      })
     }
 
     const defaultSkillHeaders = this.cfg.profile.defaultSkills

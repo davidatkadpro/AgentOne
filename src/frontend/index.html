@@ -152,6 +152,33 @@
       padding: 20px;
       text-align: center;
     }
+    .cmd-session-list {
+      margin: 12px 0;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+    }
+    .cmd-session-list .cmd-session {
+      padding: 6px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      display: flex;
+      gap: 4px;
+    }
+    .cmd-session-list .cmd-session:hover {
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .cmd-session-list .cmd-session.current {
+      color: var(--accent);
+    }
+    .cmd-session-list .cmd-session .title {
+      font-weight: 600;
+    }
+    .cmd-session-list .cmd-session .meta-cells {
+      color: var(--muted);
+    }
   </style>
 </head>
 <body>

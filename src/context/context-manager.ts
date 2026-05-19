@@ -97,6 +97,32 @@ export class ContextManager {
     this.summaries.delete(sessionId)
   }
 
+  /**
+   * Force a compression now, ignoring the threshold. Used by /compact when the
+   * user wants to free up context proactively. `changed` reports whether this
+   * call actually compressed anything — when history fits within the recency
+   * window, nothing happens and the caller can surface a "nothing to compact"
+   * message instead of a misleading 0-token-saved event.
+   */
+  async compactNow(
+    sessionId: string,
+    system: Message,
+    history: Message[],
+  ): Promise<{ tokensBefore: number; tokensAfter: number; changed: boolean }> {
+    const willCompress = history.length > this.recencyWindow
+    const tokensBefore = countMessagesTokens([
+      system,
+      ...this.withSummary(sessionId, history),
+    ])
+    if (!willCompress) {
+      return { tokensBefore, tokensAfter: tokensBefore, changed: false }
+    }
+    const recency = await this.compress(sessionId, system, history)
+    const finalMessages = [system, ...this.withSummary(sessionId, recency)]
+    const tokensAfter = countMessagesTokens(finalMessages)
+    return { tokensBefore, tokensAfter, changed: true }
+  }
+
   /** Test seam — exposes the stored summary text for a session, if any. */
   getSummary(sessionId: string): string | undefined {
     return this.summaries.get(sessionId)

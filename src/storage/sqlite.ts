@@ -38,6 +38,12 @@ export interface ConversationStore {
   logEvent(input: { sessionId: string | null; type: AgentEvent['type']; payload: AgentEvent }): void
 
   searchTurns(opts: SearchTurnsOptions): TurnSearchHit[]
+
+  /** Single-query bulk turn count per session. */
+  countTurnsBySession(sessionIds: string[]): Map<string, number>
+
+  /** Hard-delete every turn (and via FK cascade every tool_call) in this session. */
+  clearTurns(sessionId: string): number
 }
 
 export interface SearchTurnsOptions {
@@ -430,6 +436,11 @@ export function createConversationStore(db: Db): ConversationStore {
     'INSERT INTO event_log (session_id, type, payload, created_at) VALUES (?, ?, ?, ?)',
   )
 
+  const countTurnsStmt = db.prepare(
+    'SELECT session_id, COUNT(*) AS n FROM turns WHERE session_id IN (SELECT value FROM json_each(?)) GROUP BY session_id',
+  )
+  const deleteTurnsStmt = db.prepare('DELETE FROM turns WHERE session_id = ?')
+
   const searchTurnsStmt = db.prepare<{
     query: string
     sessionId: string | null
@@ -548,6 +559,23 @@ export function createConversationStore(db: Db): ConversationStore {
 
     logEvent({ sessionId, type, payload }) {
       insertEvent.run(sessionId, type, JSON.stringify(payload), Date.now())
+    },
+
+    countTurnsBySession(sessionIds) {
+      const out = new Map<string, number>()
+      if (sessionIds.length === 0) return out
+      const rows = countTurnsStmt.all(JSON.stringify(sessionIds)) as Array<{
+        session_id: string
+        n: number
+      }>
+      for (const row of rows) out.set(row.session_id, row.n)
+      for (const id of sessionIds) if (!out.has(id)) out.set(id, 0)
+      return out
+    },
+
+    clearTurns(sessionId) {
+      const info = deleteTurnsStmt.run(sessionId)
+      return Number(info.changes)
     },
 
     searchTurns(opts) {

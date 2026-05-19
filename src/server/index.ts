@@ -18,8 +18,11 @@ import { createConversationStore, type ConversationStore } from '../storage/sqli
 import { LocalFolderAdapter } from '../storage/local-folder.js'
 import { WikiEngine } from '../memory/wiki/engine.js'
 import { Orchestrator } from '../orchestrator/turn.js'
-import { loadSkillIndex } from '../skills/loader.js'
+import { loadSkillIndex, type SkillIndex } from '../skills/loader.js'
 import type { ModelProfile } from '../core/types.js'
+import { buildCommandRegistry } from './commands/builders.js'
+import type { CommandRegistry } from './commands/registry.js'
+import type { CommandResult } from './commands/types.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -43,7 +46,21 @@ export interface AppDeps {
   orchestrator: Orchestrator
   conversationModel: ModelProfile
   wiki: WikiEngine
+  skillIndex: SkillIndex
+  contextManager: ContextManager
+  commands: CommandRegistry
 }
+
+const CommandRequestBody = z.object({
+  name: z.string().min(1),
+  args: z.record(z.string(), z.unknown()).optional(),
+  /** Optional follow-up text — only used by skill slash_commands. */
+  text: z.string().optional(),
+})
+
+const GlobalCommandBody = CommandRequestBody.extend({
+  sessionId: z.string().uuid().optional(),
+})
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({ logger: false })
@@ -130,6 +147,50 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return { ok: true }
   })
 
+  app.get('/api/commands', async () => {
+    const built = deps.commands.list().map((c) => ({
+      name: c.name,
+      description: c.description,
+      usage: c.usage,
+      requiresSession: c.requiresSession,
+      source: 'system' as const,
+    }))
+    const skillSlashes = [...deps.skillIndex.bySlashCommand.values()].map((m) => ({
+      name: m.slashCommand as string,
+      description: m.description,
+      usage: `/${m.slashCommand} [text]`,
+      requiresSession: true,
+      source: 'skill' as const,
+      skill: m.qualifiedName,
+    }))
+    return { commands: [...built, ...skillSlashes].sort((a, b) => a.name.localeCompare(b.name)) }
+  })
+
+  app.post('/api/sessions/:id/command', async (req, reply) => {
+    const params = SessionIdParams.safeParse(req.params)
+    if (!params.success) {
+      reply.code(400)
+      return { error: 'Invalid session id' }
+    }
+    const body = CommandRequestBody.safeParse(req.body ?? {})
+    if (!body.success) {
+      reply.code(400)
+      return { error: 'Invalid body', details: body.error.flatten() }
+    }
+    const result = await dispatchCommand(deps, body.data, params.data.id)
+    return { result }
+  })
+
+  app.post('/api/command', async (req, reply) => {
+    const body = GlobalCommandBody.safeParse(req.body ?? {})
+    if (!body.success) {
+      reply.code(400)
+      return { error: 'Invalid body', details: body.error.flatten() }
+    }
+    const result = await dispatchCommand(deps, body.data, body.data.sessionId ?? null)
+    return { result }
+  })
+
   app.register(async function (instance) {
     instance.get('/ws', { websocket: true }, (socket) => {
       const subscriptions = new Set<string>()
@@ -171,6 +232,59 @@ async function drain(stream: AsyncIterable<string>): Promise<void> {
   // here only drives its generator past completion so the finally-block
   // persists the assistant turn.
   for await (const _ of stream) void _
+}
+
+/**
+ * Resolve a command name to either a system command or a skill slash_command.
+ * Skill commands LOAD the skill and forward any trailing text as a user
+ * message (matching the PRD's "skill commands" semantics).
+ */
+async function dispatchCommand(
+  deps: AppDeps,
+  body: { name: string; args?: Record<string, unknown>; text?: string },
+  sessionId: string | null,
+): Promise<CommandResult> {
+  const args = body.args ?? {}
+  if (deps.commands.has(body.name)) {
+    return deps.commands.dispatch(body.name, args, {
+      sessionId,
+      store: deps.store,
+      skillIndex: deps.skillIndex,
+      orchestrator: deps.orchestrator,
+      contextManager: deps.contextManager,
+      config: deps.config,
+    })
+  }
+  const manifest = deps.skillIndex.bySlashCommand.get(body.name)
+  if (!manifest) {
+    return { kind: 'error', message: `Unknown command: /${body.name}`, recoverable: true }
+  }
+  if (!sessionId) {
+    return {
+      kind: 'error',
+      message: `/${body.name} requires an active session`,
+      recoverable: true,
+    }
+  }
+  const loaded = await deps.orchestrator.loadSkillIntoSession(sessionId, manifest.qualifiedName)
+  if (!loaded.alreadyLoaded && !loaded.loaded) {
+    return {
+      kind: 'error',
+      message: `Could not load ${manifest.qualifiedName}: ${loaded.reason}`,
+      recoverable: loaded.reason.startsWith('permission denied'),
+    }
+  }
+  const forwarded = !!body.text && body.text.trim().length > 0
+  if (forwarded) {
+    const handle = await deps.orchestrator.handleUserMessage(sessionId, body.text as string)
+    void drain(handle.stream)
+  }
+  return {
+    kind: 'skill_invoked',
+    skill: manifest.qualifiedName,
+    forwarded,
+    alreadyLoaded: loaded.alreadyLoaded,
+  }
 }
 
 export async function bootstrap(): Promise<void> {
@@ -260,6 +374,8 @@ export async function bootstrap(): Promise<void> {
     services: { storage, wiki, conversationStore: store },
   })
 
+  const commands = buildCommandRegistry(skillIndex)
+
   const app = await buildApp({
     config,
     bus,
@@ -267,6 +383,9 @@ export async function bootstrap(): Promise<void> {
     orchestrator,
     conversationModel,
     wiki,
+    skillIndex,
+    contextManager,
+    commands,
   })
 
   await wiki.whenReady()
