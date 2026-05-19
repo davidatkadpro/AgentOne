@@ -2,14 +2,18 @@ import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import { ToolRegistry } from '@/skills/registry.js'
 import type { ToolContext, ToolHandler } from '@/skills/tool.js'
+import type { StorageAdapter } from '@/storage/adapter.js'
+import type { WikiEngine } from '@/memory/wiki/engine.js'
+import type { ConversationStore } from '@/storage/sqlite.js'
 
 function fakeCtx(): ToolContext {
   return {
     sessionId: 's1',
     agentProfile: 'test',
     services: {
-      storage: {} as never,
-      wiki: {} as never,
+      storage: {} as unknown as StorageAdapter,
+      wiki: {} as unknown as WikiEngine,
+      conversationStore: {} as unknown as ConversationStore,
     },
   }
 }

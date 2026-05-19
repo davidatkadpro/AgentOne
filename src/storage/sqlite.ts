@@ -36,6 +36,32 @@ export interface ConversationStore {
   listToolCallsBySession(sessionId: string): Map<string, StoredToolCall[]>
 
   logEvent(input: { sessionId: string | null; type: AgentEvent['type']; payload: AgentEvent }): void
+
+  searchTurns(opts: SearchTurnsOptions): TurnSearchHit[]
+}
+
+export interface SearchTurnsOptions {
+  query: string
+  limit?: number
+  offset?: number
+  /** Restrict matches to one session (mutually exclusive with excludeSessionId). */
+  sessionId?: string
+  /** Drop matches from a session — typically the caller's current one. */
+  excludeSessionId?: string
+  /** Restrict by role. Defaults to all roles. */
+  roles?: Role[]
+}
+
+export interface TurnSearchHit {
+  turnId: string
+  sessionId: string
+  sessionTitle: string | null
+  role: Role
+  content: string
+  snippet: string
+  createdAt: number
+  /** FTS5 bm25 rank — lower is more relevant. */
+  rank: number
 }
 
 export interface StoredToolCall {
@@ -180,13 +206,17 @@ function rowToToolCall(row: ToolCallRow): StoredToolCall {
  *   now-dropped `turns_v1`, leaving a dangling FK that crashes every
  *   prepare against `tool_calls`. v2 itself is now guarded with
  *   legacy_alter_table=ON so the bug can't recur on fresh migrations.
+ * v4 (M4): adds `turns_fts` (FTS5) over turns.content with AFTER
+ *   INSERT/UPDATE/DELETE triggers to keep the index in sync, backfilling
+ *   from any existing rows. This is the substrate for search_history.
  */
 function migrate(db: Db): void {
   const version = (db.pragma('user_version', { simple: true }) as number) ?? 0
-  if (version >= 3) return
+  if (version >= 4) return
 
   if (version < 2) runV2Migration(db)
   if (version < 3) runV3Migration(db)
+  if (version < 4) runV4Migration(db)
 }
 
 function runV2Migration(db: Db): void {
@@ -253,6 +283,57 @@ function runV2Migration(db: Db): void {
   }
 }
 
+function runV4Migration(db: Db): void {
+  const tx = db.transaction(() => {
+    const ftsExists = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='turns_fts'")
+      .get()
+
+    if (!ftsExists) {
+      db.exec(`
+        CREATE VIRTUAL TABLE turns_fts USING fts5(
+          session_id UNINDEXED,
+          turn_id UNINDEXED,
+          role UNINDEXED,
+          content,
+          tokenize = 'porter unicode61'
+        );
+      `)
+      db.exec(`
+        INSERT INTO turns_fts (session_id, turn_id, role, content)
+        SELECT session_id, id, role, content FROM turns;
+      `)
+    }
+
+    // DROP-IF-EXISTS + CREATE so a half-migrated db (fts table created but
+    // triggers missing from a crashed earlier run) converges to the current
+    // definition. migrate() returns early on user_version>=4, so this block
+    // doesn't run on every boot.
+    db.exec(`
+      DROP TRIGGER IF EXISTS turns_fts_ai;
+      DROP TRIGGER IF EXISTS turns_fts_ad;
+      DROP TRIGGER IF EXISTS turns_fts_au;
+    `)
+    db.exec(`
+      CREATE TRIGGER turns_fts_ai AFTER INSERT ON turns BEGIN
+        INSERT INTO turns_fts (session_id, turn_id, role, content)
+        VALUES (NEW.session_id, NEW.id, NEW.role, NEW.content);
+      END;
+      CREATE TRIGGER turns_fts_ad AFTER DELETE ON turns BEGIN
+        DELETE FROM turns_fts WHERE turn_id = OLD.id;
+      END;
+      CREATE TRIGGER turns_fts_au AFTER UPDATE ON turns BEGIN
+        DELETE FROM turns_fts WHERE turn_id = OLD.id;
+        INSERT INTO turns_fts (session_id, turn_id, role, content)
+        VALUES (NEW.session_id, NEW.id, NEW.role, NEW.content);
+      END;
+    `)
+
+    db.pragma('user_version = 4')
+  })
+  tx()
+}
+
 function runV3Migration(db: Db): void {
   const tcSql = db
     .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tool_calls'")
@@ -304,8 +385,12 @@ function runV3Migration(db: Db): void {
 }
 
 export function createConversationStore(db: Db): ConversationStore {
-  migrate(db)
+  // SCHEMA first so `turns`/`tool_calls` exist on fresh DBs before v4
+  // touches them. On existing DBs the `IF NOT EXISTS` clauses are no-ops, so
+  // v2's stale-schema detection (and v3's FK-repair detection) still see the
+  // original tables and migrate them in place.
   db.exec(SCHEMA)
+  migrate(db)
 
   const insertSession = db.prepare(
     'INSERT INTO sessions (id, title, agent_profile, created_at) VALUES (?, ?, ?, ?)',
@@ -344,6 +429,36 @@ export function createConversationStore(db: Db): ConversationStore {
   const insertEvent = db.prepare(
     'INSERT INTO event_log (session_id, type, payload, created_at) VALUES (?, ?, ?, ?)',
   )
+
+  const searchTurnsStmt = db.prepare<{
+    query: string
+    sessionId: string | null
+    excludeSessionId: string | null
+    rolesJson: string | null
+    limit: number
+    offset: number
+  }>(`
+    SELECT
+      f.turn_id    AS turn_id,
+      f.session_id AS session_id,
+      f.role       AS role,
+      -- column 3 = content in turns_fts (session_id, turn_id, role, content).
+      -- Reorder the CREATE VIRTUAL TABLE columns and you must fix this index.
+      snippet(turns_fts, 3, char(171), char(187), '…', 16) AS snippet,
+      t.content    AS content,
+      t.created_at AS created_at,
+      s.title      AS session_title,
+      f.rank       AS rank
+    FROM turns_fts f
+    JOIN turns t    ON t.id = f.turn_id
+    JOIN sessions s ON s.id = f.session_id
+    WHERE turns_fts MATCH @query
+      AND (@sessionId IS NULL OR f.session_id = @sessionId)
+      AND (@excludeSessionId IS NULL OR f.session_id != @excludeSessionId)
+      AND (@rolesJson IS NULL OR f.role IN (SELECT value FROM json_each(@rolesJson)))
+    ORDER BY f.rank
+    LIMIT @limit OFFSET @offset
+  `)
 
   return {
     createSession({ agentProfile, title = null }) {
@@ -434,6 +549,47 @@ export function createConversationStore(db: Db): ConversationStore {
     logEvent({ sessionId, type, payload }) {
       insertEvent.run(sessionId, type, JSON.stringify(payload), Date.now())
     },
+
+    searchTurns(opts) {
+      // Callers (search_history tool) validate mutual exclusion of
+      // sessionId/excludeSessionId before reaching here. The SQL itself
+      // tolerates both being set — it would just AND them — but the
+      // resulting query is incoherent. Documenting the contract via the
+      // type union; not asserting here.
+      const rows = searchTurnsStmt.all({
+        query: opts.query,
+        sessionId: opts.sessionId ?? null,
+        excludeSessionId: opts.excludeSessionId ?? null,
+        rolesJson: opts.roles && opts.roles.length > 0 ? JSON.stringify(opts.roles) : null,
+        limit: opts.limit ?? 10,
+        offset: opts.offset ?? 0,
+      }) as TurnSearchRow[]
+      return rows.map(rowToTurnSearchHit)
+    },
+  }
+}
+
+interface TurnSearchRow {
+  turn_id: string
+  session_id: string
+  role: string
+  snippet: string
+  content: string
+  created_at: number
+  session_title: string | null
+  rank: number
+}
+
+function rowToTurnSearchHit(row: TurnSearchRow): TurnSearchHit {
+  return {
+    turnId: row.turn_id,
+    sessionId: row.session_id,
+    sessionTitle: row.session_title,
+    role: parseRole(row.role),
+    content: row.content,
+    snippet: row.snippet,
+    createdAt: row.created_at,
+    rank: row.rank,
   }
 }
 

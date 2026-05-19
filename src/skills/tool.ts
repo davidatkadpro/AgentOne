@@ -1,6 +1,7 @@
 import type { z } from 'zod'
 import type { StorageAdapter } from '../storage/adapter.js'
 import type { WikiEngine } from '../memory/wiki/engine.js'
+import type { ConversationStore } from '../storage/sqlite.js'
 
 /**
  * Stable error codes the agent can reason about. Tools should always return
@@ -36,6 +37,7 @@ export type ToolResult<T = unknown> =
 export interface ToolServices {
   storage: StorageAdapter
   wiki: WikiEngine
+  conversationStore: ConversationStore
 }
 
 export interface ToolContext {

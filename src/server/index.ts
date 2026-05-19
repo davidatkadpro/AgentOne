@@ -257,7 +257,7 @@ export async function bootstrap(): Promise<void> {
     skillIndex,
     profile: agentProfile,
     basePrompt: effectiveBasePrompt,
-    services: { storage, wiki },
+    services: { storage, wiki, conversationStore: store },
   })
 
   const app = await buildApp({

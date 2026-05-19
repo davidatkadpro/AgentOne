@@ -12,6 +12,7 @@ import { ToolRegistry } from '../skills/registry.js'
 import type { ToolContext, ToolServices } from '../skills/tool.js'
 import { buildCoreSkillTools } from '../skills/core-tools.js'
 import { buildWikiCoreTools } from '../skills/wiki-core-tools.js'
+import { buildHistoryCoreTools } from '../skills/history-core-tools.js'
 import type { ResolvedAgentProfile } from '../profiles/agent-profile.js'
 import { PermissionGate } from '../profiles/permission-gate.js'
 import { composeSystemMessage } from '../context/prompt-composer.js'
@@ -124,6 +125,10 @@ export class Orchestrator {
     }
 
     for (const t of buildWikiCoreTools()) {
+      registry.register(t)
+    }
+
+    for (const t of buildHistoryCoreTools()) {
       registry.register(t)
     }
 

@@ -26,8 +26,19 @@ the wiki.
 
 ## Conversation history
 
-Past chats across all sessions, queryable via `search_history` (coming in
-M4). For now, current-session history is automatic.
+Past chats across all sessions, queryable via `search_history`. Use it
+when the user refers to something said before, or when answering a
+question that benefits from prior context.
+
+- `search_history({ query, exclude_session_id?, session_id?, roles?, limit?, offset? })`
+  — FTS5 full-text search. Bare tokens are AND-ed; use `OR` for
+  disjunction; wrap multi-word phrases in `"..."`; suffix `*` for prefix
+  match.
+- Pass `exclude_session_id` set to the current session id when you want
+  to recall *prior* memories without re-hitting your own ongoing chat.
+- The wiki is the long-term store. If you find something worth keeping
+  in `search_history`, distill it into a wiki page so it stops needing
+  full-history scans.
 
 ## Documents
 
