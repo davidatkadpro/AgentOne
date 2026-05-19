@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 
 const Env = z.object({
   PORT: z.coerce.number().int().positive().default(3737),
+  HOST: z.string().default('127.0.0.1'),
   DB_PATH: z.string().default('./data/agentone.db'),
   BASE_PROMPT_PATH: z.string().default('./prompts/base.md'),
   MODEL_PROFILES_DIR: z.string().default('./profiles/models'),
@@ -23,6 +24,7 @@ const Env = z.object({
 
 export interface ServerConfig {
   port: number
+  host: string
   dbPath: string
   basePromptPath: string
   modelProfilesDir: string
@@ -42,6 +44,7 @@ export function loadConfigFromEnv(): ServerConfig {
   const parsed = Env.parse(process.env)
   return {
     port: parsed.PORT,
+    host: parsed.HOST,
     dbPath: parsed.DB_PATH,
     basePromptPath: parsed.BASE_PROMPT_PATH,
     modelProfilesDir: parsed.MODEL_PROFILES_DIR,

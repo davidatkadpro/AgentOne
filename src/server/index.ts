@@ -270,9 +270,15 @@ export async function bootstrap(): Promise<void> {
   })
 
   await wiki.whenReady()
-  await app.listen({ port: config.port, host: '127.0.0.1' })
+  await app.listen({ port: config.port, host: config.host })
+  // Show a friendly URL — 0.0.0.0 is a bind address, not a dial address.
+  const displayHost = config.host === '0.0.0.0' ? '<lan-ip>' : config.host
   // eslint-disable-next-line no-console
-  console.log(`AgentOne listening on http://127.0.0.1:${config.port}`)
+  console.log(`AgentOne listening on http://${displayHost}:${config.port}`)
+  if (config.host === '0.0.0.0') {
+    // eslint-disable-next-line no-console
+    console.log('  WARNING: bound to 0.0.0.0 — reachable by anyone on this network. No auth is enforced.')
+  }
   // eslint-disable-next-line no-console
   console.log(
     `  profile=${agentProfile.id}  model=${conversationModel.id}  skills=${skillIndex.skills.size}`,
