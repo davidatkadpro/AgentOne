@@ -12,7 +12,10 @@ import { loadModelProfiles } from '../profiles/model-profile.js'
 import { composeSystemMessage } from '../context/prompt-composer.js'
 import { ContextManager } from '../context/context-manager.js'
 import { LMStudioProvider } from '../providers/lmstudio.js'
+import { createDatabase } from '../storage/db.js'
 import { createConversationStore, type ConversationStore } from '../storage/sqlite.js'
+import { LocalFolderAdapter } from '../storage/local-folder.js'
+import { WikiEngine } from '../memory/wiki/engine.js'
 import { Orchestrator } from '../orchestrator/turn.js'
 import type { ModelProfile } from '../core/types.js'
 
@@ -40,6 +43,7 @@ export interface AppDeps {
   contextManager: ContextManager
   orchestrator: Orchestrator
   conversationModel: ModelProfile
+  wiki: WikiEngine
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
@@ -50,11 +54,16 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     prefix: '/',
   })
 
-  app.get('/api/health', async () => ({
-    status: 'ok',
-    model: deps.conversationModel.id,
-    contextWindow: deps.conversationModel.contextWindow,
-  }))
+  app.get('/api/health', async () => {
+    await deps.wiki.whenReady()
+    return {
+      status: 'ok',
+      model: deps.conversationModel.id,
+      contextWindow: deps.conversationModel.contextWindow,
+      storageRoot: deps.config.storageRoot,
+      wikiPrefix: deps.config.wikiPrefix,
+    }
+  })
 
   app.get('/api/sessions', async () => ({
     sessions: deps.store.listSessions(),
@@ -153,9 +162,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 }
 
 async function drain(stream: AsyncIterable<string>): Promise<void> {
-  for await (const _ of stream) {
-    void _
-  }
+  // The orchestrator's stream emits deltas as observer events; the only
+  // reason to iterate here is to drive its generator past completion so the
+  // finally-block persists the assistant turn.
+  for await (const _ of stream) void _
 }
 
 export async function bootstrap(): Promise<void> {
@@ -169,7 +179,11 @@ export async function bootstrap(): Promise<void> {
     })
   }
 
-  const store = createConversationStore({ path: config.dbPath })
+  const db = createDatabase({ path: config.dbPath })
+  const store = createConversationStore(db)
+  const storage = new LocalFolderAdapter({ root: config.storageRoot })
+  const wiki = new WikiEngine({ storage, db, prefix: config.wikiPrefix })
+
   bus.onAny((e) => {
     if (TRANSIENT_EVENT_TYPES.has(e.type)) return
     if (!('sessionId' in e)) return
@@ -221,8 +235,10 @@ export async function bootstrap(): Promise<void> {
     contextManager,
     orchestrator,
     conversationModel,
+    wiki,
   })
 
+  await wiki.whenReady()
   await app.listen({ port: config.port, host: '127.0.0.1' })
   // eslint-disable-next-line no-console
   console.log(`AgentOne listening on http://127.0.0.1:${config.port}`)

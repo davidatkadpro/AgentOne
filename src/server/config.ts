@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { resolve } from 'node:path'
+
 const Env = z.object({
   PORT: z.coerce.number().int().positive().default(3737),
   DB_PATH: z.string().default('./data/agentone.db'),
@@ -9,7 +11,12 @@ const Env = z.object({
   DEFAULT_MODEL_PROFILE: z.string().default('local-fast'),
   COMPRESSOR_MODEL_PROFILE: z.string().default('local-compressor'),
   FRONTEND_DIR: z.string().default('./src/frontend'),
-  LOG_EVENTS: z.string().default('0'),
+  STORAGE_ROOT: z.string().default('./storage'),
+  WIKI_PREFIX: z.string().default('wiki'),
+  LOG_EVENTS: z
+    .enum(['0', '1', 'true', 'false'])
+    .default('0')
+    .transform((v) => v === '1' || v === 'true'),
 })
 
 export interface ServerConfig {
@@ -21,6 +28,8 @@ export interface ServerConfig {
   defaultModelProfile: string
   compressorModelProfile: string
   frontendDir: string
+  storageRoot: string
+  wikiPrefix: string
   logEvents: boolean
 }
 
@@ -35,6 +44,8 @@ export function loadConfigFromEnv(): ServerConfig {
     defaultModelProfile: parsed.DEFAULT_MODEL_PROFILE,
     compressorModelProfile: parsed.COMPRESSOR_MODEL_PROFILE,
     frontendDir: parsed.FRONTEND_DIR,
-    logEvents: parsed.LOG_EVENTS === '1' || parsed.LOG_EVENTS.toLowerCase() === 'true',
+    storageRoot: resolve(parsed.STORAGE_ROOT),
+    wikiPrefix: parsed.WIKI_PREFIX,
+    logEvents: parsed.LOG_EVENTS,
   }
 }

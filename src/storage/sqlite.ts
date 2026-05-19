@@ -1,10 +1,8 @@
-import Database from 'better-sqlite3'
-import { dirname } from 'node:path'
-import { mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import type { Session, Turn, Role, Message } from '../core/types.js'
 import { countTokens } from '../core/tokenizer.js'
 import type { AgentEvent } from '../core/events.js'
+import type { Db } from './db.js'
 
 export interface ConversationStore {
   createSession(input: { agentProfile: string; title?: string | null }): Session
@@ -17,14 +15,6 @@ export interface ConversationStore {
   getTurn(turnId: string): Turn | undefined
 
   logEvent(input: { sessionId: string | null; type: AgentEvent['type']; payload: AgentEvent }): void
-
-  close(): void
-}
-
-export interface CreateStoreOptions {
-  path: string
-  /** If true, do not create the parent directory. Useful for ":memory:". */
-  skipMkdir?: boolean
 }
 
 const SCHEMA = `
@@ -46,6 +36,19 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS tool_calls (
+  id TEXT PRIMARY KEY,
+  turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+  tool TEXT NOT NULL,
+  args_json TEXT NOT NULL,
+  result_json TEXT,
+  ok INTEGER NOT NULL,
+  duration_ms INTEGER,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_calls_turn ON tool_calls(turn_id);
 
 CREATE TABLE IF NOT EXISTS event_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,16 +106,7 @@ function rowToTurn(row: TurnRow): Turn {
   }
 }
 
-export function createConversationStore(opts: CreateStoreOptions): ConversationStore {
-  if (!opts.skipMkdir && opts.path !== ':memory:') {
-    mkdirSync(dirname(opts.path), { recursive: true })
-  }
-  const db = new Database(opts.path)
-  db.pragma('journal_mode = WAL')
-  // synchronous=NORMAL is durable under WAL; FULL fsyncs on every commit
-  // and makes append-heavy workloads (turns + event_log) painfully slow on Windows.
-  db.pragma('synchronous = NORMAL')
-  db.pragma('foreign_keys = ON')
+export function createConversationStore(db: Db): ConversationStore {
   db.exec(SCHEMA)
 
   const insertSession = db.prepare(
@@ -195,10 +189,6 @@ export function createConversationStore(opts: CreateStoreOptions): ConversationS
 
     logEvent({ sessionId, type, payload }) {
       insertEvent.run(sessionId, type, JSON.stringify(payload), Date.now())
-    },
-
-    close() {
-      db.close()
     },
   }
 }
