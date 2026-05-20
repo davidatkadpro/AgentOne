@@ -3,6 +3,11 @@ import type { StorageAdapter } from '../storage/adapter.js'
 import type { WikiEngine } from '../memory/wiki/engine.js'
 import type { ConversationStore } from '../storage/sqlite.js'
 import type { HybridRecall } from '../search/hybrid.js'
+import type { ProviderRegistry } from '../providers/registry.js'
+import type { ModelProfile } from '../core/types.js'
+import type { EventBus } from '../core/events.js'
+import type { PermissionGate } from '../profiles/permission-gate.js'
+import type { ExpertSpendTracker } from './expert-spend.js'
 
 /**
  * Stable error codes the agent can reason about. Tools should always return
@@ -40,12 +45,24 @@ export interface ToolServices {
   wiki: WikiEngine
   conversationStore: ConversationStore
   recall: HybridRecall
+  /** Providers keyed by id ('lmstudio', 'openrouter'). Used by consult_expert. */
+  providers: ProviderRegistry
+  /** Model profiles keyed by their id. consult_expert looks up the expert
+   *  model and its provider here. */
+  modelProfiles: Map<string, ModelProfile>
+  eventBus: EventBus
 }
 
 export interface ToolContext {
   sessionId: string
   agentProfile: string
   services: ToolServices
+  /** Per-session permission gate; consult_expert and load_skill check this
+   *  before invoking. Passed via ctx so the gate reflects the *current*
+   *  session's agent profile rather than a process-wide default. */
+  permissions: PermissionGate
+  /** Per-session running USD spend on expert calls. */
+  expertSpend: ExpertSpendTracker
 }
 
 export type ToolHandler<P extends z.ZodTypeAny = z.ZodTypeAny> = (

@@ -13,6 +13,8 @@ import { loadModelProfiles } from '../profiles/model-profile.js'
 import { loadAgentProfile } from '../profiles/agent-profile.js'
 import { ContextManager } from '../context/context-manager.js'
 import { LMStudioProvider } from '../providers/lmstudio.js'
+import { OpenRouterProvider } from '../providers/openrouter.js'
+import { ProviderRegistry } from '../providers/registry.js'
 import { createDatabase } from '../storage/db.js'
 import { createConversationStore, type ConversationStore } from '../storage/sqlite.js'
 import { LocalFolderAdapter } from '../storage/local-folder.js'
@@ -346,21 +348,41 @@ export async function bootstrap(): Promise<void> {
     throw new Error(`Compressor Model Profile not found: ${compressorModelId}`)
   }
 
-  const provider = new LMStudioProvider({ baseUrl: config.lmStudioBaseUrl })
+  // Build a provider registry — LMStudio is always registered; OpenRouter is
+  // registered only when an API key is configured. The orchestrator + recall
+  // + indexer continue to use the local provider directly because the
+  // conversation/compressor/embedding models are local-fast / local-compressor /
+  // local-embed. consult_expert looks up providers via the registry.
+  const providers = new ProviderRegistry()
+  const lmstudio = new LMStudioProvider({ baseUrl: config.lmStudioBaseUrl })
+  providers.register(lmstudio)
+  if (config.openRouterApiKey) {
+    providers.register(
+      new OpenRouterProvider({
+        baseUrl: config.openRouterBaseUrl,
+        apiKey: config.openRouterApiKey,
+        appTitle: config.openRouterAppTitle,
+        ...(config.openRouterHttpReferer && { httpReferer: config.openRouterHttpReferer }),
+      }),
+    )
+  }
+  const conversationProvider = providers.get(conversationModel.provider)
+  const compressorProvider = providers.get(compressorModel.provider)
 
   // Embedding profile is optional — if it's not configured we still run, but
   // search_history degrades to FTS5-only and no background indexing fires.
   const embeddingModel = modelProfiles.get(config.embeddingModelProfile)
+  const embeddingProvider = embeddingModel ? providers.get(embeddingModel.provider) : null
   const recall = buildHybridRecall({
     store,
-    provider,
+    provider: embeddingProvider ?? conversationProvider,
     embeddingModel: embeddingModel?.model ?? '',
     eventBus: bus,
   })
-  const indexer = embeddingModel
+  const indexer = embeddingModel && embeddingProvider
     ? new EmbeddingIndexer({
         store,
-        provider,
+        provider: embeddingProvider,
         model: embeddingModel.model,
         eventBus: bus,
       })
@@ -373,7 +395,7 @@ export async function bootstrap(): Promise<void> {
   }
 
   const contextManager = new ContextManager({
-    compressorProvider: provider,
+    compressorProvider,
     compressorModel: compressorModel.model,
     contextWindow: conversationModel.contextWindow,
     eventBus: bus,
@@ -397,13 +419,21 @@ export async function bootstrap(): Promise<void> {
   const orchestrator = new Orchestrator({
     store,
     contextManager,
-    provider,
+    provider: conversationProvider,
     conversationModel,
     eventBus: bus,
     skillIndex,
     profile: agentProfile,
     basePrompt: effectiveBasePrompt,
-    services: { storage, wiki, conversationStore: store, recall },
+    services: {
+      storage,
+      wiki,
+      conversationStore: store,
+      recall,
+      providers,
+      modelProfiles,
+      eventBus: bus,
+    },
   })
 
   const commands = buildCommandRegistry(skillIndex)

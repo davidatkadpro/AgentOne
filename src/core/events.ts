@@ -100,6 +100,25 @@ export type AgentEvent =
       reason: string
       ts: number
     }
+  | {
+      type: 'expert.consulted'
+      sessionId: string
+      expert: string
+      model: string
+      inputTokens: number
+      outputTokens: number
+      costUsd: number
+      sessionSpendUsd: number
+      ts: number
+    }
+  | {
+      type: 'expert.budget_exceeded'
+      sessionId: string
+      expert: string
+      costUsd: number
+      perCallBudgetUsd: number
+      ts: number
+    }
 
 export type EventType = AgentEvent['type']
 export type EventByType<T extends EventType> = Extract<AgentEvent, { type: T }>

@@ -85,4 +85,8 @@ export interface ChatResponse {
   outputTokens: number
   finishReason: 'stop' | 'length' | 'tool_calls' | 'error'
   toolCalls?: ToolCallSpec[]
+  /** USD cost reported by the provider for this call. Present when the
+   *  provider surfaces pricing (OpenRouter does when `usage.include=true`);
+   *  absent for local providers. */
+  costUsd?: number
 }

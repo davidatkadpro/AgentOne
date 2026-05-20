@@ -6,6 +6,10 @@ import type { StorageAdapter } from '@/storage/adapter.js'
 import type { WikiEngine } from '@/memory/wiki/engine.js'
 import type { ConversationStore } from '@/storage/sqlite.js'
 import type { HybridRecall } from '@/search/hybrid.js'
+import { ProviderRegistry } from '@/providers/registry.js'
+import { ExpertSpendTracker } from '@/skills/expert-spend.js'
+import type { PermissionGate } from '@/profiles/permission-gate.js'
+import { EventBus } from '@/core/events.js'
 
 function fakeCtx(): ToolContext {
   return {
@@ -16,7 +20,12 @@ function fakeCtx(): ToolContext {
       wiki: {} as unknown as WikiEngine,
       conversationStore: {} as unknown as ConversationStore,
       recall: {} as unknown as HybridRecall,
+      providers: new ProviderRegistry(),
+      modelProfiles: new Map(),
+      eventBus: new EventBus(),
     },
+    permissions: {} as unknown as PermissionGate,
+    expertSpend: new ExpertSpendTracker(),
   }
 }
 

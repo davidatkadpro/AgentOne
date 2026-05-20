@@ -6,6 +6,10 @@ import type { ToolContext } from '@/skills/tool.js'
 import type { StorageAdapter } from '@/storage/adapter.js'
 import type { WikiEngine } from '@/memory/wiki/engine.js'
 import type { HybridRecall } from '@/search/hybrid.js'
+import { ProviderRegistry } from '@/providers/registry.js'
+import { ExpertSpendTracker } from '@/skills/expert-spend.js'
+import type { PermissionGate } from '@/profiles/permission-gate.js'
+import { EventBus } from '@/core/events.js'
 
 function makeCtx(store: ConversationStore): ToolContext {
   // Test-only recall stub: delegate straight to the FTS5 store path so the
@@ -23,7 +27,12 @@ function makeCtx(store: ConversationStore): ToolContext {
       wiki: {} as unknown as WikiEngine,
       conversationStore: store,
       recall,
+      providers: new ProviderRegistry(),
+      modelProfiles: new Map(),
+      eventBus: new EventBus(),
     },
+    permissions: {} as unknown as PermissionGate,
+    expertSpend: new ExpertSpendTracker(),
   }
 }
 

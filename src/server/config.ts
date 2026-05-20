@@ -11,6 +11,12 @@ const Env = z.object({
   AGENT_PROFILE: z.string().default('_base'),
   SKILLS_DIR: z.string().default('./skills'),
   LMSTUDIO_BASE_URL: z.string().url().default('http://localhost:1234/v1'),
+  OPENROUTER_BASE_URL: z.string().url().default('https://openrouter.ai/api/v1'),
+  OPENROUTER_API_KEY: z.string().optional(),
+  // Optional metadata OpenRouter recommends sending. They surface app name in
+  // their dashboard and respect HTTP-Referer for rate-limit identity.
+  OPENROUTER_APP_TITLE: z.string().default('AgentOne'),
+  OPENROUTER_HTTP_REFERER: z.string().optional(),
   DEFAULT_MODEL_PROFILE: z.string().default('local-fast'),
   COMPRESSOR_MODEL_PROFILE: z.string().default('local-compressor'),
   EMBEDDING_MODEL_PROFILE: z.string().default('local-embed'),
@@ -33,6 +39,10 @@ export interface ServerConfig {
   agentProfile: string
   skillsDir: string
   lmStudioBaseUrl: string
+  openRouterBaseUrl: string
+  openRouterApiKey: string | null
+  openRouterAppTitle: string
+  openRouterHttpReferer: string | null
   defaultModelProfile: string
   compressorModelProfile: string
   embeddingModelProfile: string
@@ -54,6 +64,10 @@ export function loadConfigFromEnv(): ServerConfig {
     agentProfile: parsed.AGENT_PROFILE,
     skillsDir: resolve(parsed.SKILLS_DIR),
     lmStudioBaseUrl: parsed.LMSTUDIO_BASE_URL,
+    openRouterBaseUrl: parsed.OPENROUTER_BASE_URL,
+    openRouterApiKey: parsed.OPENROUTER_API_KEY ?? null,
+    openRouterAppTitle: parsed.OPENROUTER_APP_TITLE,
+    openRouterHttpReferer: parsed.OPENROUTER_HTTP_REFERER ?? null,
     defaultModelProfile: parsed.DEFAULT_MODEL_PROFILE,
     compressorModelProfile: parsed.COMPRESSOR_MODEL_PROFILE,
     embeddingModelProfile: parsed.EMBEDDING_MODEL_PROFILE,

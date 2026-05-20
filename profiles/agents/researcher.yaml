@@ -1,0 +1,19 @@
+id: researcher
+description: Local conversation with the ability to consult a stronger OpenRouter expert when stuck. Requires OPENROUTER_API_KEY.
+extends: _base
+default_skills:
+  - system/filesystem
+  - system/shell
+  - system/web
+  - system/memory
+  - experts/consult
+permissions:
+  skills:
+    allow:
+      - system/*
+      - experts/consult
+  experts:
+    allow:
+      - openrouter-claude-sonnet
+    budget_per_call_usd: 0.50
+    budget_per_session_usd: 5.00

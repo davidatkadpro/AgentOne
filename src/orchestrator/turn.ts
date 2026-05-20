@@ -16,6 +16,7 @@ import { buildHistoryCoreTools } from '../skills/history-core-tools.js'
 import type { ResolvedAgentProfile } from '../profiles/agent-profile.js'
 import { PermissionGate } from '../profiles/permission-gate.js'
 import { composeSystemMessage } from '../context/prompt-composer.js'
+import { ExpertSpendTracker } from '../skills/expert-spend.js'
 
 export interface OrchestratorConfig {
   store: ConversationStore
@@ -43,6 +44,7 @@ interface SessionState {
   loadedSkills: Set<string>
   permissions: PermissionGate
   systemMessage: Message
+  expertSpend: ExpertSpendTracker
 }
 
 const DEFAULT_MAX_ITERATIONS = 8
@@ -283,7 +285,8 @@ export class Orchestrator {
       categories,
     })
 
-    return { sessionId, registry, loadedSkills, permissions, systemMessage }
+    const expertSpend = new ExpertSpendTracker()
+    return { sessionId, registry, loadedSkills, permissions, systemMessage, expertSpend }
   }
 
   private async *runToolLoop(state: SessionState): AsyncIterable<string> {
@@ -399,6 +402,8 @@ export class Orchestrator {
           sessionId: state.sessionId,
           agentProfile: this.cfg.profile.id,
           services: this.cfg.services,
+          permissions: state.permissions,
+          expertSpend: state.expertSpend,
         }
         for (const call of toolCalls) {
           const row = this.cfg.store.appendToolCall({

@@ -28,6 +28,16 @@ export class PermissionGate {
     if (this.profile.permissions.experts.allow.includes(modelId)) return { verdict: 'allow' }
     return { verdict: 'deny', reason: 'expert not in allow list' }
   }
+
+  /** Returns null when the profile sets no per-call cap (i.e. unlimited). */
+  budgetPerCallUsd(): number | null {
+    return this.profile.permissions.experts.budgetPerCallUsd
+  }
+
+  /** Returns null when the profile sets no per-session cap (i.e. unlimited). */
+  budgetPerSessionUsd(): number | null {
+    return this.profile.permissions.experts.budgetPerSessionUsd
+  }
 }
 
 function matchesAny(name: string, patterns: readonly string[]): string | null {
