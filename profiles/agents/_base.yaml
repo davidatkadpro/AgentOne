@@ -7,6 +7,7 @@ default_skills:
   - system/shell
   - system/web
   - system/memory
+  - system/documents
 permissions:
   skills:
     allow:

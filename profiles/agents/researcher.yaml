@@ -6,6 +6,7 @@ default_skills:
   - system/shell
   - system/web
   - system/memory
+  - system/documents
   - experts/consult
 permissions:
   skills:

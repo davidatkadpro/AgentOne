@@ -18,13 +18,17 @@
     "fastify": "^4.28.1",
     "gpt-tokenizer": "^2.5.0",
     "js-yaml": "^4.1.0",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5",
     "sqlite-vec": "^0.1.9",
+    "xlsx": "^0.18.5",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.7.5",
+    "@types/pdf-parse": "^1.1.5",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3",
     "vitest": "^2.1.2"

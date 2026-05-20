@@ -25,7 +25,7 @@ export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
     if (!isTextLike(args.path)) {
       return fail(
         'TOOL_VALIDATION',
-        `read_file refuses to read non-text path "${args.path}". Use system/documents skill (when available) for binaries.`,
+        `read_file refuses to read non-text path "${args.path}". Load the system/documents skill and call read_document for PDF / DOCX / XLSX.`,
         false,
       )
     }
