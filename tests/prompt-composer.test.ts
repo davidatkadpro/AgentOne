@@ -32,8 +32,8 @@ describe('composeSystemMessage', () => {
       basePrompt: 'You are AgentOne.',
       agentProfilePrompt: 'You are a researcher.',
       defaultSkills: [
-        { name: 'system/filesystem', description: 'read/write/edit files', path: 'skills/system/filesystem' },
-        { name: 'system/memory', description: 'recall heuristics', path: 'skills/system/memory' },
+        { name: 'system/filesystem', description: 'read/write/edit files' },
+        { name: 'system/memory', description: 'recall heuristics' },
       ],
       categories: [
         { name: 'system', description: 'foundational capabilities' },
@@ -52,11 +52,15 @@ describe('composeSystemMessage', () => {
 
       ## Default skills
 
-      - system/filesystem: read/write/edit files [skills/system/filesystem]
-      - system/memory: recall heuristics [skills/system/memory]
+      These skills are available but not pre-loaded — call \`load_skill\` with the name to use them.
+
+      - system/filesystem: read/write/edit files
+      - system/memory: recall heuristics
       ---
 
-      ## Skill categories (use list_skills to explore)
+      ## Skill categories
+
+      For skills beyond the defaults, call \`list_skills\` (optionally with \`category\` or \`query\`).
 
       - system: foundational capabilities
       - research: research and citation tracking
@@ -72,7 +76,7 @@ describe('composeSystemMessage', () => {
     const msg = composeSystemMessage({
       basePrompt: 'A',
       agentProfilePrompt: 'B',
-      defaultSkills: [{ name: 'x/y', description: 'z', path: 'p' }],
+      defaultSkills: [{ name: 'x/y', description: 'z' }],
       categories: [{ name: 'cat', description: 'desc' }],
       storageLayoutHint: 'storage',
     })

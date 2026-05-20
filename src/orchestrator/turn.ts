@@ -91,9 +91,10 @@ export class Orchestrator {
   }
 
   /**
-   * Manually load a non-default skill into an existing session. Returns
-   * enough detail for the caller to distinguish: already-loaded, freshly
-   * loaded with N tools, denied by permissions, or load-failed with a reason.
+   * Manually load a skill into an existing session (e.g. via /load slash
+   * command). Returns enough detail for the caller to distinguish:
+   * already-loaded, freshly loaded with N tools, denied by permissions, or
+   * load-failed with a reason.
    */
   async loadSkillIntoSession(
     sessionId: string,
@@ -258,23 +259,17 @@ export class Orchestrator {
       registry.register(t)
     }
 
-    for (const skillName of this.cfg.profile.defaultSkills) {
-      await this.loadSkillIntoRegistry({
-        skillName,
-        registry,
-        loadedSkills,
-        permissions,
-        sessionId,
-      })
-    }
-
+    // Default skills are surfaced in the system prompt by header (name +
+    // description) but NOT eagerly loaded — their tool schemas would cost
+    // ~8 entries in context on every turn. The model calls `load_skill` on
+    // first use, which imports the handlers and registers the tools for the
+    // rest of the session.
     const defaultSkillHeaders = this.cfg.profile.defaultSkills
       .map((qn) => this.cfg.skillIndex.skills.get(qn))
       .filter((m): m is NonNullable<typeof m> => Boolean(m))
       .map((m) => ({
         name: m.qualifiedName,
         description: m.description,
-        path: m.qualifiedName,
       }))
 
     const categories = [...this.cfg.skillIndex.categories.values()].map((c) => ({

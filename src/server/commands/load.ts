@@ -7,7 +7,7 @@ const args = z.object({
 
 export const loadCommand = defineCommand({
   name: 'load',
-  description: 'Load a non-default skill into the current session.',
+  description: 'Load a skill into the current session.',
   usage: '/load <category>/<skill>',
   args,
   requiresSession: true,

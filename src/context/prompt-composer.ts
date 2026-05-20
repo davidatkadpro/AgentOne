@@ -3,7 +3,7 @@ import type { Message } from '../core/types.js'
 export interface PromptInputs {
   basePrompt: string
   agentProfilePrompt?: string
-  defaultSkills?: Array<{ name: string; description: string; path: string }>
+  defaultSkills?: Array<{ name: string; description: string }>
   categories?: Array<{ name: string; description: string }>
   storageLayoutHint?: string
 }
@@ -26,14 +26,22 @@ export function composeSystemMessage(inputs: PromptInputs): Message {
 
   if (inputs.defaultSkills && inputs.defaultSkills.length > 0) {
     const body = inputs.defaultSkills
-      .map((s) => `- ${s.name}: ${s.description} [${s.path}]`)
+      .map((s) => `- ${s.name}: ${s.description}`)
       .join('\n')
-    parts.push(`## Default skills\n\n${body}`)
+    parts.push(
+      `## Default skills\n\n` +
+        `These skills are available but not pre-loaded — call \`load_skill\` ` +
+        `with the name to use them.\n\n${body}`,
+    )
   }
 
   if (inputs.categories && inputs.categories.length > 0) {
     const body = inputs.categories.map((c) => `- ${c.name}: ${c.description}`).join('\n')
-    parts.push(`## Skill categories (use list_skills to explore)\n\n${body}`)
+    parts.push(
+      `## Skill categories\n\n` +
+        `For skills beyond the defaults, call \`list_skills\` (optionally with ` +
+        `\`category\` or \`query\`).\n\n${body}`,
+    )
   }
 
   if (inputs.storageLayoutHint && inputs.storageLayoutHint.trim()) {
