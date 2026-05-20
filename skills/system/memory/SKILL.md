@@ -40,6 +40,19 @@ question that benefits from prior context.
   in `search_history`, distill it into a wiki page so it stops needing
   full-history scans.
 
+### Query strategy — important
+
+FTS5 is literal. If the user said "favourite colour" and you search for
+"favorite color", you get zero hits.
+
+- Start with **just the unusual nouns** the user is likely to have used.
+  `colour` alone is far better than `favorite colour color`.
+- For common variants use `OR` between forms:
+  `favourite OR favorite`, `colour OR color`, `behaviour OR behavior`.
+- If your first query returns zero hits, **try a broader single-token
+  query before giving up.** Don't tell the user "I have no memory of
+  that" without retrying.
+
 ## Documents
 
 Stakeholder-authored files under `projects/` — PDFs, scope documents, CAD

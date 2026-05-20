@@ -51,6 +51,9 @@ const DEFAULT_SESSION_CACHE_MAX = 32
 const MAX_ITER_HIT_NOTICE =
   '[Tool loop terminated: iteration cap reached. The agent issued more tool calls than permitted in a single user message. Re-prompt to continue.]'
 
+const EMPTY_TURN_NOTICE =
+  '[The model produced no response. This usually means an empty tool result confused it. Try rephrasing, or send another message to nudge it.]'
+
 /**
  * Multi-turn tool-calling orchestrator. Owns a per-session ToolRegistry
  * (Core tools + tools registered by loaded skills), runs the model in a loop
@@ -352,10 +355,26 @@ export class Orchestrator {
         totalInputTokens += iterInput
         totalOutputTokens += iterOutput
 
+        // When the model finishes without tool calls but produced no text,
+        // persist (and stream) a placeholder so the user sees something
+        // actionable instead of a blank turn. Observed with reasoning models
+        // after a tool call returned an empty result.
+        let persistedContent = collected
+        if (toolCalls.length === 0 && collected.trim().length === 0) {
+          persistedContent = EMPTY_TURN_NOTICE
+          void this.cfg.eventBus.emit({
+            type: 'message.assistant.delta',
+            sessionId: state.sessionId,
+            turnId: iterationTurnId,
+            delta: EMPTY_TURN_NOTICE,
+          })
+          yield EMPTY_TURN_NOTICE
+        }
+
         const assistantTurn = this.cfg.store.appendTurn({
           sessionId: state.sessionId,
           role: 'assistant',
-          content: collected,
+          content: persistedContent,
         })
 
         if (toolCalls.length === 0) {

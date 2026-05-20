@@ -45,6 +45,8 @@ interface OpenAIStreamChunk {
   choices: Array<{
     delta?: {
       content?: string
+      /** Reasoning models (qwen3.x, deepseek) emit the chain-of-thought here. */
+      reasoning_content?: string
       tool_calls?: OpenAIToolCallDelta[]
     }
     finish_reason?: string | null
@@ -83,28 +85,54 @@ export class LMStudioProvider implements Provider {
   }
 
   async *stream(req: ChatRequest): AsyncIterable<ChatChunk> {
-    const res = await this.callWithRetry('/chat/completions', this.toBody({ req, stream: true }))
+    const body = this.toBody({ req, stream: true })
+    const debug = process.env.LMSTUDIO_DEBUG === '1'
+    if (debug) {
+      // eslint-disable-next-line no-console
+      console.error('[lmstudio.stream] request body:', JSON.stringify(body).slice(0, 2000))
+    }
+    const res = await this.callWithRetry('/chat/completions', body)
     if (!res.body) throw new ProviderError('No response body for stream', 'BAD_RESPONSE')
 
     let inputTokens = 0
     let outputTokens = 0
     let finishReason: 'stop' | 'length' | 'tool_calls' | 'error' = 'stop'
     const toolCallBuffers = new Map<number, { id: string; name: string; arguments: string }>()
+    let chunkCount = 0
+    let contentCount = 0
+    let toolCallChunkCount = 0
+    // Reasoning models (qwen3.x, deepseek-r) sometimes put the entire response
+    // in `reasoning_content` and never emit `content`. We buffer it as a
+    // fallback so we don't silently drop the answer.
+    let reasoningBuffer = ''
+    let contentEmitted = false
 
     for await (const event of parseSSE(res.body)) {
       if (event === '[DONE]') break
+      chunkCount++
       let parsed: OpenAIStreamChunk
       try {
         parsed = JSON.parse(event) as OpenAIStreamChunk
-      } catch {
+      } catch (err) {
+        if (debug) {
+          // eslint-disable-next-line no-console
+          console.error('[lmstudio.stream] JSON.parse failure:', (err as Error).message, 'event:', event.slice(0, 200))
+        }
         continue
       }
       const choice = parsed.choices?.[0]
       if (!choice) continue
       const deltaText = choice.delta?.content ?? ''
-      if (deltaText) yield { delta: deltaText, done: false }
+      if (deltaText) {
+        contentCount++
+        contentEmitted = true
+        yield { delta: deltaText, done: false }
+      }
+      const reasoningDelta = choice.delta?.reasoning_content ?? ''
+      if (reasoningDelta) reasoningBuffer += reasoningDelta
 
       if (choice.delta?.tool_calls) {
+        toolCallChunkCount++
         for (const tc of choice.delta.tool_calls) {
           const buf = toolCallBuffers.get(tc.index) ?? { id: '', name: '', arguments: '' }
           if (tc.id) buf.id = tc.id
@@ -120,8 +148,28 @@ export class LMStudioProvider implements Provider {
         outputTokens = parsed.usage.completion_tokens ?? outputTokens
       }
     }
-
     const toolCalls = assembleToolCalls(toolCallBuffers)
+    // Reasoning-model fallback: if the model produced *only* reasoning and no
+    // content (qwen3.x, deepseek-r occasionally do this on tool-result
+    // continuations), surface the reasoning as the response so the answer
+    // isn't silently dropped. Skipped when a tool call is in flight, since
+    // reasoning is internal to the tool-decision step.
+    let usedReasoningFallback = false
+    if (
+      !contentEmitted &&
+      finishReason === 'stop' &&
+      (!toolCalls || toolCalls.length === 0) &&
+      reasoningBuffer.trim().length > 0
+    ) {
+      usedReasoningFallback = true
+      yield { delta: reasoningBuffer, done: false }
+    }
+    if (debug) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[lmstudio.stream] chunks=${chunkCount} content=${contentCount} toolCallChunks=${toolCallChunkCount} reasoningChars=${reasoningBuffer.length} reasoningFallback=${usedReasoningFallback} finish=${finishReason} in=${inputTokens} out=${outputTokens}`,
+      )
+    }
     yield { delta: '', done: true, inputTokens, outputTokens, finishReason, toolCalls }
   }
 
