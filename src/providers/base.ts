@@ -3,6 +3,21 @@ import type { ChatChunk, ChatRequest, ChatResponse } from '../core/types.js'
 export interface ProviderCapabilities {
   streaming: boolean
   tools: boolean
+  /** Set true when the provider implements `embed()`. */
+  embeddings?: boolean
+}
+
+export interface EmbedRequest {
+  model: string
+  input: string[]
+}
+
+export interface EmbedResponse {
+  model: string
+  /** One vector per input, in order. */
+  embeddings: number[][]
+  /** Total tokens consumed across inputs (provider-reported, may be 0). */
+  tokens: number
 }
 
 export interface Provider {
@@ -14,6 +29,12 @@ export interface Provider {
 
   /** Streaming chat. Yields deltas; the final chunk has done=true and totals. */
   stream(req: ChatRequest): AsyncIterable<ChatChunk>
+
+  /**
+   * Batch-embed text inputs. Optional — providers without an embeddings
+   * endpoint may omit this; callers should consult `capabilities.embeddings`.
+   */
+  embed?(req: EmbedRequest): Promise<EmbedResponse>
 }
 
 export class ProviderError extends Error {

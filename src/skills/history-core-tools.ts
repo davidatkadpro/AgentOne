@@ -47,7 +47,7 @@ export function buildHistoryCoreTools(): RegisteredTool[] {
       )
     }
     try {
-      const searchOpts: Parameters<typeof ctx.services.conversationStore.searchTurns>[0] = {
+      const searchOpts: Parameters<typeof ctx.services.recall.searchHistory>[0] = {
         query: args.query,
         limit: args.limit,
         offset: args.offset,
@@ -56,7 +56,9 @@ export function buildHistoryCoreTools(): RegisteredTool[] {
       if (args.exclude_session_id !== undefined)
         searchOpts.excludeSessionId = args.exclude_session_id
       if (args.roles !== undefined) searchOpts.roles = args.roles
-      const hits = ctx.services.conversationStore.searchTurns(searchOpts)
+      // Hybrid: FTS5 lexical + vector semantic, merged via reciprocal rank
+      // fusion. Falls back to FTS5-only if the embedding provider is missing.
+      const hits = await ctx.services.recall.searchHistory(searchOpts)
       return ok({
         count: hits.length,
         hits: hits.map((h) => ({

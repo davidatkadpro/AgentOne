@@ -18,6 +18,7 @@
     "fastify": "^4.28.1",
     "gpt-tokenizer": "^2.5.0",
     "js-yaml": "^4.1.0",
+    "sqlite-vec": "^0.1.9",
     "zod": "^3.23.8"
   },
   "devDependencies": {

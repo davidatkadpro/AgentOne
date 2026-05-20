@@ -13,6 +13,7 @@ const Env = z.object({
   LMSTUDIO_BASE_URL: z.string().url().default('http://localhost:1234/v1'),
   DEFAULT_MODEL_PROFILE: z.string().default('local-fast'),
   COMPRESSOR_MODEL_PROFILE: z.string().default('local-compressor'),
+  EMBEDDING_MODEL_PROFILE: z.string().default('local-embed'),
   FRONTEND_DIR: z.string().default('./src/frontend'),
   STORAGE_ROOT: z.string().default('./storage'),
   WIKI_PREFIX: z.string().default('wiki'),
@@ -34,6 +35,7 @@ export interface ServerConfig {
   lmStudioBaseUrl: string
   defaultModelProfile: string
   compressorModelProfile: string
+  embeddingModelProfile: string
   frontendDir: string
   storageRoot: string
   wikiPrefix: string
@@ -54,6 +56,7 @@ export function loadConfigFromEnv(): ServerConfig {
     lmStudioBaseUrl: parsed.LMSTUDIO_BASE_URL,
     defaultModelProfile: parsed.DEFAULT_MODEL_PROFILE,
     compressorModelProfile: parsed.COMPRESSOR_MODEL_PROFILE,
+    embeddingModelProfile: parsed.EMBEDDING_MODEL_PROFILE,
     frontendDir: parsed.FRONTEND_DIR,
     storageRoot: resolve(parsed.STORAGE_ROOT),
     wikiPrefix: parsed.WIKI_PREFIX,

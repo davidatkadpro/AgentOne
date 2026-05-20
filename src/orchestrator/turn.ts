@@ -355,13 +355,13 @@ export class Orchestrator {
         totalInputTokens += iterInput
         totalOutputTokens += iterOutput
 
-        // When the model finishes without tool calls but produced no text,
-        // persist (and stream) a placeholder so the user sees something
-        // actionable instead of a blank turn. Observed with reasoning models
-        // after a tool call returned an empty result.
-        let persistedContent = collected
+        // When the model finishes without tool calls and produced no text,
+        // stream a placeholder so the UI shows something actionable. The
+        // notice is NOT persisted to `turns.content` — turnsToMessages
+        // would otherwise replay it back to the model on the next iteration
+        // and the model would treat its own former silence as a real prior
+        // message. Empty assistant turns are filtered out at history rebuild.
         if (toolCalls.length === 0 && collected.trim().length === 0) {
-          persistedContent = EMPTY_TURN_NOTICE
           void this.cfg.eventBus.emit({
             type: 'message.assistant.delta',
             sessionId: state.sessionId,
@@ -374,7 +374,7 @@ export class Orchestrator {
         const assistantTurn = this.cfg.store.appendTurn({
           sessionId: state.sessionId,
           role: 'assistant',
-          content: persistedContent,
+          content: collected,
         })
 
         if (toolCalls.length === 0) {

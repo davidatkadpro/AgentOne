@@ -1,0 +1,6 @@
+id: local-embed
+provider: lmstudio
+model: text-embedding-nomic-embed-text-v1.5
+role: embedding
+context_window: 8192
+params: {}

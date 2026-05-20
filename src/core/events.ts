@@ -88,6 +88,18 @@ export type AgentEvent =
       reason: string
       ts: number
     }
+  | {
+      type: 'embedding.indexed'
+      sessionId: null
+      turnsIndexed: number
+      ts: number
+    }
+  | {
+      type: 'embedding.failed'
+      sessionId: null
+      reason: string
+      ts: number
+    }
 
 export type EventType = AgentEvent['type']
 export type EventByType<T extends EventType> = Extract<AgentEvent, { type: T }>

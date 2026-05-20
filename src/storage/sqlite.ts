@@ -44,6 +44,35 @@ export interface ConversationStore {
 
   /** Hard-delete every turn (and via FK cascade every tool_call) in this session. */
   clearTurns(sessionId: string): number
+
+  /**
+   * Embedding-index lifecycle. Used by `EmbeddingIndexer`; no consumer
+   * should call these directly from the agent path.
+   */
+  listTurnsMissingEmbedding(
+    activeModel: string,
+    limit: number,
+  ): Array<{ id: string; content: string; role: Role }>
+  insertEmbedding(input: {
+    turnId: string
+    embedding: Buffer
+    model: string
+    dim: number
+  }): void
+  /** Single-transaction batch insert. One fsync per batch instead of N. */
+  insertEmbeddingsBatch(
+    rows: Array<{ turnId: string; embedding: Buffer; model: string; dim: number }>,
+  ): void
+  vectorSearchTurns(opts: VectorSearchOptions): TurnSearchHit[]
+}
+
+export interface VectorSearchOptions {
+  /** Query vector (already embedded by the caller). */
+  embedding: Buffer
+  k: number
+  sessionId?: string
+  excludeSessionId?: string
+  roles?: Role[]
 }
 
 export interface SearchTurnsOptions {
@@ -215,14 +244,19 @@ function rowToToolCall(row: ToolCallRow): StoredToolCall {
  * v4 (M4): adds `turns_fts` (FTS5) over turns.content with AFTER
  *   INSERT/UPDATE/DELETE triggers to keep the index in sync, backfilling
  *   from any existing rows. This is the substrate for search_history.
+ * v5 (M7): adds `turn_embeddings_v1` (sqlite-vec vec0, float[768] cosine)
+ *   and `embedding_state` for indexing bookkeeping. AFTER DELETE trigger
+ *   on `turns` clears the vec row (vec0 doesn't support FK cascade).
+ *   embedding_state has FK cascade so its rows go automatically.
  */
 function migrate(db: Db): void {
   const version = (db.pragma('user_version', { simple: true }) as number) ?? 0
-  if (version >= 4) return
+  if (version >= 5) return
 
   if (version < 2) runV2Migration(db)
   if (version < 3) runV3Migration(db)
   if (version < 4) runV4Migration(db)
+  if (version < 5) runV5Migration(db)
 }
 
 function runV2Migration(db: Db): void {
@@ -287,6 +321,40 @@ function runV2Migration(db: Db): void {
   } finally {
     db.pragma(`legacy_alter_table = ${prevLegacy ? 'ON' : 'OFF'}`)
   }
+}
+
+/** Embedding vector dimension (nomic-embed-text-v1.5). Locked at the
+ *  schema level — changing models with a different dim requires reindex. */
+export const EMBEDDING_DIM = 768
+
+function runV5Migration(db: Db): void {
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS turn_embeddings_v1 USING vec0(
+        turn_id TEXT PRIMARY KEY,
+        embedding float[${EMBEDDING_DIM}] distance_metric=cosine
+      );
+    `)
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS embedding_state (
+        turn_id TEXT PRIMARY KEY REFERENCES turns(id) ON DELETE CASCADE,
+        model TEXT NOT NULL,
+        dim INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_embedding_state_model ON embedding_state(model);
+    `)
+    // vec0 has no FK; mirror cascade manually so a turn delete also clears
+    // its embedding row. Wrap in DROP-IF-EXISTS + CREATE for idempotent re-runs.
+    db.exec(`
+      DROP TRIGGER IF EXISTS turn_embeddings_ad;
+      CREATE TRIGGER turn_embeddings_ad AFTER DELETE ON turns BEGIN
+        DELETE FROM turn_embeddings_v1 WHERE turn_id = OLD.id;
+      END;
+    `)
+    db.pragma('user_version = 5')
+  })
+  tx()
 }
 
 function runV4Migration(db: Db): void {
@@ -441,6 +509,44 @@ export function createConversationStore(db: Db): ConversationStore {
   )
   const deleteTurnsStmt = db.prepare('DELETE FROM turns WHERE session_id = ?')
 
+  const listMissingEmbeddingStmt = db.prepare(`
+    SELECT t.id, t.content, t.role
+    FROM turns t
+    LEFT JOIN embedding_state e ON e.turn_id = t.id AND e.model = ?
+    WHERE e.turn_id IS NULL
+      AND t.role IN ('user', 'assistant')
+      AND length(t.content) > 0
+    ORDER BY t.created_at DESC
+    LIMIT ?
+  `)
+  // vec0 doesn't support ON CONFLICT, so a re-embed has to DELETE+INSERT.
+  const deleteVecStmt = db.prepare('DELETE FROM turn_embeddings_v1 WHERE turn_id = ?')
+  const insertVecStmt = db.prepare(
+    'INSERT INTO turn_embeddings_v1 (turn_id, embedding) VALUES (?, ?)',
+  )
+  const insertEmbeddingStateStmt = db.prepare(
+    'INSERT INTO embedding_state (turn_id, model, dim, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(turn_id) DO UPDATE SET model = excluded.model, dim = excluded.dim, created_at = excluded.created_at',
+  )
+  const insertEmbeddingTx = db.transaction(
+    (turnId: string, embedding: Buffer, model: string, dim: number, ts: number) => {
+      deleteVecStmt.run(turnId)
+      insertVecStmt.run(turnId, embedding)
+      insertEmbeddingStateStmt.run(turnId, model, dim, ts)
+    },
+  )
+  const insertEmbeddingsBatchTx = db.transaction(
+    (
+      rows: Array<{ turnId: string; embedding: Buffer; model: string; dim: number }>,
+      ts: number,
+    ) => {
+      for (const r of rows) {
+        deleteVecStmt.run(r.turnId)
+        insertVecStmt.run(r.turnId, r.embedding)
+        insertEmbeddingStateStmt.run(r.turnId, r.model, r.dim, ts)
+      }
+    },
+  )
+
   const searchTurnsStmt = db.prepare<{
     query: string
     sessionId: string | null
@@ -578,6 +684,84 @@ export function createConversationStore(db: Db): ConversationStore {
       return Number(info.changes)
     },
 
+    listTurnsMissingEmbedding(activeModel, limit) {
+      const rows = listMissingEmbeddingStmt.all(activeModel, limit) as Array<{
+        id: string
+        content: string
+        role: string
+      }>
+      return rows.map((r) => ({
+        id: r.id,
+        content: r.content,
+        role: parseRole(r.role),
+      }))
+    },
+
+    insertEmbedding({ turnId, embedding, model, dim }) {
+      insertEmbeddingTx(turnId, embedding, model, dim, Date.now())
+    },
+
+    insertEmbeddingsBatch(rows) {
+      if (rows.length === 0) return
+      insertEmbeddingsBatchTx(rows, Date.now())
+    },
+
+    vectorSearchTurns(opts) {
+      // vec0's KNN syntax: `WHERE embedding MATCH ? AND k = ?`. We post-filter
+      // by session/role outside KNN because pushing those into the MATCH
+      // clause requires vec0 partition keys, which we don't have. We
+      // over-fetch by 4x (capped at 200) to compensate for filter shrinkage.
+      const overFetchK = Math.min(200, Math.max(opts.k * 4, opts.k))
+      const rolesSet = opts.roles && opts.roles.length > 0 ? new Set(opts.roles) : null
+      const rows = db
+        .prepare(
+          `
+          SELECT
+            v.turn_id AS turn_id,
+            v.distance AS distance,
+            t.session_id AS session_id,
+            t.role AS role,
+            t.content AS content,
+            t.created_at AS created_at,
+            s.title AS session_title
+          FROM turn_embeddings_v1 v
+          JOIN turns t ON t.id = v.turn_id
+          JOIN sessions s ON s.id = t.session_id
+          WHERE v.embedding MATCH ?
+            AND k = ?
+          ORDER BY v.distance
+        `,
+        )
+        .all(opts.embedding, overFetchK) as Array<{
+        turn_id: string
+        distance: number
+        session_id: string
+        role: string
+        content: string
+        created_at: number
+        session_title: string | null
+      }>
+      const hits: TurnSearchHit[] = []
+      for (const row of rows) {
+        if (opts.sessionId && row.session_id !== opts.sessionId) continue
+        if (opts.excludeSessionId && row.session_id === opts.excludeSessionId) continue
+        if (rolesSet && !rolesSet.has(row.role as Role)) continue
+        hits.push({
+          turnId: row.turn_id,
+          sessionId: row.session_id,
+          sessionTitle: row.session_title,
+          role: parseRole(row.role),
+          content: row.content,
+          snippet: row.content.slice(0, 160),
+          createdAt: row.created_at,
+          // Repurpose `rank` for vector distance (smaller = closer).
+          rank: row.distance,
+        })
+        if (hits.length >= opts.k) break
+      }
+      return hits
+    },
+
     searchTurns(opts) {
       // Callers (search_history tool) validate mutual exclusion of
       // sessionId/excludeSessionId before reaching here. The SQL itself
@@ -627,6 +811,10 @@ export function turnsToMessages(turns: Turn[], toolCallsByTurnId: Map<string, St
     if (turn.role === 'assistant') {
       const calls = toolCallsByTurnId.get(turn.id) ?? []
       if (calls.length === 0) {
+        // Skip empty assistant turns entirely — they're persisted when a
+        // reasoning model emits 0 content tokens, but replaying them to
+        // the model is noise that confuses subsequent iterations.
+        if (turn.content.trim().length === 0) continue
         out.push({ role: 'assistant', content: turn.content })
         continue
       }

@@ -264,6 +264,40 @@ async function main() {
     fail('agent did not recall fact', `reply: "${replyB.slice(0, 200)}"`)
   }
 
+  // 10b. semantic recall: lexically-different paraphrase
+  // In session A we recorded "favourite colour is sapphire blue". A user
+  // asking about "preferred shade" or similar shares no salient tokens with
+  // the stored content — only the embedding lane should find it. This
+  // exercises the M7 hybrid (FTS5 + vec) path end-to-end.
+  console.log('\n[10b] semantic recall via paraphrase (M7 hybrid)')
+  // Give the indexer a moment to backfill the recent turns.
+  await new Promise((r) => setTimeout(r, 2000))
+  const sessionC = (await api('/api/sessions', { method: 'POST', body: '{}' })).body.session.id
+  pass(`session C = ${sessionC.slice(0, 8)}`)
+  const eventsCPromise = waitForEvents(sessionC, ['message.assistant.completed'])
+  await api(`/api/sessions/${sessionC}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({
+      text: `Use search_history to recall what colour preference I expressed earlier — try a single-token query like "sapphire" if needed. Current session id is ${sessionC} so exclude it.`,
+    }),
+  })
+  let eventsC
+  try {
+    eventsC = await eventsCPromise
+  } catch (err) {
+    fail('session C wait', err.message)
+    return
+  }
+  const replyC = eventsC
+    .filter((e) => e.type === 'message.assistant.delta')
+    .map((d) => d.delta)
+    .join('')
+  if (/sapphire|blue/i.test(replyC)) {
+    pass(`hybrid recall surfaced the stored fact: "${replyC.slice(0, 120)}"`)
+  } else {
+    fail('hybrid recall paraphrase miss', `reply: "${replyC.slice(0, 200)}"`)
+  }
+
   // 11. /clear with confirm cleans the session — only when KEEP_SESSIONS isn't set
   if (process.env.KEEP_SESSIONS !== '1') {
     console.log('\n[11] /clear with confirm')

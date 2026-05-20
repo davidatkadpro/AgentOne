@@ -6,7 +6,13 @@ import type {
   Message,
   ToolCallSpec,
 } from '../core/types.js'
-import { ProviderError, type Provider, type ProviderCapabilities } from './base.js'
+import {
+  ProviderError,
+  type EmbedRequest,
+  type EmbedResponse,
+  type Provider,
+  type ProviderCapabilities,
+} from './base.js'
 
 export interface LMStudioConfig {
   baseUrl: string
@@ -61,13 +67,46 @@ const TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504])
 
 export class LMStudioProvider implements Provider {
   readonly id = 'lmstudio'
-  readonly capabilities: ProviderCapabilities = { streaming: true, tools: true }
+  readonly capabilities: ProviderCapabilities = {
+    streaming: true,
+    tools: true,
+    embeddings: true,
+  }
   private readonly fetchImpl: typeof fetch
   private readonly maxRetries: number
 
   constructor(private readonly config: LMStudioConfig) {
     this.fetchImpl = config.fetchImpl ?? globalThis.fetch
     this.maxRetries = config.maxRetries ?? 3
+  }
+
+  async embed(req: EmbedRequest): Promise<EmbedResponse> {
+    if (req.input.length === 0) {
+      return { model: req.model, embeddings: [], tokens: 0 }
+    }
+    const res = await this.callWithRetry('/embeddings', {
+      model: req.model,
+      input: req.input,
+    })
+    const json = (await res.json()) as {
+      model?: string
+      data?: Array<{ embedding: number[]; index?: number }>
+      usage?: { total_tokens?: number }
+    }
+    if (!Array.isArray(json.data)) {
+      throw new ProviderError('Embeddings response missing data array', 'BAD_RESPONSE')
+    }
+    // Preserve input order: OpenAI guarantees `index`, but some servers omit
+    // it — fall back to the array order when missing.
+    const ordered = [...json.data]
+    if (ordered.every((d) => typeof d.index === 'number')) {
+      ordered.sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+    }
+    return {
+      model: json.model ?? req.model,
+      embeddings: ordered.map((d) => d.embedding),
+      tokens: json.usage?.total_tokens ?? 0,
+    }
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
@@ -103,8 +142,11 @@ export class LMStudioProvider implements Provider {
     let toolCallChunkCount = 0
     // Reasoning models (qwen3.x, deepseek-r) sometimes put the entire response
     // in `reasoning_content` and never emit `content`. We buffer it as a
-    // fallback so we don't silently drop the answer.
+    // fallback so we don't silently drop the answer. Capped to bound memory
+    // on pathologically long chains-of-thought.
+    const REASONING_MAX_BYTES = 256 * 1024
     let reasoningBuffer = ''
+    let reasoningTruncated = false
     let contentEmitted = false
 
     for await (const event of parseSSE(res.body)) {
@@ -129,7 +171,17 @@ export class LMStudioProvider implements Provider {
         yield { delta: deltaText, done: false }
       }
       const reasoningDelta = choice.delta?.reasoning_content ?? ''
-      if (reasoningDelta) reasoningBuffer += reasoningDelta
+      if (reasoningDelta && !reasoningTruncated) {
+        if (reasoningBuffer.length + reasoningDelta.length <= REASONING_MAX_BYTES) {
+          reasoningBuffer += reasoningDelta
+        } else {
+          reasoningBuffer += reasoningDelta.slice(
+            0,
+            REASONING_MAX_BYTES - reasoningBuffer.length,
+          )
+          reasoningTruncated = true
+        }
+      }
 
       if (choice.delta?.tool_calls) {
         toolCallChunkCount++

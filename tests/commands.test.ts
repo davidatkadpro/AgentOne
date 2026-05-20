@@ -36,6 +36,7 @@ function fakeConfig(): ServerConfig {
     lmStudioBaseUrl: '',
     defaultModelProfile: 'local-fast',
     compressorModelProfile: 'local-compressor',
+    embeddingModelProfile: 'local-embed',
     frontendDir: '',
     storageRoot: '',
     wikiPrefix: 'wiki',

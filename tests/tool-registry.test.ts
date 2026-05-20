@@ -5,6 +5,7 @@ import type { ToolContext, ToolHandler } from '@/skills/tool.js'
 import type { StorageAdapter } from '@/storage/adapter.js'
 import type { WikiEngine } from '@/memory/wiki/engine.js'
 import type { ConversationStore } from '@/storage/sqlite.js'
+import type { HybridRecall } from '@/search/hybrid.js'
 
 function fakeCtx(): ToolContext {
   return {
@@ -14,6 +15,7 @@ function fakeCtx(): ToolContext {
       storage: {} as unknown as StorageAdapter,
       wiki: {} as unknown as WikiEngine,
       conversationStore: {} as unknown as ConversationStore,
+      recall: {} as unknown as HybridRecall,
     },
   }
 }

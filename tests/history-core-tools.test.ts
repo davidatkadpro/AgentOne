@@ -5,8 +5,16 @@ import { buildHistoryCoreTools } from '@/skills/history-core-tools.js'
 import type { ToolContext } from '@/skills/tool.js'
 import type { StorageAdapter } from '@/storage/adapter.js'
 import type { WikiEngine } from '@/memory/wiki/engine.js'
+import type { HybridRecall } from '@/search/hybrid.js'
 
 function makeCtx(store: ConversationStore): ToolContext {
+  // Test-only recall stub: delegate straight to the FTS5 store path so the
+  // existing history-core-tools tests still exercise the same behaviour.
+  const recall: HybridRecall = {
+    async searchHistory(opts) {
+      return store.searchTurns(opts)
+    },
+  }
   return {
     sessionId: 'current',
     agentProfile: 'test',
@@ -14,6 +22,7 @@ function makeCtx(store: ConversationStore): ToolContext {
       storage: {} as unknown as StorageAdapter,
       wiki: {} as unknown as WikiEngine,
       conversationStore: store,
+      recall,
     },
   }
 }

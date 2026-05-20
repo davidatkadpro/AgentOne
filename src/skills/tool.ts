@@ -2,6 +2,7 @@ import type { z } from 'zod'
 import type { StorageAdapter } from '../storage/adapter.js'
 import type { WikiEngine } from '../memory/wiki/engine.js'
 import type { ConversationStore } from '../storage/sqlite.js'
+import type { HybridRecall } from '../search/hybrid.js'
 
 /**
  * Stable error codes the agent can reason about. Tools should always return
@@ -38,6 +39,7 @@ export interface ToolServices {
   storage: StorageAdapter
   wiki: WikiEngine
   conversationStore: ConversationStore
+  recall: HybridRecall
 }
 
 export interface ToolContext {

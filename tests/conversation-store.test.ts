@@ -26,9 +26,9 @@ describe('ConversationStore migration', () => {
     disposeHarness(h)
   })
 
-  it('installs turns_fts and reaches user_version 4 on a fresh db', () => {
+  it('installs turns_fts and reaches the current schema version on a fresh db', () => {
     const version = h.db.pragma('user_version', { simple: true })
-    expect(version).toBe(4)
+    expect(version).toBe(5)
     const fts = h.db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='turns_fts'")
       .get()

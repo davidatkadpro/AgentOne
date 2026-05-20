@@ -23,6 +23,8 @@ import type { ModelProfile } from '../core/types.js'
 import { buildCommandRegistry } from './commands/builders.js'
 import type { CommandRegistry } from './commands/registry.js'
 import type { CommandResult } from './commands/types.js'
+import { buildHybridRecall } from '../search/hybrid.js'
+import { EmbeddingIndexer } from '../search/embedding-indexer.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -37,7 +39,12 @@ const WsClientMessage = z.union([
   z.object({ op: z.literal('unsubscribe'), sessionId: z.string() }),
 ])
 
-const TRANSIENT_EVENT_TYPES = new Set(['message.assistant.delta'])
+// Transient events are NOT written to event_log. Bus subscribers can still
+// see them; we just don't burn DB rows on high-cardinality flows.
+const TRANSIENT_EVENT_TYPES = new Set([
+  'message.assistant.delta',
+  'embedding.indexed',
+])
 
 export interface AppDeps {
   config: ServerConfig
@@ -196,7 +203,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       const subscriptions = new Set<string>()
       const off = deps.bus.onAny((e) => {
         if (subscriptions.size === 0) return
-        if (!('sessionId' in e) || !subscriptions.has(e.sessionId)) return
+        if (!('sessionId' in e)) return
+        if (e.sessionId === null || !subscriptions.has(e.sessionId)) return
         try {
           socket.send(JSON.stringify(e))
         } catch {
@@ -340,6 +348,30 @@ export async function bootstrap(): Promise<void> {
 
   const provider = new LMStudioProvider({ baseUrl: config.lmStudioBaseUrl })
 
+  // Embedding profile is optional — if it's not configured we still run, but
+  // search_history degrades to FTS5-only and no background indexing fires.
+  const embeddingModel = modelProfiles.get(config.embeddingModelProfile)
+  const recall = buildHybridRecall({
+    store,
+    provider,
+    embeddingModel: embeddingModel?.model ?? '',
+    eventBus: bus,
+  })
+  const indexer = embeddingModel
+    ? new EmbeddingIndexer({
+        store,
+        provider,
+        model: embeddingModel.model,
+        eventBus: bus,
+      })
+    : null
+  if (indexer) {
+    // Nudge the indexer whenever a user or assistant turn is recorded.
+    bus.on('message.user.received', () => indexer.nudge())
+    bus.on('message.assistant.completed', () => indexer.nudge())
+    indexer.start()
+  }
+
   const contextManager = new ContextManager({
     compressorProvider: provider,
     compressorModel: compressorModel.model,
@@ -371,7 +403,7 @@ export async function bootstrap(): Promise<void> {
     skillIndex,
     profile: agentProfile,
     basePrompt: effectiveBasePrompt,
-    services: { storage, wiki, conversationStore: store },
+    services: { storage, wiki, conversationStore: store, recall },
   })
 
   const commands = buildCommandRegistry(skillIndex)
