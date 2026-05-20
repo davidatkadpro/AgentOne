@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { fail, ok, type ToolHandler } from '../../../../src/skills/tool.js'
+import { readBodyWithCap } from './fetch-helpers.js'
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_BODY_BYTES = 200_000
@@ -68,42 +69,6 @@ export const handler: ToolHandler<typeof parameters> = async (args) => {
   } finally {
     clearTimeout(timer)
   }
-}
-
-/**
- * Read a Response body up to `cap` bytes, aborting the underlying request
- * when the cap is reached. Without this, `res.arrayBuffer()` would buffer a
- * multi-GB body before truncation — defeating the purpose of the cap.
- */
-async function readBodyWithCap(
-  res: Response,
-  cap: number,
-  controller: AbortController,
-): Promise<{ buf: Buffer; truncated: boolean }> {
-  if (!res.body) return { buf: Buffer.alloc(0), truncated: false }
-  const reader = res.body.getReader()
-  const chunks: Uint8Array[] = []
-  let total = 0
-  let truncated = false
-  try {
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      if (!value) continue
-      if (total + value.byteLength > cap) {
-        const remaining = cap - total
-        if (remaining > 0) chunks.push(value.subarray(0, remaining))
-        truncated = true
-        controller.abort()
-        break
-      }
-      chunks.push(value)
-      total += value.byteLength
-    }
-  } finally {
-    reader.releaseLock()
-  }
-  return { buf: Buffer.concat(chunks.map((c) => Buffer.from(c.buffer, c.byteOffset, c.byteLength))), truncated }
 }
 
 export default { parameters, handler }
