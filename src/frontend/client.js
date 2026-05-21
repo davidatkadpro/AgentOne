@@ -298,6 +298,13 @@ function handleEvent(e) {
     case 'tool.hook_mocked':
       renderMeta(`Tool ${e.tool} mocked by hook "${e.hook}" (handler skipped).`)
       break
+    case 'recall.injected':
+      renderMeta(
+        `Passive recall: ${e.sources.length} source${e.sources.length === 1 ? '' : 's'} (${e.sources
+          .map((s) => `${s.kind}:${s.title}`)
+          .join(', ')}).`,
+      )
+      break
   }
 }
 

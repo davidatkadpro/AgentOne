@@ -18,6 +18,12 @@ import { PermissionGate } from '../profiles/permission-gate.js'
 import { composeSystemMessage } from '../context/prompt-composer.js'
 import { ExpertSpendTracker } from '../skills/expert-spend.js'
 import type { HookRegistry } from '../skills/hooks.js'
+import {
+  buildPassiveRecall,
+  recallToMessage,
+  type PassiveRecallConfig,
+  type PassiveRecallResult,
+} from '../context/passive-recall.js'
 
 export interface OrchestratorConfig {
   store: ConversationStore
@@ -32,6 +38,10 @@ export interface OrchestratorConfig {
   /** Optional cross-cutting tool hooks (redaction, audit, deny rules). Shared
    *  across sessions for now; per-profile config is a future extension. */
   hooks?: HookRegistry
+  /** Passive-recall configuration. When enabled, every user turn triggers a
+   *  best-effort wiki + cross-session history probe that's injected into the
+   *  prompt as a "Possibly relevant context" block. Disabled by default. */
+  passiveRecall?: PassiveRecallConfig
   /** Cap on tool-loop iterations to prevent runaway agents. */
   maxIterations?: number
   /** Max session states to keep in memory. Oldest evicted FIFO. */
@@ -89,7 +99,27 @@ export class Orchestrator {
       turnId: userTurn.id,
       ts: Date.now(),
     })
-    return { stream: this.runToolLoop(state) }
+
+    // Compute passive recall once per user turn — its block survives all
+    // tool-loop iterations triggered by this message. Disabled-by-default;
+    // the helper returns null when the profile doesn't opt in or when no
+    // sources match.
+    let recall: PassiveRecallResult | null = null
+    if (this.cfg.passiveRecall?.enabled) {
+      try {
+        recall = await buildPassiveRecall(userText, this.cfg.passiveRecall, {
+          wiki: this.cfg.services.wiki,
+          recall: this.cfg.services.recall,
+          sessionId,
+          eventBus: this.cfg.eventBus,
+        })
+      } catch {
+        // Best-effort: a recall hiccup must not block the user's turn.
+        recall = null
+      }
+    }
+
+    return { stream: this.runToolLoop(state, recall) }
   }
 
   resetSession(sessionId: string): void {
@@ -295,7 +325,10 @@ export class Orchestrator {
     return { sessionId, registry, loadedSkills, permissions, systemMessage, expertSpend }
   }
 
-  private async *runToolLoop(state: SessionState): AsyncIterable<string> {
+  private async *runToolLoop(
+    state: SessionState,
+    recall: PassiveRecallResult | null,
+  ): AsyncIterable<string> {
     let totalInputTokens = 0
     let totalOutputTokens = 0
     let finalTurnId: string | null = null
@@ -306,6 +339,14 @@ export class Orchestrator {
     const initialTurns = this.cfg.store.listTurns(state.sessionId)
     const toolCallsMap = this.cfg.store.listToolCallsBySession(state.sessionId)
     let history = turnsToMessages(initialTurns, toolCallsMap)
+
+    // Passive recall is a one-shot context injection for this user turn:
+    // prepended to history as a system message so ContextManager sees it as
+    // part of the prefix (and includes it in compression candidates if the
+    // conversation grows long). Lives for the duration of the tool loop.
+    if (recall) {
+      history = [recallToMessage(recall), ...history]
+    }
 
     try {
       for (let iter = 0; iter < this.maxIterations; iter++) {

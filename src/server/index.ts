@@ -450,6 +450,7 @@ export async function bootstrap(): Promise<void> {
     skillIndex,
     profile: agentProfile,
     basePrompt: effectiveBasePrompt,
+    passiveRecall: agentProfile.passiveRecall,
     services: {
       storage,
       wiki,

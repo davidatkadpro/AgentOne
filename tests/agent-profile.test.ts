@@ -115,4 +115,57 @@ permissions:
       code: 'EXTENDS_NOT_FOUND',
     })
   })
+
+  it('passive_recall defaults to disabled when absent', async () => {
+    await write('_base', `id: _base\ndefault_model: local-fast\n`)
+    const p = await loadAgentProfile(dir, '_base')
+    expect(p.passiveRecall).toEqual({
+      enabled: false,
+      wikiHits: 2,
+      historyHits: 2,
+      maxCharsPerHit: 240,
+    })
+  })
+
+  it('passive_recall: child block fully replaces base block when present', async () => {
+    await write(
+      '_base',
+      `id: _base
+default_model: local-fast
+passive_recall:
+  enabled: false
+  wiki_hits: 1
+`,
+    )
+    await write(
+      'child',
+      `id: child
+extends: _base
+passive_recall:
+  enabled: true
+  wiki_hits: 4
+  history_hits: 3
+`,
+    )
+    const p = await loadAgentProfile(dir, 'child')
+    expect(p.passiveRecall.enabled).toBe(true)
+    expect(p.passiveRecall.wikiHits).toBe(4)
+    expect(p.passiveRecall.historyHits).toBe(3)
+  })
+
+  it('passive_recall: child inherits the base block when omitted', async () => {
+    await write(
+      '_base',
+      `id: _base
+default_model: local-fast
+passive_recall:
+  enabled: true
+  wiki_hits: 5
+`,
+    )
+    await write('child', `id: child\nextends: _base\n`)
+    const p = await loadAgentProfile(dir, 'child')
+    expect(p.passiveRecall.enabled).toBe(true)
+    expect(p.passiveRecall.wikiHits).toBe(5)
+  })
 })

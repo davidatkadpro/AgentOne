@@ -18,3 +18,7 @@ permissions:
       - openrouter-claude-sonnet
     budget_per_call_usd: 0.50
     budget_per_session_usd: 5.00
+passive_recall:
+  enabled: true
+  wiki_hits: 2
+  history_hits: 2

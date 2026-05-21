@@ -134,6 +134,12 @@ export type AgentEvent =
       perCallBudgetUsd: number
       ts: number
     }
+  | {
+      type: 'recall.injected'
+      sessionId: string
+      sources: Array<{ kind: 'wiki' | 'history'; ref: string; title: string }>
+      ts: number
+    }
 
 export type EventType = AgentEvent['type']
 export type EventByType<T extends EventType> = Extract<AgentEvent, { type: T }>

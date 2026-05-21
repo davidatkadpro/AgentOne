@@ -24,6 +24,15 @@ const PermissionsSchema = z
     experts: { allow: [] },
   })
 
+const PassiveRecallSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    wiki_hits: z.number().int().nonnegative().max(10).default(2),
+    history_hits: z.number().int().nonnegative().max(10).default(2),
+    max_chars_per_hit: z.number().int().positive().max(2000).default(240),
+  })
+  .optional()
+
 const AgentProfileSchema = z.object({
   id: z.string().regex(/^[a-z0-9_-]+$/),
   description: z.string().optional(),
@@ -35,6 +44,7 @@ const AgentProfileSchema = z.object({
   compressor_model: z.string().optional(),
   default_skills: z.array(z.string()).default([]),
   permissions: PermissionsSchema,
+  passive_recall: PassiveRecallSchema,
 })
 
 export type RawAgentProfile = z.infer<typeof AgentProfileSchema>
@@ -53,6 +63,12 @@ export interface ResolvedAgentProfile {
       budgetPerCallUsd: number | null
       budgetPerSessionUsd: number | null
     }
+  }
+  passiveRecall: {
+    enabled: boolean
+    wikiHits: number
+    historyHits: number
+    maxCharsPerHit: number
   }
   /** Where the profile YAML file lives — used to resolve relative paths. */
   sourceFile: string
@@ -167,6 +183,17 @@ export async function loadAgentProfile(
     raw.permissions.experts.allow,
   )
 
+  // Passive recall: child replaces base entirely when it specifies the
+  // block; otherwise inherit. Defaults stay disabled-off so a profile
+  // that omits it gets zero overhead.
+  const rawRecall = raw.passive_recall ?? base?.passive_recall
+  const passiveRecall = {
+    enabled: rawRecall?.enabled ?? false,
+    wikiHits: rawRecall?.wiki_hits ?? 2,
+    historyHits: rawRecall?.history_hits ?? 2,
+    maxCharsPerHit: rawRecall?.max_chars_per_hit ?? 240,
+  }
+
   return {
     id: raw.id,
     ...(raw.description !== undefined && { description: raw.description }),
@@ -184,6 +211,7 @@ export async function loadAgentProfile(
         budgetPerSessionUsd: raw.permissions.experts.budget_per_session_usd ?? null,
       },
     },
+    passiveRecall,
     sourceFile: path,
   }
 }

@@ -40,6 +40,7 @@ function makeProfile(opts: {
         budgetPerSessionUsd: opts.perSession ?? null,
       },
     },
+    passiveRecall: { enabled: false, wikiHits: 2, historyHits: 2, maxCharsPerHit: 240 },
     sourceFile: '',
   }
 }
