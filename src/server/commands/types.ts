@@ -5,6 +5,8 @@ import type { Orchestrator } from '../../orchestrator/turn.js'
 import type { ContextManager } from '../../context/context-manager.js'
 import type { ServerConfig } from '../config.js'
 import type { Session } from '../../core/types.js'
+import type { WikiEngine } from '../../memory/wiki/engine.js'
+import type { Provider } from '../../providers/base.js'
 
 /**
  * Runtime services a system-command handler may use. Held separately from
@@ -19,6 +21,12 @@ export interface CommandContext {
   orchestrator: Orchestrator
   contextManager: ContextManager
   config: ServerConfig
+  /** Wiki engine. Used by /distill to write draft pages. */
+  wiki: WikiEngine
+  /** Compressor model + provider (per-profile). Used by /distill — it's the
+   *  same lightweight model already validated for summarisation tasks. */
+  compressorProvider: Provider
+  compressorModel: string
 }
 
 /** Discriminated union mirroring what the frontend can render. */

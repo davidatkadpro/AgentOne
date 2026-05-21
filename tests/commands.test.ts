@@ -88,6 +88,9 @@ function newHarness(): Harness {
     orchestrator: fakeOrchestrator,
     contextManager: fakeContextManager,
     config: fakeConfig(),
+    wiki: {} as never,
+    compressorProvider: {} as never,
+    compressorModel: 'unused',
   })
 
   return { db, store, orchestratorCalls, contextCalls, ctx }
@@ -324,6 +327,9 @@ describe('/compact command on short history', () => {
       orchestrator: fakeOrch,
       contextManager: {} as unknown as ContextManager,
       config: fakeConfig(),
+      wiki: {} as never,
+      compressorProvider: {} as never,
+      compressorModel: 'unused',
     }
     const result = await compactCommand.handler({}, ctx)
     expect(result.kind).toBe('text')
@@ -353,6 +359,9 @@ describe('CommandRegistry.dispatch error handling', () => {
       orchestrator: {} as unknown as Orchestrator,
       contextManager: {} as unknown as ContextManager,
       config: fakeConfig(),
+      wiki: {} as never,
+      compressorProvider: {} as never,
+      compressorModel: 'unused',
     }
     // Silence the expected console.error from the catch path.
     const originalError = console.error

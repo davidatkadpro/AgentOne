@@ -53,6 +53,9 @@ function makeCtx(args: {
     orchestrator: {} as unknown as Orchestrator,
     contextManager: {} as unknown as ContextManager,
     config: fakeConfig(args.agentProfilesDir ?? ''),
+    wiki: {} as never,
+    compressorProvider: {} as never,
+    compressorModel: 'unused',
   }
 }
 

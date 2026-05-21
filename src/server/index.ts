@@ -15,6 +15,7 @@ import { ContextManager } from '../context/context-manager.js'
 import { LMStudioProvider } from '../providers/lmstudio.js'
 import { OpenRouterProvider } from '../providers/openrouter.js'
 import { ProviderRegistry } from '../providers/registry.js'
+import type { Provider } from '../providers/base.js'
 import { HookRegistry } from '../skills/hooks.js'
 import { buildAuditLogHook } from '../skills/audit-log-hook.js'
 import { createDatabase } from '../storage/db.js'
@@ -60,6 +61,10 @@ export interface AppDeps {
   skillIndex: SkillIndex
   contextManager: ContextManager
   commands: CommandRegistry
+  /** Compressor model + provider (per-profile). Same model the
+   *  ContextManager uses for summarisation; reused by /distill. */
+  compressorProvider: Provider
+  compressorModel: string
 }
 
 const CommandRequestBody = z.object({
@@ -276,6 +281,9 @@ async function dispatchCommand(
       orchestrator: deps.orchestrator,
       contextManager: deps.contextManager,
       config: deps.config,
+      wiki: deps.wiki,
+      compressorProvider: deps.compressorProvider,
+      compressorModel: deps.compressorModel,
     })
   }
   const manifest = deps.skillIndex.bySlashCommand.get(body.name)
@@ -474,6 +482,8 @@ export async function bootstrap(): Promise<void> {
     skillIndex,
     contextManager,
     commands,
+    compressorProvider,
+    compressorModel: compressorModel.model,
   })
 
   await wiki.whenReady()
