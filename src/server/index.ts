@@ -164,6 +164,16 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return { ok: true }
   })
 
+  app.post('/api/sessions/:id/cancel', async (req, reply) => {
+    const params = SessionIdParams.safeParse(req.params)
+    if (!params.success) {
+      reply.code(400)
+      return { error: 'Invalid session id' }
+    }
+    const outcome = await deps.orchestrator.cancelSession(params.data.id)
+    return { outcome }
+  })
+
   app.get('/api/commands', async () => {
     const built = deps.commands.list().map((c) => ({
       name: c.name,

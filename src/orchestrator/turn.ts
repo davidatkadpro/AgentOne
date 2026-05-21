@@ -59,6 +59,13 @@ interface SessionState {
   permissions: PermissionGate
   systemMessage: Message
   expertSpend: ExpertSpendTracker
+  /**
+   * AbortController for the in-flight turn, or null between turns. Replaced
+   * on each handleUserMessage. cancelSession() aborts this controller — the
+   * orchestrator's loop checks signal.aborted between iterations, providers
+   * receive it via ChatRequest.signal, and tool handlers see it on ctx.signal.
+   */
+  currentCancellation: AbortController | null
 }
 
 const DEFAULT_MAX_ITERATIONS = 8
@@ -88,6 +95,13 @@ export class Orchestrator {
 
   async handleUserMessage(sessionId: string, userText: string): Promise<TurnHandle> {
     const state = await this.getSessionState(sessionId)
+    // Fresh AbortController for this turn. If a prior turn is still in flight
+    // (shouldn't happen — UI gates), abort it so the new one isn't racing.
+    if (state.currentCancellation && !state.currentCancellation.signal.aborted) {
+      state.currentCancellation.abort()
+    }
+    state.currentCancellation = new AbortController()
+
     const userTurn = this.cfg.store.appendTurn({
       sessionId,
       role: 'user',
@@ -120,6 +134,35 @@ export class Orchestrator {
     }
 
     return { stream: this.runToolLoop(state, recall) }
+  }
+
+  /**
+   * Cancel an in-flight turn for the given session. Returns:
+   *   - 'cancelled'     when the AbortController was successfully signalled
+   *   - 'no_active_turn' when there's no turn in flight (idempotent no-op)
+   *   - 'unknown_session' when the session isn't loaded
+   *
+   * Cancellation is cooperative: the loop checks signal between iterations,
+   * providers receive it via ChatRequest.signal, and ToolContext exposes it
+   * for handlers that opt in. Handlers that don't honour the signal are
+   * bounded by the existing per-tool timeout (default 10s).
+   */
+  async cancelSession(
+    sessionId: string,
+  ): Promise<'cancelled' | 'no_active_turn' | 'unknown_session'> {
+    const state = this.sessions.get(sessionId)
+    if (!state) return 'unknown_session'
+    const resolved = await state
+    if (!resolved.currentCancellation || resolved.currentCancellation.signal.aborted) {
+      return 'no_active_turn'
+    }
+    await this.cfg.eventBus.emit({
+      type: 'turn.cancel_requested',
+      sessionId,
+      ts: Date.now(),
+    })
+    resolved.currentCancellation.abort()
+    return 'cancelled'
   }
 
   resetSession(sessionId: string): void {
@@ -331,7 +374,15 @@ export class Orchestrator {
     // Persist via the conversation store so expert budgets survive restarts.
     // Constructor rehydrates from `expert_spend_v1` for this session.
     const expertSpend = new ExpertSpendTracker({ sessionId, store: this.cfg.store })
-    return { sessionId, registry, loadedSkills, permissions, systemMessage, expertSpend }
+    return {
+      sessionId,
+      registry,
+      loadedSkills,
+      permissions,
+      systemMessage,
+      expertSpend,
+      currentCancellation: null,
+    }
   }
 
   private async *runToolLoop(
@@ -341,6 +392,11 @@ export class Orchestrator {
     let totalInputTokens = 0
     let totalOutputTokens = 0
     let finalTurnId: string | null = null
+    // Capture the AbortController for this turn once. handleUserMessage
+    // creates a fresh one; we hold a stable reference here so a subsequent
+    // turn that swaps state.currentCancellation doesn't accidentally make
+    // *this* loop check the wrong signal.
+    const signal = state.currentCancellation?.signal
 
     // Build history once before the loop. Subsequent iterations append the
     // newly-persisted assistant turn and synthesized tool results in-memory
@@ -357,8 +413,22 @@ export class Orchestrator {
       history = [recallToMessage(recall), ...history]
     }
 
+    const emitCancelled = async (kind: 'soft' | 'hard'): Promise<void> => {
+      await this.cfg.eventBus.emit({
+        type: 'turn.cancelled',
+        sessionId: state.sessionId,
+        kind,
+        ts: Date.now(),
+      })
+    }
+
     try {
       for (let iter = 0; iter < this.maxIterations; iter++) {
+        // Soft-cancel check at every iteration boundary.
+        if (signal?.aborted) {
+          await emitCancelled('soft')
+          return
+        }
         const historyTokens = countMessagesTokens(history)
         const prepared = await this.cfg.contextManager.prepare(
           state.sessionId,
@@ -380,7 +450,7 @@ export class Orchestrator {
         let iterInput = 0
         let iterOutput = 0
 
-        for await (const chunk of this.cfg.provider.stream({
+        const streamReq: import('../core/types.js').ChatRequest = {
           model: this.cfg.conversationModel.model,
           messages: prepared.messages,
           tools: state.registry.toolDefinitions(),
@@ -388,28 +458,49 @@ export class Orchestrator {
           temperature: this.cfg.conversationModel.params.temperature ?? 0.4,
           maxTokens: this.cfg.conversationModel.params.maxTokens ?? 2048,
           topP: this.cfg.conversationModel.params.topP ?? 1,
-        })) {
-          if (chunk.delta) {
-            collected += chunk.delta
-            void this.cfg.eventBus.emit({
-              type: 'message.assistant.delta',
-              sessionId: state.sessionId,
-              turnId: iterationTurnId,
-              delta: chunk.delta,
-            })
-            yield chunk.delta
+        }
+        if (signal) streamReq.signal = signal
+
+        let streamAborted = false
+        try {
+          for await (const chunk of this.cfg.provider.stream(streamReq)) {
+            if (chunk.delta) {
+              collected += chunk.delta
+              void this.cfg.eventBus.emit({
+                type: 'message.assistant.delta',
+                sessionId: state.sessionId,
+                turnId: iterationTurnId,
+                delta: chunk.delta,
+              })
+              yield chunk.delta
+            }
+            if (chunk.done) {
+              if (chunk.toolCalls && chunk.toolCalls.length > 0) toolCalls = chunk.toolCalls
+              // Provider post-processing: when Hermes-format <tool_call> XML
+              // was promoted into native tool_calls, the provider hands back a
+              // cleaned content string for persistence. The streamed deltas
+              // already went to the UI verbatim (one-shot, can't un-emit), but
+              // `collected` drives what we persist + replay to the model.
+              if (chunk.replaceContent !== undefined) collected = chunk.replaceContent
+              iterInput = chunk.inputTokens ?? 0
+              iterOutput = chunk.outputTokens ?? 0
+            }
           }
-          if (chunk.done) {
-            if (chunk.toolCalls && chunk.toolCalls.length > 0) toolCalls = chunk.toolCalls
-            // Provider post-processing: when Hermes-format <tool_call> XML
-            // was promoted into native tool_calls, the provider hands back a
-            // cleaned content string for persistence. The streamed deltas
-            // already went to the UI verbatim (one-shot, can't un-emit), but
-            // `collected` drives what we persist + replay to the model.
-            if (chunk.replaceContent !== undefined) collected = chunk.replaceContent
-            iterInput = chunk.inputTokens ?? 0
-            iterOutput = chunk.outputTokens ?? 0
+        } catch (err) {
+          // AbortError from the provider's fetch (cancellation propagated
+          // through the signal) is the expected hard-cancel path. Anything
+          // else bubbles — provider/network errors should surface to the
+          // outer error handling, not be silently swallowed by cancellation.
+          if (isAbortError(err) || signal?.aborted) {
+            streamAborted = true
+          } else {
+            throw err
           }
+        }
+
+        if (streamAborted) {
+          await emitCancelled('hard')
+          return
         }
 
         totalInputTokens += iterInput
@@ -466,8 +557,15 @@ export class Orchestrator {
           services: this.cfg.services,
           permissions: state.permissions,
           expertSpend: state.expertSpend,
+          ...(signal ? { signal } : {}),
         }
         for (const call of toolCalls) {
+          // Soft-cancel check between tool calls — drop further work but
+          // tool results already obtained on this iteration stay persisted.
+          if (signal?.aborted) {
+            await emitCancelled('soft')
+            return
+          }
           const row = this.cfg.store.appendToolCall({
             turnId: assistantTurn.id,
             toolCallId: call.id,
@@ -545,6 +643,15 @@ export class Orchestrator {
         outputTokens: totalOutputTokens,
         ts: Date.now(),
       })
+      // Clear the cancellation controller — but only if it still belongs
+      // to this turn. A subsequent handleUserMessage may have already
+      // swapped in a fresh controller for the next turn; don't clobber it.
+      if (
+        state.currentCancellation &&
+        state.currentCancellation.signal === signal
+      ) {
+        state.currentCancellation = null
+      }
     }
   }
 }
@@ -555,6 +662,10 @@ function safeParseJson(raw: string): unknown {
   } catch {
     return raw
   }
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError'
 }
 
 function stringifyResult(result: unknown): string {

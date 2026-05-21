@@ -111,7 +111,7 @@ export class LMStudioProvider implements Provider {
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
-    const res = await this.callWithRetry('/chat/completions', this.toBody({ req, stream: false }))
+    const res = await this.callWithRetry('/chat/completions', this.toBody({ req, stream: false }), req.signal)
     const json = (await res.json()) as OpenAIChatResponse
     const choice = json.choices?.[0]
     if (!choice) throw new ProviderError('No choices in response', 'BAD_RESPONSE')
@@ -131,7 +131,7 @@ export class LMStudioProvider implements Provider {
       // eslint-disable-next-line no-console
       console.error('[lmstudio.stream] request body:', JSON.stringify(body).slice(0, 2000))
     }
-    const res = await this.callWithRetry('/chat/completions', body)
+    const res = await this.callWithRetry('/chat/completions', body, req.signal)
     if (!res.body) throw new ProviderError('No response body for stream', 'BAD_RESPONSE')
 
     let inputTokens = 0
@@ -284,14 +284,17 @@ export class LMStudioProvider implements Provider {
     return body
   }
 
-  private async callWithRetry(path: string, body: unknown): Promise<Response> {
+  private async callWithRetry(path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
     let lastError: unknown
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+      // If the caller already cancelled, don't even start the next attempt.
+      if (signal?.aborted) throw abortError()
       try {
         const res = await this.fetchImpl(`${this.config.baseUrl}${path}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
+          ...(signal ? { signal } : {}),
         })
         if (res.ok) return res
         if (TRANSIENT_STATUSES.has(res.status) && attempt < this.maxRetries - 1) {
@@ -309,6 +312,8 @@ export class LMStudioProvider implements Provider {
         )
       } catch (err) {
         if (err instanceof ProviderError && err.code === 'BAD_REQUEST') throw err
+        // Don't retry on cancellation — surface it to the caller immediately.
+        if (isAbortError(err) || signal?.aborted) throw abortError()
         lastError = err
         if (attempt < this.maxRetries - 1) {
           await delay(backoff(attempt))
@@ -319,6 +324,18 @@ export class LMStudioProvider implements Provider {
     if (lastError instanceof ProviderError) throw lastError
     throw new ProviderError('LM Studio unreachable', 'NETWORK', lastError)
   }
+}
+
+/** Build a DOMException-shaped abort error so consumers can detect it via
+ *  the standard `.name === 'AbortError'` check that fetch uses. */
+function abortError(): Error {
+  const e = new Error('aborted')
+  e.name = 'AbortError'
+  return e
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError'
 }
 
 function normaliseToolCall(tc: OpenAIToolCall): ToolCallSpec {

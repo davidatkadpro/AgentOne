@@ -94,7 +94,7 @@ export class OpenRouterProvider implements Provider {
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
-    const res = await this.callWithRetry('/chat/completions', this.toBody({ req, stream: false }))
+    const res = await this.callWithRetry('/chat/completions', this.toBody({ req, stream: false }), req.signal)
     const json = (await res.json()) as OpenAIChatResponse
     const choice = json.choices?.[0]
     if (!choice) throw new ProviderError('No choices in response', 'BAD_RESPONSE')
@@ -111,7 +111,7 @@ export class OpenRouterProvider implements Provider {
 
   async *stream(req: ChatRequest): AsyncIterable<ChatChunk> {
     const body = this.toBody({ req, stream: true })
-    const res = await this.callWithRetry('/chat/completions', body)
+    const res = await this.callWithRetry('/chat/completions', body, req.signal)
     if (!res.body) throw new ProviderError('No response body for stream', 'BAD_RESPONSE')
 
     let inputTokens = 0
@@ -179,7 +179,7 @@ export class OpenRouterProvider implements Provider {
     return body
   }
 
-  private async callWithRetry(path: string, body: unknown): Promise<Response> {
+  private async callWithRetry(path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
     let lastError: unknown
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -189,11 +189,13 @@ export class OpenRouterProvider implements Provider {
     if (this.config.httpReferer) headers['HTTP-Referer'] = this.config.httpReferer
 
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+      if (signal?.aborted) throw orAbortError()
       try {
         const res = await this.fetchImpl(`${this.config.baseUrl}${path}`, {
           method: 'POST',
           headers,
           body: JSON.stringify(body),
+          ...(signal ? { signal } : {}),
         })
         if (res.ok) return res
         if (TRANSIENT_STATUSES.has(res.status) && attempt < this.maxRetries - 1) {
@@ -211,6 +213,8 @@ export class OpenRouterProvider implements Provider {
         )
       } catch (err) {
         if (err instanceof ProviderError && err.code === 'BAD_REQUEST') throw err
+        // Don't retry on cancellation — propagate immediately.
+        if (isAbortError(err) || signal?.aborted) throw orAbortError()
         lastError = err
         if (attempt < this.maxRetries - 1) {
           await delay(backoff(attempt))
@@ -221,6 +225,16 @@ export class OpenRouterProvider implements Provider {
     if (lastError instanceof ProviderError) throw lastError
     throw new ProviderError('OpenRouter unreachable', 'NETWORK', lastError)
   }
+}
+
+function orAbortError(): Error {
+  const e = new Error('aborted')
+  e.name = 'AbortError'
+  return e
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError'
 }
 
 function normaliseToolCall(tc: OpenAIToolCall): ToolCallSpec {

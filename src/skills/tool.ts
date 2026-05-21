@@ -63,6 +63,13 @@ export interface ToolContext {
   permissions: PermissionGate
   /** Per-session running USD spend on expert calls. */
   expertSpend: ExpertSpendTracker
+  /**
+   * Cancellation signal for this turn. Tool handlers that do meaningful
+   * I/O should honour it (pass to fetch, abort long-running ops). Handlers
+   * that don't are simply hard-aborted by the per-tool timeout — the
+   * existing 10s default still bounds worst-case latency on cancel.
+   */
+  signal?: AbortSignal
 }
 
 export type ToolHandler<P extends z.ZodTypeAny = z.ZodTypeAny> = (

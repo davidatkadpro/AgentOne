@@ -153,6 +153,19 @@ export type AgentEvent =
       reason: 'no_turns' | 'too_short' | 'no_notes' | 'parse_failure' | 'already_distilled' | 'provider_error'
       ts: number
     }
+  | {
+      type: 'turn.cancel_requested'
+      sessionId: string
+      ts: number
+    }
+  | {
+      type: 'turn.cancelled'
+      sessionId: string
+      /** "soft" = cancellation observed at a loop boundary; "hard" = the
+       *  in-flight provider stream or tool call had to be torn down. */
+      kind: 'soft' | 'hard'
+      ts: number
+    }
 
 export type EventType = AgentEvent['type']
 export type EventByType<T extends EventType> = Extract<AgentEvent, { type: T }>

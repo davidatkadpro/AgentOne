@@ -67,6 +67,12 @@ export interface ChatRequest {
   tools?: ToolDefinition[]
   /** OpenAI 'auto' | 'none' | { type: 'function', function: { name } } */
   toolChoice?: 'auto' | 'none'
+  /**
+   * Optional cancellation signal. When aborted, the provider should stop
+   * streaming, close any open response body, and throw a recognisable
+   * abort error. The orchestrator uses this to interrupt in-flight turns.
+   */
+  signal?: AbortSignal
 }
 
 export interface ChatChunk {
