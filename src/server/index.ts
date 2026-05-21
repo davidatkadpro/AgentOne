@@ -13,6 +13,8 @@ import { loadModelProfiles } from '../profiles/model-profile.js'
 import { loadAgentProfile } from '../profiles/agent-profile.js'
 import { ContextManager } from '../context/context-manager.js'
 import { AutoDistillScheduler } from '../orchestrator/auto-distill.js'
+import { DocumentIndex } from '../memory/documents/doc-index.js'
+import { extractByFormat } from '../../skills/system/documents/tools/extractors.js'
 import { LMStudioProvider } from '../providers/lmstudio.js'
 import { OpenRouterProvider } from '../providers/openrouter.js'
 import { ProviderRegistry } from '../providers/registry.js'
@@ -344,6 +346,19 @@ export async function bootstrap(): Promise<void> {
   const store = createConversationStore(db)
   const storage = new LocalFolderAdapter({ root: config.storageRoot })
   const wiki = new WikiEngine({ storage, db, prefix: config.wikiPrefix })
+  const documents = new DocumentIndex({
+    storage,
+    db,
+    extract: async (path, content) => {
+      try {
+        const extracted = await extractByFormat(path, content)
+        return extracted ? extracted.text : null
+      } catch {
+        // Extraction failure on one file shouldn't break the index pass.
+        return null
+      }
+    },
+  })
 
   bus.onAny((e) => {
     if (TRANSIENT_EVENT_TYPES.has(e.type)) return
@@ -473,6 +488,7 @@ export async function bootstrap(): Promise<void> {
     services: {
       storage,
       wiki,
+      documents,
       conversationStore: store,
       recall,
       providers,

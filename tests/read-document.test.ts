@@ -212,4 +212,28 @@ describe('read_document', () => {
     if (result.ok) throw new Error('expected fail')
     expect(result.error.code).toBe('RESOURCE_UNAVAILABLE')
   })
+
+  it('returns TOC instead of body when toc: true', async () => {
+    // XLSX has the easiest TOC to test against the existing fixture — the
+    // sheet names are surfaced as the section list.
+    const result = await readDocument(
+      { path: 'projects/multi.xlsx', max_bytes: 100_000, toc: true },
+      makeCtx(),
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('expected ok')
+    const value = result.value as {
+      toc: Array<{ title: string; level?: number }>
+      toc_count: number
+      text?: string
+    }
+    expect(value.toc.length).toBeGreaterThan(0)
+    expect(value.toc_count).toBe(value.toc.length)
+    // toc=true means no body in the response.
+    expect(value.text).toBeUndefined()
+    // Sheet names are the TOC entries.
+    const titles = value.toc.map((t) => t.title)
+    expect(titles).toContain('Summary')
+    expect(titles).toContain('Detail')
+  })
 })

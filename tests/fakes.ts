@@ -5,6 +5,7 @@ import { ExpertSpendTracker } from '../src/skills/expert-spend.js'
 import { EventBus } from '../src/core/events.js'
 import type { StorageAdapter } from '../src/storage/adapter.js'
 import type { WikiEngine } from '../src/memory/wiki/engine.js'
+import type { DocumentIndex } from '../src/memory/documents/doc-index.js'
 import type { ConversationStore } from '../src/storage/sqlite.js'
 import type { HybridRecall } from '../src/search/hybrid.js'
 import type { PermissionGate } from '../src/profiles/permission-gate.js'
@@ -82,6 +83,7 @@ export function fakeServices(overrides: Partial<ToolServices> = {}): ToolService
   return {
     storage: {} as unknown as StorageAdapter,
     wiki: {} as unknown as WikiEngine,
+    documents: {} as unknown as DocumentIndex,
     conversationStore: {} as unknown as ConversationStore,
     recall: {} as unknown as HybridRecall,
     providers: new ProviderRegistry(),

@@ -1,10 +1,13 @@
 ---
 name: documents
-description: Read PDF, Word (docx), and Excel (xlsx) files from the storage root. Returns extracted text. Use this for any non-plain-text file under projects/.
+description: Read and search PDF, Word (docx), and Excel (xlsx) files from the storage root. Use this for any non-plain-text file under projects/.
 tools:
   - id: read_document
     handler: ./tools/read-document.ts
-    description: Extract text from a PDF / DOCX / XLSX file. Optional pages= for PDFs and sheet= for XLSX let you narrow what's returned. Returns plain text plus the detected format and a few bytes of metadata.
+    description: Extract text from a PDF / DOCX / XLSX file. Optional pages= for PDFs and sheet= for XLSX let you narrow what's returned. Pass toc=true to get only the section list (PDF outline, DOCX headings, XLSX sheet names) without body text — useful before paginating a long document.
+  - id: doc_search
+    handler: ./tools/doc-search.ts
+    description: FTS5 search across all indexed project documents. Returns ranked hits with snippets and paths. Faster than reading every file when you need to find which document contains a phrase. Index refreshes automatically on file mtime change.
 ---
 
 # Documents

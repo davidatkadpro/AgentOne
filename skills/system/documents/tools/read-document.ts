@@ -1,9 +1,15 @@
 import { z } from 'zod'
-import { PDFParse } from 'pdf-parse'
-import * as mammoth from 'mammoth'
-import * as XLSX from 'xlsx'
 import { StorageError } from '../../../../src/storage/adapter.js'
 import { fail, ok, type ToolHandler } from '../../../../src/skills/tool.js'
+import {
+  detectFormat,
+  extractDocx,
+  extractPdf,
+  extractXlsx,
+  parsePageSpec,
+  type ExtractedDoc,
+  type Format,
+} from './extractors.js'
 
 export const parameters = z.object({
   path: z
@@ -23,16 +29,11 @@ export const parameters = z.object({
     .positive()
     .default(200_000)
     .describe('Cap on returned text size. Default 200 KB.'),
+  toc: z
+    .boolean()
+    .optional()
+    .describe('When true, omit body text and return only the section list (PDF outline, DOCX headings, XLSX sheets). Useful before paginating a long document.'),
 })
-
-type Format = 'pdf' | 'docx' | 'xlsx'
-
-const EXT_TO_FORMAT: Record<string, Format> = {
-  '.pdf': 'pdf',
-  '.docx': 'docx',
-  '.xlsx': 'xlsx',
-  '.xls': 'xlsx',
-}
 
 export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
   const format = detectFormat(args.path)
@@ -59,6 +60,16 @@ export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
 
   try {
     const extracted = await extract(format, buffer, args)
+    if (args.toc) {
+      return ok({
+        path: args.path,
+        format,
+        toc: extracted.toc,
+        toc_count: extracted.toc.length,
+        bytes_read: buffer.length,
+        ...extracted.meta,
+      })
+    }
     const truncated = extracted.text.length > args.max_bytes
     const text = truncated ? extracted.text.slice(0, args.max_bytes) : extracted.text
     return ok({
@@ -78,108 +89,16 @@ export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
   }
 }
 
-interface Extracted {
-  text: string
-  meta: Record<string, unknown>
-}
-
 async function extract(
   format: Format,
   buffer: Buffer,
   args: z.infer<typeof parameters>,
-): Promise<Extracted> {
-  if (format === 'pdf') return extractPdf(buffer, args.pages)
+): Promise<ExtractedDoc> {
+  if (format === 'pdf') {
+    return extractPdf(buffer, args.pages ? parsePageSpec(args.pages) : undefined)
+  }
   if (format === 'docx') return extractDocx(buffer)
   return extractXlsx(buffer, args.sheet)
-}
-
-async function extractPdf(buffer: Buffer, pages?: string): Promise<Extracted> {
-  const parser = new PDFParse({ data: buffer })
-  try {
-    const result = pages
-      ? await parser.getText({ partial: parsePageSpec(pages) })
-      : await parser.getText()
-    return {
-      text: result.text,
-      meta: {
-        page_count: result.pages.length,
-        page_numbers: result.pages.map((p) => p.num),
-      },
-    }
-  } finally {
-    await parser.destroy().catch(() => undefined)
-  }
-}
-
-async function extractDocx(buffer: Buffer): Promise<Extracted> {
-  const result = await mammoth.extractRawText({ buffer })
-  return {
-    text: result.value,
-    meta: {
-      // mammoth surfaces conversion warnings (unsupported elements etc) here;
-      // include them so the agent knows when extraction was lossy.
-      messages: result.messages.map((m) => `${m.type}: ${m.message}`),
-    },
-  }
-}
-
-function extractXlsx(buffer: Buffer, sheet?: string | number): Extracted {
-  const workbook = XLSX.read(buffer, { type: 'buffer' })
-  const sheetNames = workbook.SheetNames
-  const selected = selectSheets(sheetNames, sheet)
-  if (selected.length === 0) {
-    throw new Error(
-      `Sheet "${sheet}" not found. Available: ${sheetNames.join(', ')}`,
-    )
-  }
-  const parts: string[] = []
-  for (const name of selected) {
-    const ws = workbook.Sheets[name]
-    if (!ws) continue
-    const csv = XLSX.utils.sheet_to_csv(ws, { FS: '\t' })
-    parts.push(`## Sheet: ${name}\n\n${csv.trimEnd()}`)
-  }
-  return {
-    text: parts.join('\n\n'),
-    meta: {
-      sheets: sheetNames,
-      sheets_returned: selected,
-    },
-  }
-}
-
-function selectSheets(names: string[], sheet?: string | number): string[] {
-  if (sheet === undefined) return names
-  if (typeof sheet === 'number') {
-    return sheet >= 0 && sheet < names.length ? [names[sheet]!] : []
-  }
-  return names.includes(sheet) ? [sheet] : []
-}
-
-function parsePageSpec(spec: string): number[] {
-  const out = new Set<number>()
-  for (const part of spec.split(',')) {
-    const trimmed = part.trim()
-    if (!trimmed) continue
-    const dash = trimmed.indexOf('-')
-    if (dash === -1) {
-      const n = Number(trimmed)
-      if (Number.isInteger(n) && n > 0) out.add(n)
-    } else {
-      const start = Number(trimmed.slice(0, dash))
-      const end = Number(trimmed.slice(dash + 1))
-      if (Number.isInteger(start) && Number.isInteger(end) && start > 0 && end >= start) {
-        for (let i = start; i <= end; i++) out.add(i)
-      }
-    }
-  }
-  return [...out].sort((a, b) => a - b)
-}
-
-function detectFormat(path: string): Format | null {
-  const dot = path.lastIndexOf('.')
-  if (dot === -1) return null
-  return EXT_TO_FORMAT[path.slice(dot).toLowerCase()] ?? null
 }
 
 export default { parameters, handler }

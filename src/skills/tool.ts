@@ -1,6 +1,7 @@
 import type { z } from 'zod'
 import type { StorageAdapter } from '../storage/adapter.js'
 import type { WikiEngine } from '../memory/wiki/engine.js'
+import type { DocumentIndex } from '../memory/documents/doc-index.js'
 import type { ConversationStore } from '../storage/sqlite.js'
 import type { HybridRecall } from '../search/hybrid.js'
 import type { ProviderRegistry } from '../providers/registry.js'
@@ -43,6 +44,9 @@ export type ToolResult<T = unknown> =
 export interface ToolServices {
   storage: StorageAdapter
   wiki: WikiEngine
+  /** Lazy FTS5 index over project documents. Used by doc_search. Re-extracts
+   *  on mtime change; nullable for tests that don't need it. */
+  documents: DocumentIndex
   conversationStore: ConversationStore
   recall: HybridRecall
   /** Providers keyed by id ('lmstudio', 'openrouter'). Used by consult_expert. */
