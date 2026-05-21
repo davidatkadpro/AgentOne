@@ -150,6 +150,12 @@ export type AgentEvent =
       ts: number
     }
   | {
+      type: 'session.titled'
+      sessionId: string
+      title: string
+      ts: number
+    }
+  | {
       type: 'session.auto_distilled'
       sessionId: string
       notesCount: number

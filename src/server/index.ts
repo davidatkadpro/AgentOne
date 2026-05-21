@@ -13,6 +13,7 @@ import { loadModelProfiles } from '../profiles/model-profile.js'
 import { loadAgentProfile } from '../profiles/agent-profile.js'
 import { ContextManager } from '../context/context-manager.js'
 import { AutoDistillScheduler } from '../orchestrator/auto-distill.js'
+import { AutoTitler } from '../orchestrator/auto-titler.js'
 import { DocumentIndex } from '../memory/documents/doc-index.js'
 import { extractByFormat } from '../../skills/system/documents/tools/extractors.js'
 import { LMStudioProvider } from '../providers/lmstudio.js'
@@ -37,6 +38,7 @@ import { EmbeddingIndexer } from '../search/embedding-indexer.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const SendMessageBody = z.object({ text: z.string().min(1) })
+const RenameSessionBody = z.object({ title: z.string().min(1).max(200) })
 const CreateSessionBody = z.object({
   agentProfile: z.string().default('_base'),
   title: z.string().nullable().optional(),
@@ -174,6 +176,32 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     }
     const outcome = await deps.orchestrator.cancelSession(params.data.id)
     return { outcome }
+  })
+
+  app.patch('/api/sessions/:id', async (req, reply) => {
+    const params = SessionIdParams.safeParse(req.params)
+    if (!params.success) {
+      reply.code(400)
+      return { error: 'Invalid session id' }
+    }
+    const body = RenameSessionBody.safeParse(req.body ?? {})
+    if (!body.success) {
+      reply.code(400)
+      return { error: 'Invalid body', details: body.error.flatten() }
+    }
+    const session = deps.store.getSession(params.data.id)
+    if (!session) {
+      reply.code(404)
+      return { error: 'Session not found' }
+    }
+    deps.store.setSessionTitle(params.data.id, body.data.title)
+    await deps.bus.emit({
+      type: 'session.titled',
+      sessionId: params.data.id,
+      title: body.data.title,
+      ts: Date.now(),
+    })
+    return { session: { ...session, title: body.data.title } }
   })
 
   app.get('/api/commands', async () => {
@@ -496,6 +524,20 @@ export async function bootstrap(): Promise<void> {
       eventBus: bus,
     },
   })
+
+  // Auto-titler: always on. Generates short titles for sessions that hit
+  // the trigger threshold without one. Failures are swallowed inside the
+  // titler — never blocks the chat.
+  const autoTitler = new AutoTitler(
+    {},
+    {
+      store,
+      titlerProvider: compressorProvider,
+      titlerModel: compressorModel.model,
+      eventBus: bus,
+    },
+  )
+  autoTitler.start()
 
   const commands = buildCommandRegistry(skillIndex)
 

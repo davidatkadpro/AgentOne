@@ -257,9 +257,7 @@ export class ContextManager {
   }
 
   private async callCompressor(toCompress: Message[]): Promise<string> {
-    const transcript = toCompress
-      .map((m) => `${ROLE_LABEL[m.role]}: ${m.content ?? ''}`)
-      .join('\n\n')
+    const transcript = toCompress.map((m) => renderMessageForCompressor(m)).join('\n\n')
 
     const res = await this.cfg.compressorProvider.chat({
       model: this.cfg.compressorModel,
@@ -267,7 +265,11 @@ export class ContextManager {
         {
           role: 'system',
           content:
-            'You compress conversations. Produce a terse prose summary of facts, decisions, and open questions. Preserve names, paths, and tool call outcomes verbatim. Do not include conversational filler.',
+            'You compress conversations. Produce a terse prose summary of facts, decisions, and open questions. ' +
+            'Preserve names, paths, file references, and the agent\'s tool calls verbatim — when the transcript ' +
+            'shows TOOL_CALL or TOOL_RESULT entries, include them as a structured "Tool log:" section at the end ' +
+            'of the summary listing each call as `- <tool>(<short args>) -> <short result or status>`. ' +
+            'Do not include conversational filler.',
         },
         {
           role: 'user',
@@ -283,6 +285,44 @@ export class ContextManager {
     }
     return res.content
   }
+}
+
+/**
+ * Render one message into the compressor's input transcript. Critically:
+ * tool calls (on assistant messages) and tool results (role='tool') are
+ * surfaced as structured TOOL_CALL / TOOL_RESULT lines so the compressor
+ * has the data it needs to preserve them verbatim in the summary
+ * (PRD #44).
+ *
+ * Exported for testing.
+ */
+export function renderMessageForCompressor(m: Message): string {
+  const label = ROLE_LABEL[m.role]
+  const lines: string[] = []
+  // Render free-form content for user/assistant/system. Tool results use
+  // the dedicated TOOL_RESULT line below so they get truncated for the
+  // compressor's input window.
+  if (m.role !== 'tool' && m.content && m.content.trim().length > 0) {
+    lines.push(`${label}: ${m.content}`)
+  }
+  if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
+    for (const tc of m.tool_calls) {
+      lines.push(
+        `TOOL_CALL: ${tc.function.name}(${truncateForLog(tc.function.arguments, 240)}) [id=${tc.id}]`,
+      )
+    }
+  }
+  if (m.role === 'tool') {
+    const id = m.tool_call_id ?? '?'
+    const body = m.content ?? ''
+    lines.push(`TOOL_RESULT[id=${id}]: ${truncateForLog(body, 480)}`)
+  }
+  return lines.join('\n')
+}
+
+function truncateForLog(s: string, max: number): string {
+  if (s.length <= max) return s
+  return s.slice(0, max - 1) + '…'
 }
 
 /**

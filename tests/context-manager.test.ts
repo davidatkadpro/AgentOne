@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { ContextManager } from '@/context/context-manager.js'
+import {
+  ContextManager,
+  renderMessageForCompressor,
+} from '@/context/context-manager.js'
 import { EventBus, type AgentEvent } from '@/core/events.js'
 import type { Message } from '@/core/types.js'
 import { FakeProvider, type FakeProviderOptions } from './fakes.js'
@@ -229,6 +232,45 @@ describe('ContextManager', () => {
       // And neither message ever got the truncation marker.
       if (userMsg) expect(userMsg.content).not.toContain('read_turn')
       if (assistantMsg) expect(assistantMsg.content).not.toContain('read_turn')
+    })
+
+    it('renders tool calls + results as structured lines for the compressor (PRD #44)', () => {
+      const assistantWithToolCall: Message = {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'tc-abc',
+            type: 'function',
+            function: { name: 'wiki_read', arguments: '{"path":"x"}' },
+          },
+        ],
+      }
+      const toolResult: Message = {
+        role: 'tool',
+        tool_call_id: 'tc-abc',
+        content: '{"ok":true,"value":{"body":"page content"}}',
+      }
+      const a = renderMessageForCompressor(assistantWithToolCall)
+      const t = renderMessageForCompressor(toolResult)
+      // Tool call info reaches the compressor — id, name, and args.
+      expect(a).toContain('TOOL_CALL: wiki_read')
+      expect(a).toContain('tc-abc')
+      // Tool result is associated back to the call id.
+      expect(t).toContain('TOOL_RESULT')
+      expect(t).toContain('tc-abc')
+      expect(t).toContain('page content')
+    })
+
+    it('truncates very long tool results in the compressor input', () => {
+      const huge = 'x'.repeat(10_000)
+      const out = renderMessageForCompressor({
+        role: 'tool',
+        tool_call_id: 'tc-1',
+        content: huge,
+      })
+      expect(out.length).toBeLessThan(huge.length / 2)
+      expect(out).toContain('…') // truncation marker
     })
 
     it('honours truncateThreshold >= 1 as "disabled"', async () => {
