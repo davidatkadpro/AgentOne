@@ -158,4 +158,91 @@ describe('LMStudioProvider.stream', () => {
       }
     }).rejects.toMatchObject({ code: 'BAD_RESPONSE' })
   })
+
+  it('promotes Hermes-format <tool_call> text into native toolCalls and supplies replaceContent', async () => {
+    const hermesContent =
+      "Now I'll call consult_expert with the specified parameters.\n\n" +
+      '<tool_call>\n<function=consult_expert>\n' +
+      '<parameter=expert>\nopenrouter-claude-sonnet\n</parameter>\n' +
+      '<parameter=question>\nWhat is 2+2?\n</parameter>\n' +
+      '<parameter=context>\nbasic math\n</parameter>\n' +
+      '</function>\n</tool_call>'
+    // Split into deltas so the post-stream parser has to reassemble.
+    const halves = [hermesContent.slice(0, 50), hermesContent.slice(50)]
+    const lines = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: halves[0] } }] })}\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: halves[1] }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 60 } })}\n`,
+      'data: [DONE]\n',
+    ]
+    const fetchImpl = vi.fn().mockResolvedValue(sseResponse(lines))
+    const provider = new LMStudioProvider({
+      baseUrl: 'http://localhost:1234/v1',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+
+    const deltas: string[] = []
+    let final: import('@/core/types.js').ChatChunk | null = null
+    for await (const chunk of provider.stream({
+      model: 't',
+      messages: [{ role: 'user', content: 'Hi' }],
+    })) {
+      if (chunk.done) final = chunk
+      else if (chunk.delta) deltas.push(chunk.delta)
+    }
+
+    // Deltas pass through verbatim — the UI sees what the model emitted.
+    expect(deltas.join('')).toBe(hermesContent)
+
+    expect(final?.toolCalls).toHaveLength(1)
+    expect(final?.toolCalls?.[0]!.function.name).toBe('consult_expert')
+    const args = JSON.parse(final!.toolCalls![0]!.function.arguments)
+    expect(args).toEqual({
+      expert: 'openrouter-claude-sonnet',
+      question: 'What is 2+2?',
+      context: 'basic math',
+    })
+
+    // finishReason promoted from stop -> tool_calls so the orchestrator loops.
+    expect(final?.finishReason).toBe('tool_calls')
+
+    // Cleaned content is the narration without the XML block.
+    expect(final?.replaceContent).toBe(
+      "Now I'll call consult_expert with the specified parameters.",
+    )
+  })
+
+  it('merges Hermes-promoted tool calls with native ones from the same response', async () => {
+    const lines = [
+      `data: ${JSON.stringify({
+        choices: [
+          {
+            delta: {
+              content: '<tool_call><function=t2><parameter=x>1</parameter></function></tool_call>',
+              tool_calls: [
+                { index: 0, id: 'call_native', type: 'function', function: { name: 't1', arguments: '{"a":1}' } },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      })}\n`,
+      'data: [DONE]\n',
+    ]
+    const fetchImpl = vi.fn().mockResolvedValue(sseResponse(lines))
+    const provider = new LMStudioProvider({
+      baseUrl: 'http://localhost:1234/v1',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+
+    let final: import('@/core/types.js').ChatChunk | null = null
+    for await (const chunk of provider.stream({
+      model: 't',
+      messages: [{ role: 'user', content: 'Hi' }],
+    })) {
+      if (chunk.done) final = chunk
+    }
+
+    const names = (final?.toolCalls ?? []).map((t) => t.function.name)
+    expect(names).toEqual(['t1', 't2'])
+  })
 })

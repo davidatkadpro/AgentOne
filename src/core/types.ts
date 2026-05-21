@@ -77,6 +77,11 @@ export interface ChatChunk {
   finishReason?: 'stop' | 'length' | 'tool_calls' | 'error'
   /** Present only on the final chunk (done=true). Assembled from streaming deltas. */
   toolCalls?: ToolCallSpec[]
+  /** Present only on the final chunk when the provider has post-processed the
+   *  streamed content — e.g. stripping Hermes-format <tool_call> XML that was
+   *  promoted into toolCalls. Consumers should persist this in place of the
+   *  delta-assembled string. */
+  replaceContent?: string
 }
 
 export interface ChatResponse {

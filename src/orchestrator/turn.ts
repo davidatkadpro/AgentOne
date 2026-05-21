@@ -345,6 +345,12 @@ export class Orchestrator {
           }
           if (chunk.done) {
             if (chunk.toolCalls && chunk.toolCalls.length > 0) toolCalls = chunk.toolCalls
+            // Provider post-processing: when Hermes-format <tool_call> XML
+            // was promoted into native tool_calls, the provider hands back a
+            // cleaned content string for persistence. The streamed deltas
+            // already went to the UI verbatim (one-shot, can't un-emit), but
+            // `collected` drives what we persist + replay to the model.
+            if (chunk.replaceContent !== undefined) collected = chunk.replaceContent
             iterInput = chunk.inputTokens ?? 0
             iterOutput = chunk.outputTokens ?? 0
           }

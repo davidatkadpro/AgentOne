@@ -13,6 +13,7 @@ import {
   type Provider,
   type ProviderCapabilities,
 } from './base.js'
+import { parseHermesToolCalls } from './hermes-tool-call-parser.js'
 
 export interface LMStudioConfig {
   baseUrl: string
@@ -148,6 +149,10 @@ export class LMStudioProvider implements Provider {
     let reasoningBuffer = ''
     let reasoningTruncated = false
     let contentEmitted = false
+    // Accumulate content for post-stream Hermes-format tool-call detection.
+    // qwen3 occasionally regresses to <tool_call> XML emission for specific
+    // tools; we promote those into native tool_calls and strip the XML.
+    let contentBuffer = ''
 
     for await (const event of parseSSE(res.body)) {
       if (event === '[DONE]') break
@@ -168,6 +173,7 @@ export class LMStudioProvider implements Provider {
       if (deltaText) {
         contentCount++
         contentEmitted = true
+        contentBuffer += deltaText
         yield { delta: deltaText, done: false }
       }
       const reasoningDelta = choice.delta?.reasoning_content ?? ''
@@ -200,7 +206,7 @@ export class LMStudioProvider implements Provider {
         outputTokens = parsed.usage.completion_tokens ?? outputTokens
       }
     }
-    const toolCalls = assembleToolCalls(toolCallBuffers)
+    const nativeToolCalls = assembleToolCalls(toolCallBuffers)
     // Reasoning-model fallback: if the model produced *only* reasoning and no
     // content (qwen3.x, deepseek-r occasionally do this on tool-result
     // continuations), surface the reasoning as the response so the answer
@@ -210,19 +216,49 @@ export class LMStudioProvider implements Provider {
     if (
       !contentEmitted &&
       finishReason === 'stop' &&
-      (!toolCalls || toolCalls.length === 0) &&
+      (!nativeToolCalls || nativeToolCalls.length === 0) &&
       reasoningBuffer.trim().length > 0
     ) {
       usedReasoningFallback = true
+      contentBuffer = reasoningBuffer
       yield { delta: reasoningBuffer, done: false }
     }
+
+    // Hermes-format fallback: scan the assembled content for <tool_call> XML
+    // blocks and promote them into native tool_calls. qwen3 occasionally
+    // regresses to text-emission for specific tools (notably consult_expert);
+    // this catches that without changing the model.
+    const hermes = parseHermesToolCalls(contentBuffer)
+    const toolCalls =
+      hermes.toolCalls.length === 0
+        ? nativeToolCalls
+        : [...(nativeToolCalls ?? []), ...hermes.toolCalls]
+    // If Hermes blocks were promoted, also adjust finishReason so the
+    // orchestrator continues the tool loop instead of treating this as the
+    // model's final turn.
+    if (hermes.toolCalls.length > 0 && finishReason === 'stop') {
+      finishReason = 'tool_calls'
+    }
+
     if (debug) {
       // eslint-disable-next-line no-console
       console.error(
-        `[lmstudio.stream] chunks=${chunkCount} content=${contentCount} toolCallChunks=${toolCallChunkCount} reasoningChars=${reasoningBuffer.length} reasoningFallback=${usedReasoningFallback} finish=${finishReason} in=${inputTokens} out=${outputTokens}`,
+        `[lmstudio.stream] chunks=${chunkCount} content=${contentCount} toolCallChunks=${toolCallChunkCount} reasoningChars=${reasoningBuffer.length} reasoningFallback=${usedReasoningFallback} hermesPromoted=${hermes.toolCalls.length} finish=${finishReason} in=${inputTokens} out=${outputTokens}`,
       )
     }
-    yield { delta: '', done: true, inputTokens, outputTokens, finishReason, toolCalls }
+
+    const finalChunk: ChatChunk = {
+      delta: '',
+      done: true,
+      inputTokens,
+      outputTokens,
+      finishReason,
+      ...(toolCalls && { toolCalls }),
+    }
+    if (hermes.toolCalls.length > 0) {
+      finalChunk.replaceContent = hermes.cleanedContent
+    }
+    yield finalChunk
   }
 
   private toBody({ req, stream }: { req: ChatRequest; stream: boolean }): Record<string, unknown> {
