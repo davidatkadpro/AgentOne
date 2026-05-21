@@ -129,6 +129,73 @@ Cancel an in-flight turn. Returns:
 The cancellation propagates as `turn.cancel_requested` then
 `turn.cancelled` (kind: 'soft' | 'hard') events on the WS.
 
+### `GET /api/profiles`
+
+Lists every agent profile under `profiles/agents/*.yaml`. Each entry is
+loaded through the real resolver, so the picker sees what the
+orchestrator would actually use. Broken profiles are surfaced with
+`ok: false` rather than dropped — render them with a warning.
+
+```json
+{
+  "profiles": [
+    {
+      "id": "_base",
+      "description": null,
+      "defaultModel": "local-fast",
+      "defaultSkills": ["system/filesystem", "system/memory"],
+      "ok": true
+    },
+    {
+      "id": "researcher",
+      "description": "Local conversation with expert escalation",
+      "defaultModel": "local-fast",
+      "defaultSkills": ["system/filesystem", "system/web", "experts/consult"],
+      "ok": true
+    },
+    {
+      "id": "broken",
+      "description": null,
+      "defaultModel": "",
+      "defaultSkills": [],
+      "ok": false,
+      "error": "INVALID: ..."
+    }
+  ],
+  "current": "researcher"
+}
+```
+
+`current` is the profile the server is booted with — show it as the
+default selection. Switching profiles requires a server restart with
+`AGENT_PROFILE` set; the UI can't change it on the fly today.
+
+### `GET /api/drafts`
+
+Lists every distilled-notes draft under `wiki/drafts/`. Sorted
+newest-mtime first. Use this to render a review queue for the user.
+
+```json
+{
+  "drafts": [
+    {
+      "path": "drafts/distilled-sess-abc-2026-05-22.md",
+      "sessionId": "sess-abc",
+      "generatedAt": "2026-05-22T00:00:00.000Z",
+      "title": "distilled-sess-abc",
+      "noteCount": 3,
+      "mtime": "2026-05-22T00:00:01.123Z",
+      "bytes": 1234
+    },
+    ...
+  ]
+}
+```
+
+To render full draft content, use `wiki_read` via the agent (the UI
+doesn't have direct file-reading endpoints yet — that would be a future
+addition).
+
 ### `GET /api/commands`
 
 Lists every available slash command — both system commands and skill
@@ -363,15 +430,15 @@ Minimum viable (parity with current UI):
 Beyond current parity:
 
 - [ ] Slash command autocomplete (drop-down on `/`)
-- [ ] Profile picker on new-session (read available profiles from
-      filesystem, surface via a new `GET /api/profiles` endpoint —
-      the endpoint does not exist yet; this is the first item that
-      requires a server change)
+- [ ] Profile picker on new-session — call `GET /api/profiles`,
+      default-select `current`, show `ok: false` entries with a warning
+      icon
 - [ ] Session rename UI
 - [ ] **Cancel button** for in-flight turns (`POST /api/sessions/:id/cancel`)
-- [ ] **Drafts review surface** — list `wiki/drafts/distilled-*.md`,
-      preview content, "promote to canonical" action (which calls the
-      agent with a `wiki_write` request, or hits a new endpoint)
+- [ ] **Drafts review surface** — list via `GET /api/drafts`, preview
+      content via `wiki_read` (through the agent), "promote to
+      canonical" action via `wiki_write` (also through the agent for
+      now)
 - [ ] **Settings inspector** — show the active profile's
       passive_recall, auto_distill, deny_tools, expert budgets. Read
       via `GET /api/health` for now + extend if needed

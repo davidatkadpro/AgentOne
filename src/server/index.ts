@@ -15,6 +15,7 @@ import { ContextManager } from '../context/context-manager.js'
 import { AutoDistillScheduler } from '../orchestrator/auto-distill.js'
 import { AutoTitler } from '../orchestrator/auto-titler.js'
 import { loadEventHooks } from '../hooks/event-hook-runner.js'
+import { listAvailableProfiles, listDrafts } from './profiles-and-drafts.js'
 import { DocumentIndex } from '../memory/documents/doc-index.js'
 import { extractByFormat } from '../../skills/system/documents/tools/extractors.js'
 import { LMStudioProvider } from '../providers/lmstudio.js'
@@ -107,6 +108,16 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.get('/api/sessions', async () => ({
     sessions: deps.store.listSessions(),
   }))
+
+  app.get('/api/profiles', async () => {
+    const profiles = await listAvailableProfiles(deps.config.agentProfilesDir)
+    return { profiles, current: deps.config.agentProfile }
+  })
+
+  app.get('/api/drafts', async () => {
+    const drafts = await listDrafts(deps.config.storageRoot)
+    return { drafts }
+  })
 
   app.post('/api/sessions', async (req, reply) => {
     const parsed = CreateSessionBody.safeParse(req.body ?? {})
