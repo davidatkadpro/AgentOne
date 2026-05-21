@@ -17,6 +17,7 @@ import type { ResolvedAgentProfile } from '../profiles/agent-profile.js'
 import { PermissionGate } from '../profiles/permission-gate.js'
 import { composeSystemMessage } from '../context/prompt-composer.js'
 import { ExpertSpendTracker } from '../skills/expert-spend.js'
+import type { HookRegistry } from '../skills/hooks.js'
 
 export interface OrchestratorConfig {
   store: ConversationStore
@@ -28,6 +29,9 @@ export interface OrchestratorConfig {
   profile: ResolvedAgentProfile
   basePrompt: string
   services: ToolServices
+  /** Optional cross-cutting tool hooks (redaction, audit, deny rules). Shared
+   *  across sessions for now; per-profile config is a future extension. */
+  hooks?: HookRegistry
   /** Cap on tool-loop iterations to prevent runaway agents. */
   maxIterations?: number
   /** Max session states to keep in memory. Oldest evicted FIFO. */
@@ -238,7 +242,7 @@ export class Orchestrator {
   }
 
   private async buildSessionState(sessionId: string): Promise<SessionState> {
-    const registry = new ToolRegistry()
+    const registry = new ToolRegistry(this.cfg.hooks, this.cfg.eventBus)
     const loadedSkills = new Set<string>()
     const permissions = new PermissionGate(this.cfg.profile)
 

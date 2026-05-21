@@ -69,6 +69,21 @@ export type AgentEvent =
       ts: number
     }
   | {
+      type: 'tool.hook_denied'
+      sessionId: string
+      tool: string
+      hook: string
+      reason: string
+      ts: number
+    }
+  | {
+      type: 'tool.hook_mocked'
+      sessionId: string
+      tool: string
+      hook: string
+      ts: number
+    }
+  | {
       type: 'skill.loading'
       sessionId: string
       name: string

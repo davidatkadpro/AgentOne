@@ -23,6 +23,9 @@ const Env = z.object({
   FRONTEND_DIR: z.string().default('./src/frontend'),
   STORAGE_ROOT: z.string().default('./storage'),
   WIKI_PREFIX: z.string().default('wiki'),
+  /** When set, install the example audit-log hook and write a JSONL record
+   *  per tool call to this path. Empty / unset disables the hook. */
+  AUDIT_LOG_PATH: z.string().optional(),
   LOG_EVENTS: z
     .enum(['0', '1', 'true', 'false'])
     .default('0')
@@ -49,6 +52,7 @@ export interface ServerConfig {
   frontendDir: string
   storageRoot: string
   wikiPrefix: string
+  auditLogPath: string | null
   logEvents: boolean
 }
 
@@ -74,6 +78,7 @@ export function loadConfigFromEnv(): ServerConfig {
     frontendDir: parsed.FRONTEND_DIR,
     storageRoot: resolve(parsed.STORAGE_ROOT),
     wikiPrefix: parsed.WIKI_PREFIX,
+    auditLogPath: parsed.AUDIT_LOG_PATH ? resolve(parsed.AUDIT_LOG_PATH) : null,
     logEvents: parsed.LOG_EVENTS,
   }
 }

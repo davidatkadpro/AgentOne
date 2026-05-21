@@ -2,6 +2,8 @@ import type { RegisteredTool, ToolContext, ToolResult } from './tool.js'
 import { fail } from './tool.js'
 import type { ToolDefinition } from '../core/types.js'
 import { zodToJsonSchema } from './zod-to-json.js'
+import type { HookRegistry, ToolHookContext } from './hooks.js'
+import type { EventBus } from '../core/events.js'
 
 export interface ToolExecutionResult {
   result: ToolResult
@@ -18,6 +20,11 @@ const DEFAULT_TIMEOUT_MS = 10_000
 export class ToolRegistry {
   private tools = new Map<string, RegisteredTool>()
   private cachedDefs: ToolDefinition[] | null = null
+
+  constructor(
+    private readonly hooks?: HookRegistry,
+    private readonly eventBus?: EventBus,
+  ) {}
 
   register(tool: RegisteredTool): void {
     if (this.tools.has(tool.id)) {
@@ -103,29 +110,112 @@ export class ToolRegistry {
 
     const timeoutMs = tool.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
-    try {
-      const result = await raceTimeout(
-        Promise.resolve(tool.handler(validation.data, ctx)),
-        timeoutMs,
-      )
-      return wrap(start, normaliseResult(result))
-    } catch (err) {
-      if (err instanceof TimeoutError) {
+    const partialHookCtx: Omit<ToolHookContext, 'args'> = {
+      sessionId: ctx.sessionId,
+      agentProfile: ctx.agentProfile,
+      toolId: id,
+      toolSource: tool.source,
+    }
+
+    // Pre-hook chain. Fails closed: a hook crash becomes TOOL_RUNTIME and the
+    // handler never runs.
+    let effectiveArgs: unknown = validation.data
+    let mockedResult: ToolResult | null = null
+    if (this.hooks) {
+      let preOutcome
+      try {
+        preOutcome = await this.hooks.runPre(validation.data, partialHookCtx)
+      } catch (err) {
         return wrap(
           start,
-          fail('TOOL_TIMEOUT', `Tool ${id} exceeded timeout of ${timeoutMs}ms`, false),
+          fail(
+            'TOOL_RUNTIME',
+            `Pre-hook crashed: ${err instanceof Error ? err.message : String(err)}`,
+            false,
+          ),
         )
       }
-      return wrap(
-        start,
-        fail(
-          'TOOL_RUNTIME',
-          err instanceof Error ? err.message : String(err),
-          false,
-          err instanceof Error && err.stack ? { stack: err.stack } : undefined,
-        ),
-      )
+      if (preOutcome.kind === 'deny') {
+        void this.eventBus?.emit({
+          type: 'tool.hook_denied',
+          sessionId: ctx.sessionId,
+          tool: id,
+          hook: preOutcome.byHook,
+          reason: preOutcome.reason,
+          ts: Date.now(),
+        })
+        return wrap(
+          start,
+          fail(
+            'PERMISSION_DENIED',
+            `Tool ${id} denied by hook "${preOutcome.byHook}": ${preOutcome.reason}`,
+            false,
+          ),
+        )
+      }
+      if (preOutcome.kind === 'mock') {
+        void this.eventBus?.emit({
+          type: 'tool.hook_mocked',
+          sessionId: ctx.sessionId,
+          tool: id,
+          hook: preOutcome.byHook,
+          ts: Date.now(),
+        })
+        mockedResult = normaliseResult(preOutcome.result)
+      } else {
+        effectiveArgs = preOutcome.args
+      }
     }
+
+    let handlerResult: ToolResult
+    if (mockedResult !== null) {
+      handlerResult = mockedResult
+    } else {
+      try {
+        const r = await raceTimeout(
+          Promise.resolve(tool.handler(effectiveArgs as never, ctx)),
+          timeoutMs,
+        )
+        handlerResult = normaliseResult(r)
+      } catch (err) {
+        if (err instanceof TimeoutError) {
+          handlerResult = fail(
+            'TOOL_TIMEOUT',
+            `Tool ${id} exceeded timeout of ${timeoutMs}ms`,
+            false,
+          )
+        } else {
+          handlerResult = fail(
+            'TOOL_RUNTIME',
+            err instanceof Error ? err.message : String(err),
+            false,
+            err instanceof Error && err.stack ? { stack: err.stack } : undefined,
+          )
+        }
+      }
+    }
+
+    // Post-hook chain. Every hook always runs (audit hooks need to see the
+    // final result even on failure). Fails closed.
+    if (this.hooks) {
+      try {
+        handlerResult = await this.hooks.runPost(handlerResult, {
+          ...partialHookCtx,
+          args: effectiveArgs,
+        })
+      } catch (err) {
+        return wrap(
+          start,
+          fail(
+            'TOOL_RUNTIME',
+            `Post-hook crashed: ${err instanceof Error ? err.message : String(err)}`,
+            false,
+          ),
+        )
+      }
+    }
+
+    return wrap(start, handlerResult)
   }
 }
 

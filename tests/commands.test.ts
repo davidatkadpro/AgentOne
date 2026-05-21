@@ -44,6 +44,7 @@ function fakeConfig(): ServerConfig {
     frontendDir: '',
     storageRoot: '',
     wikiPrefix: 'wiki',
+    auditLogPath: null,
     logEvents: false,
   }
 }

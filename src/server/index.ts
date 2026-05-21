@@ -15,6 +15,8 @@ import { ContextManager } from '../context/context-manager.js'
 import { LMStudioProvider } from '../providers/lmstudio.js'
 import { OpenRouterProvider } from '../providers/openrouter.js'
 import { ProviderRegistry } from '../providers/registry.js'
+import { HookRegistry } from '../skills/hooks.js'
+import { buildAuditLogHook } from '../skills/audit-log-hook.js'
 import { createDatabase } from '../storage/db.js'
 import { createConversationStore, type ConversationStore } from '../storage/sqlite.js'
 import { LocalFolderAdapter } from '../storage/local-folder.js'
@@ -416,11 +418,23 @@ export async function bootstrap(): Promise<void> {
     }
   }
 
+  // Cross-cutting tool hooks (redaction, audit, deny rules). The example
+  // audit-log hook is opt-in via AUDIT_LOG_PATH — when set, every tool call
+  // appends a JSONL record to that file so operators have a tamper-evident
+  // record outside the SQLite event_log.
+  const hookRegistry = new HookRegistry()
+  if (config.auditLogPath) {
+    hookRegistry.addPostHook(buildAuditLogHook({ path: config.auditLogPath }))
+    // eslint-disable-next-line no-console
+    console.log(`  Tool audit log: ${config.auditLogPath}`)
+  }
+
   const orchestrator = new Orchestrator({
     store,
     contextManager,
     provider: conversationProvider,
     conversationModel,
+    hooks: hookRegistry,
     eventBus: bus,
     skillIndex,
     profile: agentProfile,
