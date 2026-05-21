@@ -17,7 +17,7 @@ import type { ResolvedAgentProfile } from '../profiles/agent-profile.js'
 import { PermissionGate } from '../profiles/permission-gate.js'
 import { composeSystemMessage } from '../context/prompt-composer.js'
 import { ExpertSpendTracker } from '../skills/expert-spend.js'
-import type { HookRegistry } from '../skills/hooks.js'
+import { HookRegistry, buildDenyToolsHook } from '../skills/hooks.js'
 import {
   buildPassiveRecall,
   recallToMessage,
@@ -272,7 +272,16 @@ export class Orchestrator {
   }
 
   private async buildSessionState(sessionId: string): Promise<SessionState> {
-    const registry = new ToolRegistry(this.cfg.hooks, this.cfg.eventBus)
+    // Compose a per-session HookRegistry: cross-cutting hooks from the
+    // server config (audit-log, redaction) plus profile-derived hooks
+    // (deny_tools). Each session gets a fresh registry so a profile's
+    // deny list doesn't leak across sessions running other profiles.
+    const baseHooks = this.cfg.hooks ?? new HookRegistry()
+    const sessionHooks =
+      this.cfg.profile.denyTools.length > 0
+        ? baseHooks.compose({ pre: [buildDenyToolsHook(this.cfg.profile.denyTools)] })
+        : baseHooks
+    const registry = new ToolRegistry(sessionHooks, this.cfg.eventBus)
     const loadedSkills = new Set<string>()
     const permissions = new PermissionGate(this.cfg.profile)
 

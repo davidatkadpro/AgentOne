@@ -153,6 +153,33 @@ passive_recall:
     expect(p.passiveRecall.historyHits).toBe(3)
   })
 
+  it('deny_tools: defaults to empty list when absent', async () => {
+    await write('_base', `id: _base\ndefault_model: local-fast\n`)
+    const p = await loadAgentProfile(dir, '_base')
+    expect(p.denyTools).toEqual([])
+  })
+
+  it('deny_tools: child + base lists are union-merged (stack only, no un-deny)', async () => {
+    await write(
+      '_base',
+      `id: _base
+default_model: local-fast
+deny_tools:
+  - shell_*
+`,
+    )
+    await write(
+      'child',
+      `id: child
+extends: _base
+deny_tools:
+  - consult_expert
+`,
+    )
+    const p = await loadAgentProfile(dir, 'child')
+    expect(p.denyTools.sort()).toEqual(['consult_expert', 'shell_*'])
+  })
+
   it('passive_recall: child inherits the base block when omitted', async () => {
     await write(
       '_base',

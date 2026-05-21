@@ -41,6 +41,13 @@ export type PostHookResult =
 
 export interface PreToolHook {
   name: string
+  /**
+   * Tool-id selectors. The hook only runs when `ctx.toolId` matches at
+   * least one pattern. Patterns: exact id (`wiki_read`), prefix wildcard
+   * (`wiki_*`), or `*` for all. Omit/empty = matches all (backward-compat
+   * with hooks that handle their own filtering).
+   */
+  match?: readonly string[]
   fn(
     args: unknown,
     ctx: ToolHookContext,
@@ -49,10 +56,53 @@ export interface PreToolHook {
 
 export interface PostToolHook {
   name: string
+  /** See PreToolHook.match. */
+  match?: readonly string[]
   fn(
     result: ToolResult,
     ctx: ToolHookContext,
   ): Promise<PostHookResult> | PostHookResult
+}
+
+/**
+ * Build a pre-hook that denies any tool call whose id matches one of the
+ * given patterns. Used to enforce profile-declared `deny_tools` lists.
+ * The hook itself doesn't restrict via `match: ...` — it inspects ctx.toolId
+ * dynamically so a single instance covers any number of patterns and
+ * surfaces a useful reason string back to the agent.
+ */
+export function buildDenyToolsHook(patterns: readonly string[]): PreToolHook {
+  return {
+    name: 'profile-deny-tools',
+    fn(_args, ctx) {
+      for (const p of patterns) {
+        if (matchesToolId([p], ctx.toolId)) {
+          return {
+            decision: 'deny',
+            reason: `tool "${ctx.toolId}" denied by agent profile "${ctx.agentProfile}" (deny_tools: "${p}")`,
+          }
+        }
+      }
+      return { decision: 'allow' }
+    },
+  }
+}
+
+/**
+ * Test whether a tool id matches at least one of the given patterns.
+ * Patterns: literal match, prefix-with-wildcard (`wiki_*`), or `*`.
+ * An empty/undefined pattern list is treated as match-all (preserves
+ * pre-extension hook behavior).
+ *
+ * Exported for testing.
+ */
+export function matchesToolId(patterns: readonly string[] | undefined, toolId: string): boolean {
+  if (!patterns || patterns.length === 0) return true
+  for (const p of patterns) {
+    if (p === '*' || p === toolId) return true
+    if (p.endsWith('*') && toolId.startsWith(p.slice(0, -1))) return true
+  }
+  return false
 }
 
 /** Result of running the pre-chain — what the registry should do next. */
@@ -85,6 +135,7 @@ export class HookRegistry {
   async runPre(args: unknown, ctx: Omit<ToolHookContext, 'args'>): Promise<PreChainOutcome> {
     let currentArgs = args
     for (const hook of this.preHooks) {
+      if (!matchesToolId(hook.match, ctx.toolId)) continue
       const r = await hook.fn(currentArgs, { ...ctx, args: currentArgs })
       if (r.decision === 'deny') {
         return { kind: 'deny', reason: r.reason, byHook: hook.name }
@@ -108,9 +159,25 @@ export class HookRegistry {
   ): Promise<ToolResult> {
     let current = result
     for (const hook of this.postHooks) {
+      if (!matchesToolId(hook.match, ctx.toolId)) continue
       const r = await hook.fn(current, ctx)
       if (r.transform === 'replace') current = r.result
     }
     return current
+  }
+
+  /**
+   * Build a new HookRegistry that inherits pre + post hooks from this one
+   * plus any extras. Used to compose per-session registries that include
+   * cross-cutting hooks (audit, redaction) from the server config and
+   * per-profile policy hooks (deny lists) from the agent profile.
+   */
+  compose(extras: { pre?: PreToolHook[]; post?: PostToolHook[] }): HookRegistry {
+    const out = new HookRegistry()
+    for (const h of this.preHooks) out.preHooks.push(h)
+    for (const h of this.postHooks) out.postHooks.push(h)
+    for (const h of extras.pre ?? []) out.preHooks.push(h)
+    for (const h of extras.post ?? []) out.postHooks.push(h)
+    return out
   }
 }

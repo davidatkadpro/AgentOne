@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
-import { HookRegistry, type PreToolHook, type PostToolHook } from '@/skills/hooks.js'
+import {
+  HookRegistry,
+  matchesToolId,
+  buildDenyToolsHook,
+  type PreToolHook,
+  type PostToolHook,
+} from '@/skills/hooks.js'
 import { ToolRegistry } from '@/skills/registry.js'
 import type { ToolHandler, ToolResult } from '@/skills/tool.js'
 import { ok, fail } from '@/skills/tool.js'
@@ -360,6 +366,171 @@ function mutator(name: string, transform: (a: unknown) => unknown): PreToolHook 
     fn: (args) => ({ decision: 'allow', args: transform(args) }),
   }
 }
+
+describe('matchesToolId', () => {
+  it('treats undefined/empty patterns as match-all (backward compat)', () => {
+    expect(matchesToolId(undefined, 'wiki_read')).toBe(true)
+    expect(matchesToolId([], 'wiki_read')).toBe(true)
+  })
+
+  it('matches an exact tool id', () => {
+    expect(matchesToolId(['wiki_read'], 'wiki_read')).toBe(true)
+    expect(matchesToolId(['wiki_read'], 'wiki_write')).toBe(false)
+  })
+
+  it('matches prefix wildcard', () => {
+    expect(matchesToolId(['wiki_*'], 'wiki_read')).toBe(true)
+    expect(matchesToolId(['wiki_*'], 'wiki_write')).toBe(true)
+    expect(matchesToolId(['wiki_*'], 'read_document')).toBe(false)
+  })
+
+  it('matches `*` as catch-all', () => {
+    expect(matchesToolId(['*'], 'anything')).toBe(true)
+  })
+
+  it('returns true if any pattern in the list matches', () => {
+    expect(matchesToolId(['wiki_*', 'consult_expert'], 'consult_expert')).toBe(true)
+    expect(matchesToolId(['wiki_*', 'consult_expert'], 'read_document')).toBe(false)
+  })
+})
+
+describe('HookRegistry pre-chain with match selectors', () => {
+  it('only runs hooks whose match patterns include the toolId', async () => {
+    const r = new HookRegistry()
+    let wikiCalled = false
+    let allCalled = false
+    r.addPreHook({
+      name: 'wiki-only',
+      match: ['wiki_*'],
+      fn: () => {
+        wikiCalled = true
+        return { decision: 'allow' }
+      },
+    })
+    r.addPreHook({
+      name: 'all',
+      fn: () => {
+        allCalled = true
+        return { decision: 'allow' }
+      },
+    })
+    await r.runPre({}, { ...ctxBase(), toolId: 'consult_expert' })
+    expect(wikiCalled).toBe(false)
+    expect(allCalled).toBe(true)
+  })
+
+  it('runs a wiki-only hook when the toolId matches', async () => {
+    const r = new HookRegistry()
+    r.addPreHook({
+      name: 'wiki-deny',
+      match: ['wiki_*'],
+      fn: () => ({ decision: 'deny', reason: 'no wiki' }),
+    })
+    const outcome = await r.runPre({}, { ...ctxBase(), toolId: 'wiki_write' })
+    expect(outcome.kind).toBe('deny')
+  })
+})
+
+describe('HookRegistry post-chain with match selectors', () => {
+  it('only runs post-hooks whose match patterns include the toolId', async () => {
+    const r = new HookRegistry()
+    const calls: string[] = []
+    r.addPostHook({
+      name: 'wiki-tap',
+      match: ['wiki_*'],
+      fn: () => {
+        calls.push('wiki-tap')
+        return { transform: 'pass' }
+      },
+    })
+    r.addPostHook({
+      name: 'always',
+      fn: () => {
+        calls.push('always')
+        return { transform: 'pass' }
+      },
+    })
+    await r.runPost(ok({}), { ...ctxBase(), toolId: 'consult_expert', args: {} })
+    expect(calls).toEqual(['always'])
+  })
+})
+
+describe('HookRegistry.compose', () => {
+  it('returns a new registry with both inherited and extra hooks', async () => {
+    const base = new HookRegistry()
+    const calls: string[] = []
+    base.addPreHook({
+      name: 'base',
+      fn: () => {
+        calls.push('base')
+        return { decision: 'allow' }
+      },
+    })
+    const composed = base.compose({
+      pre: [
+        {
+          name: 'extra',
+          fn: () => {
+            calls.push('extra')
+            return { decision: 'allow' }
+          },
+        },
+      ],
+    })
+    await composed.runPre({}, ctxBase())
+    expect(calls).toEqual(['base', 'extra'])
+    // Original registry was not mutated.
+    expect(base.hasAny()).toBe(true)
+    const baseCalls: string[] = []
+    base['preHooks'].forEach(() => baseCalls.push('x'))
+    expect(baseCalls.length).toBe(1) // still only the one
+  })
+
+  it('an extra hook deny still wins, surfaced by hook name', async () => {
+    const base = new HookRegistry()
+    const composed = base.compose({
+      pre: [
+        {
+          name: 'profile-deny',
+          fn: () => ({ decision: 'deny', reason: 'nope' }),
+        },
+      ],
+    })
+    const out = await composed.runPre({}, ctxBase())
+    expect(out.kind).toBe('deny')
+    if (out.kind === 'deny') expect(out.byHook).toBe('profile-deny')
+  })
+})
+
+describe('buildDenyToolsHook', () => {
+  it('denies any tool that matches one of the patterns', async () => {
+    const hook = buildDenyToolsHook(['shell_*', 'consult_expert'])
+    const r1 = await hook.fn({}, { ...ctxBase(), toolId: 'shell_exec', args: {} })
+    expect(r1.decision).toBe('deny')
+    const r2 = await hook.fn({}, { ...ctxBase(), toolId: 'consult_expert', args: {} })
+    expect(r2.decision).toBe('deny')
+  })
+
+  it('allows tools that no pattern matches', async () => {
+    const hook = buildDenyToolsHook(['shell_*'])
+    const r = await hook.fn({}, { ...ctxBase(), toolId: 'wiki_read', args: {} })
+    expect(r.decision).toBe('allow')
+  })
+
+  it('reason names the matching pattern and profile', async () => {
+    const hook = buildDenyToolsHook(['shell_*'])
+    const r = await hook.fn(
+      {},
+      { ...ctxBase(), toolId: 'shell_exec', agentProfile: 'researcher', args: {} },
+    )
+    expect(r.decision).toBe('deny')
+    if (r.decision === 'deny') {
+      expect(r.reason).toContain('shell_exec')
+      expect(r.reason).toContain('researcher')
+      expect(r.reason).toContain('shell_*')
+    }
+  })
+})
 
 // satisfy unused-import lint on PostToolHook (kept for the type re-export)
 void {} as PostToolHook | undefined

@@ -45,6 +45,13 @@ const AgentProfileSchema = z.object({
   default_skills: z.array(z.string()).default([]),
   permissions: PermissionsSchema,
   passive_recall: PassiveRecallSchema,
+  /**
+   * Tool-id patterns that this profile is not permitted to call. Wired
+   * through the HookRegistry as a pre-hook so denied calls surface as a
+   * recoverable PERMISSION_DENIED to the agent (not a hard failure).
+   * Complements permissions.skills.deny (which gates skill *loading*).
+   */
+  deny_tools: z.array(z.string()).default([]),
 })
 
 export type RawAgentProfile = z.infer<typeof AgentProfileSchema>
@@ -70,6 +77,8 @@ export interface ResolvedAgentProfile {
     historyHits: number
     maxCharsPerHit: number
   }
+  /** Tool-id deny patterns (union of base + child). See HookRegistry.matchesToolId. */
+  denyTools: string[]
   /** Where the profile YAML file lives — used to resolve relative paths. */
   sourceFile: string
 }
@@ -194,6 +203,11 @@ export async function loadAgentProfile(
     maxCharsPerHit: rawRecall?.max_chars_per_hit ?? 240,
   }
 
+  // deny_tools: union of base + child. Same merge semantics as
+  // permissions.skills.deny — opt-out only stacks, you cannot un-deny
+  // something a base profile prohibited.
+  const denyTools = mergeUnique(base?.deny_tools ?? [], raw.deny_tools)
+
   return {
     id: raw.id,
     ...(raw.description !== undefined && { description: raw.description }),
@@ -212,6 +226,7 @@ export async function loadAgentProfile(
       },
     },
     passiveRecall,
+    denyTools,
     sourceFile: path,
   }
 }
