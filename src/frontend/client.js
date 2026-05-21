@@ -1,4 +1,5 @@
 import { parseSlashInput } from './slash-parser.js'
+import { nextReconnectDelayMs, disconnectNoticeFor } from './ws-backoff.js'
 
 const sessionsEl = document.getElementById('sessions')
 const logEl = document.getElementById('log')
@@ -10,6 +11,10 @@ let currentSessionId = null
 let activeAssistant = null
 let ws = null
 let wsSubscribedSession = null
+/** Number of consecutive failed reconnect attempts — drives the backoff
+ *  curve in ws-backoff.js. Reset to 0 on a successful open. */
+let wsReconnectAttempts = 0
+let wsReconnectTimer = null
 /** Profile the server is configured with — used so the "New conversation"
  *  button stores the same profile metadata as the orchestrator actually runs. */
 let serverAgentProfile = '_base'
@@ -188,6 +193,11 @@ async function loadServerInfo() {
 }
 
 function connectWs() {
+  // Clear any pending reconnect timer — this call supersedes it.
+  if (wsReconnectTimer !== null) {
+    clearTimeout(wsReconnectTimer)
+    wsReconnectTimer = null
+  }
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   // Subscribe at handshake time via ?sessionId — race-free, no gap between
   // socket.open and a follow-up subscribe message. The legacy message path
@@ -196,6 +206,12 @@ function connectWs() {
   ws = new WebSocket(`${proto}://${location.host}/ws${query}`)
   wsSubscribedSession = currentSessionId
   ws.addEventListener('open', () => {
+    if (wsReconnectAttempts > 0) {
+      renderMeta(
+        `Reconnected after ${wsReconnectAttempts} retr${wsReconnectAttempts === 1 ? 'y' : 'ies'}.`,
+      )
+      wsReconnectAttempts = 0
+    }
     // If the current session changed before the socket opened, swap subs.
     if (currentSessionId && currentSessionId !== wsSubscribedSession) {
       subscribeWs(currentSessionId)
@@ -211,8 +227,11 @@ function connectWs() {
     handleEvent(msg)
   })
   ws.addEventListener('close', () => {
-    renderMeta('Disconnected. Retrying in 2s…', 'error')
-    setTimeout(connectWs, 2000)
+    const delay = nextReconnectDelayMs(wsReconnectAttempts)
+    const notice = disconnectNoticeFor(wsReconnectAttempts, delay)
+    if (notice) renderMeta(notice, 'error')
+    wsReconnectAttempts++
+    wsReconnectTimer = setTimeout(connectWs, delay)
   })
 }
 
