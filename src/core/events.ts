@@ -40,6 +40,15 @@ export type AgentEvent =
       ts: number
     }
   | {
+      type: 'tool.result_truncated'
+      sessionId: string
+      /** LLM-side tool call identifier — the same id read_turn accepts. */
+      toolCallId: string
+      tokensBefore: number
+      tokensAfter: number
+      ts: number
+    }
+  | {
       type: 'tool.called'
       sessionId: string
       turnId: string

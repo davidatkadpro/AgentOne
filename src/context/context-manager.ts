@@ -12,6 +12,13 @@ export interface ContextManagerConfig {
   compressThreshold?: number
   /** Verbatim recency window kept after compression. Default 6. */
   recencyWindow?: number
+  /**
+   * Per-message truncation threshold for tool results. A single tool
+   * message whose token count exceeds `truncateThreshold * contextWindow`
+   * is replaced with a head + tail + read_turn reference. Default 0.6
+   * per PRD. Set to >= 1 to disable.
+   */
+  truncateThreshold?: number
 }
 
 export interface PrepareOptions {
@@ -59,11 +66,13 @@ const ROLE_LABEL: Record<Role, string> = {
 export class ContextManager {
   private readonly compressThreshold: number
   private readonly recencyWindow: number
+  private readonly truncateThreshold: number
   private summaries = new Map<string, string>()
 
   constructor(private readonly cfg: ContextManagerConfig) {
     this.compressThreshold = cfg.compressThreshold ?? 0.8
     this.recencyWindow = cfg.recencyWindow ?? 6
+    this.truncateThreshold = cfg.truncateThreshold ?? 0.6
   }
 
   async prepare(
@@ -72,9 +81,20 @@ export class ContextManager {
     history: Message[],
     opts: PrepareOptions = {},
   ): Promise<PreparedContext> {
-    const initial = [system, ...this.withSummary(sessionId, history)]
+    // Per-message truncation first — a single oversized tool result must
+    // not push the rest of the conversation over the compression threshold,
+    // and compression wouldn't help anyway since compressors don't
+    // summarise tool outputs verbatim. Mutates history in-place by mapping
+    // to a new array.
+    const truncatedHistory = this.truncateOversizedTools(sessionId, history)
+
+    const initial = [system, ...this.withSummary(sessionId, truncatedHistory)]
     const systemTokens = countMessageTokens(system) + this.summaryTokens(sessionId)
-    const historyTokens = opts.historyTokens ?? countMessagesTokens(history)
+    // Recount history if we truncated (passed-in historyTokens is stale).
+    const historyChanged = truncatedHistory !== history
+    const historyTokens = historyChanged
+      ? countMessagesTokens(truncatedHistory)
+      : opts.historyTokens ?? countMessagesTokens(history)
     let total = systemTokens + historyTokens
 
     if (total <= this.compressThreshold * this.cfg.contextWindow) {
@@ -82,15 +102,51 @@ export class ContextManager {
       // For accuracy when caller didn't pre-count, recount whole list.
       return {
         messages: initial,
-        tokenCount: opts.historyTokens !== undefined ? total : countMessagesTokens(initial),
+        tokenCount:
+          opts.historyTokens !== undefined && !historyChanged
+            ? total
+            : countMessagesTokens(initial),
         compressed: false,
       }
     }
 
-    const recency = await this.compress(sessionId, system, history)
+    const recency = await this.compress(sessionId, system, truncatedHistory)
     const finalMessages = [system, ...this.withSummary(sessionId, recency)]
     total = countMessagesTokens(finalMessages)
     return { messages: finalMessages, tokenCount: total, compressed: true }
+  }
+
+  /**
+   * Apply the 60% rule (PRD #45): any tool-role message whose content
+   * exceeds `truncateThreshold * contextWindow` tokens is replaced with
+   * head + reference + tail. Emits `tool.result_truncated` per replacement.
+   *
+   * Pure transformation: returns the original array unchanged when no
+   * message needed truncation, so callers can detect "no work happened"
+   * via reference equality.
+   */
+  private truncateOversizedTools(sessionId: string, history: Message[]): Message[] {
+    if (this.truncateThreshold >= 1) return history
+    const maxTokens = Math.floor(this.truncateThreshold * this.cfg.contextWindow)
+    let mutated = false
+    const out = history.map((m) => {
+      if (m.role !== 'tool' || !m.content) return m
+      const tokens = countMessageTokens(m)
+      if (tokens <= maxTokens) return m
+      const newContent = truncateToolContent(m.content, m.tool_call_id ?? '?')
+      const next: Message = { ...m, content: newContent }
+      mutated = true
+      void this.cfg.eventBus.emit({
+        type: 'tool.result_truncated',
+        sessionId,
+        toolCallId: m.tool_call_id ?? '',
+        tokensBefore: tokens,
+        tokensAfter: countMessageTokens(next),
+        ts: Date.now(),
+      })
+      return next
+    })
+    return mutated ? out : history
   }
 
   reset(sessionId: string): void {
@@ -227,4 +283,27 @@ export class ContextManager {
     }
     return res.content
   }
+}
+
+/**
+ * Head + reference + tail for an oversized tool result. The reference
+ * names the tool_call_id so the agent can recover the full result via
+ * read_turn. Character-based sizing is a heuristic — tokens-per-char
+ * varies by content, but for tool outputs (mostly ASCII/code/JSON) it's
+ * close to 4. Head ≈ tail ≈ 500 tokens (~2000 chars per PRD #45).
+ *
+ * Exported for testing.
+ */
+export function truncateToolContent(content: string, toolCallId: string): string {
+  const HEAD_CHARS = 2000
+  const TAIL_CHARS = 2000
+  if (content.length <= HEAD_CHARS + TAIL_CHARS) return content
+  const head = content.slice(0, HEAD_CHARS)
+  const tail = content.slice(content.length - TAIL_CHARS)
+  const omitted = content.length - HEAD_CHARS - TAIL_CHARS
+  return (
+    `${head}\n\n` +
+    `[...truncated ${omitted} chars; call read_turn(id="${toolCallId}") to rehydrate the full result...]\n\n` +
+    tail
+  )
 }

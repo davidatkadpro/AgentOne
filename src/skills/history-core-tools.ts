@@ -4,6 +4,25 @@ import { fail, ok } from './tool.js'
 
 const RoleEnum = z.enum(['system', 'user', 'assistant', 'tool'])
 
+const DEFAULT_PAGE_SIZE_CHARS = 4000
+const MAX_PAGE_SIZE_CHARS = 16_000
+
+const ReadTurnParams = z.object({
+  id: z
+    .string()
+    .min(1)
+    .describe(
+      'A turn id OR a tool_call_id. Used to rehydrate full content after the 60% rule has truncated a tool result.',
+    ),
+  page: z.number().int().positive().default(1),
+  page_size: z
+    .number()
+    .int()
+    .positive()
+    .max(MAX_PAGE_SIZE_CHARS)
+    .default(DEFAULT_PAGE_SIZE_CHARS),
+})
+
 const SearchHistoryParams = z.object({
   query: z
     .string()
@@ -92,6 +111,37 @@ export function buildHistoryCoreTools(): RegisteredTool[] {
     }
   }
 
+  const readTurn: ToolHandler<typeof ReadTurnParams> = (args, ctx) => {
+    // Two lookup paths in order: turn id first (faster + more common when
+    // the agent is recalling its own prior outputs), then tool_call_id
+    // (the case the 60% truncation rule points to).
+    const store = ctx.services.conversationStore
+    const turn = store.getTurn(args.id)
+    if (turn) {
+      return ok(paginate(turn.content, args.page, args.page_size, {
+        kind: 'turn',
+        id: turn.id,
+        sessionId: turn.sessionId,
+        role: turn.role,
+        createdAt: turn.createdAt,
+      }))
+    }
+    const toolCall = store.getToolCallByLlmId(args.id)
+    if (toolCall && toolCall.resultJson !== null) {
+      return ok(paginate(toolCall.resultJson, args.page, args.page_size, {
+        kind: 'tool_call_result',
+        id: toolCall.toolCallId,
+        tool: toolCall.tool,
+        ok: toolCall.ok,
+      }))
+    }
+    return fail(
+      'RESOURCE_UNAVAILABLE',
+      `No turn or tool_call found for id "${args.id}"`,
+      false,
+    )
+  }
+
   return [
     {
       id: 'search_history',
@@ -101,5 +151,53 @@ export function buildHistoryCoreTools(): RegisteredTool[] {
       handler: searchHistory as ToolHandler,
       source: 'core',
     },
+    {
+      id: 'read_turn',
+      description:
+        'Read the full content of a turn or tool result by id, paginated. Use this when the 60% truncation rule has trimmed a tool result you need in full (the truncation marker includes the id to pass back here).',
+      parameters: ReadTurnParams,
+      handler: readTurn as ToolHandler,
+      source: 'core',
+    },
   ]
+}
+
+interface PageMeta {
+  kind: 'turn' | 'tool_call_result'
+  id: string
+  sessionId?: string
+  role?: string
+  createdAt?: number
+  tool?: string
+  ok?: boolean | null
+}
+
+/** Slice a string into a page; returns the slice plus pagination metadata
+ *  so the agent can iterate without re-counting on the model side. */
+function paginate(
+  content: string,
+  page: number,
+  pageSize: number,
+  meta: PageMeta,
+): {
+  meta: PageMeta
+  page: number
+  page_size: number
+  total_pages: number
+  total_chars: number
+  content: string
+} {
+  const totalChars = content.length
+  const totalPages = Math.max(1, Math.ceil(totalChars / pageSize))
+  const clampedPage = Math.min(Math.max(1, page), totalPages)
+  const start = (clampedPage - 1) * pageSize
+  const slice = content.slice(start, start + pageSize)
+  return {
+    meta,
+    page: clampedPage,
+    page_size: pageSize,
+    total_pages: totalPages,
+    total_chars: totalChars,
+    content: slice,
+  }
 }

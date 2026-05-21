@@ -34,6 +34,10 @@ export interface ConversationStore {
   listToolCalls(turnId: string): StoredToolCall[]
   /** Single-query bulk fetch of every tool_call for a session, bucketed by turn_id. */
   listToolCallsBySession(sessionId: string): Map<string, StoredToolCall[]>
+  /** Look up a tool call by the model-emitted tool_call_id (LLM-side
+   *  identifier). Returns undefined when no such call exists. Used by
+   *  read_turn to rehydrate truncated tool results. */
+  getToolCallByLlmId(toolCallId: string): StoredToolCall | undefined
 
   logEvent(input: { sessionId: string | null; type: AgentEvent['type']; payload: AgentEvent }): void
 
@@ -555,6 +559,9 @@ export function createConversationStore(db: Db): ConversationStore {
   const listToolCallsStmt = db.prepare(
     'SELECT * FROM tool_calls WHERE turn_id = ? ORDER BY created_at ASC, id ASC',
   )
+  const selectToolCallByLlmIdStmt = db.prepare(
+    'SELECT * FROM tool_calls WHERE tool_call_id = ? LIMIT 1',
+  )
   const listToolCallsBySessionStmt = db.prepare(`
     SELECT tc.*
     FROM tool_calls tc
@@ -762,6 +769,11 @@ export function createConversationStore(db: Db): ConversationStore {
         out.set(call.turnId, list)
       }
       return out
+    },
+
+    getToolCallByLlmId(toolCallId) {
+      const row = selectToolCallByLlmIdStmt.get(toolCallId) as ToolCallRow | undefined
+      return row ? rowToToolCall(row) : undefined
     },
 
     logEvent({ sessionId, type, payload }) {

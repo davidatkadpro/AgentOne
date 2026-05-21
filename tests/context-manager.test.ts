@@ -160,4 +160,99 @@ describe('ContextManager', () => {
     cm.reset('s1')
     expect(cm.getSummary('s1')).toBeUndefined()
   })
+
+  describe('60% tool-result truncation', () => {
+    it('replaces a tool message exceeding the threshold with head+ref+tail and emits tool.result_truncated', async () => {
+      const { cm, events } = makeManager({ contextWindow: 1000 })
+      // Build a tool result that's clearly over 60% of 1000 tokens (~600).
+      // ~4 chars/token, so 10_000 chars ≈ 2500 tokens.
+      const longResult = 'x'.repeat(10_000)
+      const history: Message[] = [
+        { role: 'user', content: 'do a thing' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: 'tc-1', type: 'function', function: { name: 't', arguments: '{}' } }],
+        },
+        { role: 'tool', tool_call_id: 'tc-1', content: longResult },
+      ]
+      const prepared = await cm.prepare('s1', system, history)
+
+      const toolMessage = prepared.messages.find((m) => m.role === 'tool')!
+      expect(toolMessage.content!.length).toBeLessThan(longResult.length)
+      expect(toolMessage.content).toContain('truncated')
+      expect(toolMessage.content).toContain('read_turn')
+      expect(toolMessage.content).toContain('tc-1')
+
+      const truncatedEvent = events.find((e) => e.type === 'tool.result_truncated')
+      expect(truncatedEvent).toBeDefined()
+      if (truncatedEvent?.type === 'tool.result_truncated') {
+        expect(truncatedEvent.toolCallId).toBe('tc-1')
+        expect(truncatedEvent.tokensAfter).toBeLessThan(truncatedEvent.tokensBefore)
+      }
+    })
+
+    it('leaves small tool messages untouched', async () => {
+      const { cm, events } = makeManager({ contextWindow: 10_000 })
+      const small = 'short result'
+      const history: Message[] = [
+        { role: 'user', content: 'q' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: 'tc-2', type: 'function', function: { name: 't', arguments: '{}' } }],
+        },
+        { role: 'tool', tool_call_id: 'tc-2', content: small },
+      ]
+      const prepared = await cm.prepare('s1', system, history)
+      const toolMessage = prepared.messages.find((m) => m.role === 'tool')!
+      expect(toolMessage.content).toBe(small)
+      expect(events.some((e) => e.type === 'tool.result_truncated')).toBe(false)
+    })
+
+    it('never truncates user or assistant messages even when oversized', async () => {
+      const { cm, events } = makeManager({ contextWindow: 1000 })
+      const longUser = 'u'.repeat(10_000)
+      const longAssistant = 'a'.repeat(10_000)
+      const history: Message[] = [
+        { role: 'user', content: longUser },
+        { role: 'assistant', content: longAssistant },
+      ]
+      const prepared = await cm.prepare('s1', system, history)
+      // User and assistant messages keep their original content even though
+      // compression may have replaced them with a summary — find the verbatim
+      // tail. If compression fired, recency window of 2 keeps them.
+      const userMsg = prepared.messages.find((m) => m.role === 'user')
+      const assistantMsg = prepared.messages.find((m) => m.role === 'assistant')
+      // The 60%-rule's tool.result_truncated event must not fire for non-tool roles.
+      expect(events.some((e) => e.type === 'tool.result_truncated')).toBe(false)
+      // And neither message ever got the truncation marker.
+      if (userMsg) expect(userMsg.content).not.toContain('read_turn')
+      if (assistantMsg) expect(assistantMsg.content).not.toContain('read_turn')
+    })
+
+    it('honours truncateThreshold >= 1 as "disabled"', async () => {
+      const bus = new EventBus()
+      const events: AgentEvent[] = []
+      bus.onAny((e) => {
+        events.push(e)
+      })
+      const cm = new ContextManager({
+        compressorProvider: new FakeProvider({ respond: () => SUMMARY_TEXT }),
+        compressorModel: 'c',
+        contextWindow: 1000,
+        eventBus: bus,
+        truncateThreshold: 1,
+      })
+      const longResult = 'x'.repeat(10_000)
+      const history: Message[] = [
+        { role: 'user', content: 'q' },
+        { role: 'tool', tool_call_id: 'tc-3', content: longResult },
+      ]
+      const prepared = await cm.prepare('s1', system, history)
+      const toolMessage = prepared.messages.find((m) => m.role === 'tool')!
+      expect(toolMessage.content).toBe(longResult)
+      expect(events.some((e) => e.type === 'tool.result_truncated')).toBe(false)
+    })
+  })
 })
