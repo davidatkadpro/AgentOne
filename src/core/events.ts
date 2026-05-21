@@ -140,6 +140,19 @@ export type AgentEvent =
       sources: Array<{ kind: 'wiki' | 'history'; ref: string; title: string }>
       ts: number
     }
+  | {
+      type: 'session.auto_distilled'
+      sessionId: string
+      notesCount: number
+      draftPath: string
+      ts: number
+    }
+  | {
+      type: 'session.auto_distill_skipped'
+      sessionId: string
+      reason: 'no_turns' | 'too_short' | 'no_notes' | 'parse_failure' | 'already_distilled' | 'provider_error'
+      ts: number
+    }
 
 export type EventType = AgentEvent['type']
 export type EventByType<T extends EventType> = Extract<AgentEvent, { type: T }>

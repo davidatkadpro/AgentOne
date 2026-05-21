@@ -153,6 +153,45 @@ passive_recall:
     expect(p.passiveRecall.historyHits).toBe(3)
   })
 
+  it('auto_distill: defaults to disabled with 30-min idle / 5-min scan', async () => {
+    await write('_base', `id: _base\ndefault_model: local-fast\n`)
+    const p = await loadAgentProfile(dir, '_base')
+    expect(p.autoDistill).toEqual({
+      enabled: false,
+      idleMinutes: 30,
+      scanIntervalMinutes: 5,
+    })
+  })
+
+  it('auto_distill: derives scan interval as idle/6 (clamped to 1..30)', async () => {
+    await write(
+      'a',
+      `id: a
+default_model: local-fast
+auto_distill:
+  enabled: true
+  idle_minutes: 60
+`,
+    )
+    const p = await loadAgentProfile(dir, 'a')
+    expect(p.autoDistill.scanIntervalMinutes).toBe(10) // 60/6
+  })
+
+  it('auto_distill: respects an explicit scan_interval_minutes', async () => {
+    await write(
+      'a',
+      `id: a
+default_model: local-fast
+auto_distill:
+  enabled: true
+  idle_minutes: 60
+  scan_interval_minutes: 2
+`,
+    )
+    const p = await loadAgentProfile(dir, 'a')
+    expect(p.autoDistill.scanIntervalMinutes).toBe(2)
+  })
+
   it('deny_tools: defaults to empty list when absent', async () => {
     await write('_base', `id: _base\ndefault_model: local-fast\n`)
     const p = await loadAgentProfile(dir, '_base')

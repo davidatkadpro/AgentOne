@@ -12,6 +12,7 @@ import { loadBasePrompt } from '../profiles/base-prompt.js'
 import { loadModelProfiles } from '../profiles/model-profile.js'
 import { loadAgentProfile } from '../profiles/agent-profile.js'
 import { ContextManager } from '../context/context-manager.js'
+import { AutoDistillScheduler } from '../orchestrator/auto-distill.js'
 import { LMStudioProvider } from '../providers/lmstudio.js'
 import { OpenRouterProvider } from '../providers/openrouter.js'
 import { ProviderRegistry } from '../providers/registry.js'
@@ -471,6 +472,25 @@ export async function bootstrap(): Promise<void> {
   })
 
   const commands = buildCommandRegistry(skillIndex)
+
+  // Start the auto-distill scheduler if the active profile opts in.
+  // The scheduler subscribes to event-bus activity, primes its state from
+  // the existing session list, and runs periodic scans in the background.
+  let autoDistillScheduler: AutoDistillScheduler | null = null
+  if (agentProfile.autoDistill.enabled) {
+    autoDistillScheduler = new AutoDistillScheduler(agentProfile.autoDistill, {
+      store,
+      wiki,
+      compressorProvider,
+      compressorModel: compressorModel.model,
+      eventBus: bus,
+    })
+    autoDistillScheduler.start()
+    // eslint-disable-next-line no-console
+    console.log(
+      `  Auto-distill: enabled (idle ${agentProfile.autoDistill.idleMinutes}min, scan every ${agentProfile.autoDistill.scanIntervalMinutes}min)`,
+    )
+  }
 
   const app = await buildApp({
     config,

@@ -33,6 +33,17 @@ const PassiveRecallSchema = z
   })
   .optional()
 
+const AutoDistillSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    /** Minutes of inactivity before a session is eligible for auto-distill. */
+    idle_minutes: z.number().int().positive().max(7 * 24 * 60).default(30),
+    /** Background scan frequency in minutes. Defaults to idle_minutes / 6,
+     *  clamped to [1, 30]. Lower = more responsive, higher = less load. */
+    scan_interval_minutes: z.number().int().positive().max(60).optional(),
+  })
+  .optional()
+
 const AgentProfileSchema = z.object({
   id: z.string().regex(/^[a-z0-9_-]+$/),
   description: z.string().optional(),
@@ -45,6 +56,7 @@ const AgentProfileSchema = z.object({
   default_skills: z.array(z.string()).default([]),
   permissions: PermissionsSchema,
   passive_recall: PassiveRecallSchema,
+  auto_distill: AutoDistillSchema,
   /**
    * Tool-id patterns that this profile is not permitted to call. Wired
    * through the HookRegistry as a pre-hook so denied calls surface as a
@@ -76,6 +88,11 @@ export interface ResolvedAgentProfile {
     wikiHits: number
     historyHits: number
     maxCharsPerHit: number
+  }
+  autoDistill: {
+    enabled: boolean
+    idleMinutes: number
+    scanIntervalMinutes: number
   }
   /** Tool-id deny patterns (union of base + child). See HookRegistry.matchesToolId. */
   denyTools: string[]
@@ -208,6 +225,19 @@ export async function loadAgentProfile(
   // something a base profile prohibited.
   const denyTools = mergeUnique(base?.deny_tools ?? [], raw.deny_tools)
 
+  // auto_distill: child replaces base entirely when present, else inherit.
+  // Default scan interval is idle/6 capped to [1, 30] so the scan frequency
+  // scales with the idle threshold instead of being fixed.
+  const rawDistill = raw.auto_distill ?? base?.auto_distill
+  const distillIdleMinutes = rawDistill?.idle_minutes ?? 30
+  const distillScanInterval =
+    rawDistill?.scan_interval_minutes ?? clamp(Math.floor(distillIdleMinutes / 6), 1, 30)
+  const autoDistill = {
+    enabled: rawDistill?.enabled ?? false,
+    idleMinutes: distillIdleMinutes,
+    scanIntervalMinutes: distillScanInterval,
+  }
+
   return {
     id: raw.id,
     ...(raw.description !== undefined && { description: raw.description }),
@@ -226,9 +256,14 @@ export async function loadAgentProfile(
       },
     },
     passiveRecall,
+    autoDistill,
     denyTools,
     sourceFile: path,
   }
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.min(Math.max(n, lo), hi)
 }
 
 function mergeUnique(a: readonly string[], b: readonly string[]): string[] {

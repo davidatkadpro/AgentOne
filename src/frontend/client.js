@@ -324,6 +324,11 @@ function handleEvent(e) {
           .join(', ')}).`,
       )
       break
+    case 'session.auto_distilled':
+      renderMeta(
+        `Auto-distilled ${e.notesCount} note${e.notesCount === 1 ? '' : 's'} from idle session → wiki/${e.draftPath}`,
+      )
+      break
   }
 }
 
