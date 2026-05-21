@@ -238,6 +238,19 @@ try {
 
   if (/\b4\b/.test(reply2)) pass('agent surfaced the expert reply (matched "4")')
   else fail('agent did not surface the expert reply', `reply: "${reply2.slice(0, 200)}"`)
+
+  // In-stream Hermes-XML hiding: the model emits <tool_call> XML, but the
+  // provider's stream filter should suppress those deltas before they hit
+  // the WS. The end-of-stream parser still promotes the block into a
+  // native tool call (asserted above via tool.called + expert.consulted).
+  if (!/<tool_call>|<function=|<\/tool_call>/.test(reply2)) {
+    pass('streamed deltas contain no <tool_call> XML (in-stream filter working)')
+  } else {
+    fail(
+      'streamed deltas leaked <tool_call> XML',
+      `reply contained Hermes markup: "${reply2.slice(0, 300)}"`,
+    )
+  }
 } finally {
   await cleanup()
   console.log('\n--- cleanup: fixture removed ---')

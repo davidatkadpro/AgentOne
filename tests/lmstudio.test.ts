@@ -190,8 +190,12 @@ describe('LMStudioProvider.stream', () => {
       else if (chunk.delta) deltas.push(chunk.delta)
     }
 
-    // Deltas pass through verbatim — the UI sees what the model emitted.
-    expect(deltas.join('')).toBe(hermesContent)
+    // Deltas are filtered in-stream: the UI sees the narration but NOT the
+    // <tool_call> XML block that gets promoted to a native tool call.
+    const yielded = deltas.join('')
+    expect(yielded).toBe("Now I'll call consult_expert with the specified parameters.\n\n")
+    expect(yielded).not.toContain('<tool_call>')
+    expect(yielded).not.toContain('<function=')
 
     expect(final?.toolCalls).toHaveLength(1)
     expect(final?.toolCalls?.[0]!.function.name).toBe('consult_expert')
@@ -209,6 +213,45 @@ describe('LMStudioProvider.stream', () => {
     expect(final?.replaceContent).toBe(
       "Now I'll call consult_expert with the specified parameters.",
     )
+  })
+
+  it('routes the reasoning-content fallback through the Hermes filter so XML there is also suppressed', async () => {
+    // qwen3 sometimes emits the entire response (including Hermes-format tool
+    // calls) inside reasoning_content with empty content. The reasoning
+    // fallback promotes it, but must still hide the XML from the UI deltas.
+    const reasoning =
+      "Let me call it.\n<tool_call><function=consult_expert>" +
+      "<parameter=expert>m</parameter><parameter=question>q</parameter>" +
+      "<parameter=context>c</parameter></function></tool_call>\nDone."
+    const lines = [
+      `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: reasoning }, finish_reason: 'stop' }] })}\n`,
+      'data: [DONE]\n',
+    ]
+    const fetchImpl = vi.fn().mockResolvedValue(sseResponse(lines))
+    const provider = new LMStudioProvider({
+      baseUrl: 'http://localhost:1234/v1',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+
+    const deltas: string[] = []
+    let final: import('@/core/types.js').ChatChunk | null = null
+    for await (const chunk of provider.stream({
+      model: 't',
+      messages: [{ role: 'user', content: 'Hi' }],
+    })) {
+      if (chunk.done) final = chunk
+      else if (chunk.delta) deltas.push(chunk.delta)
+    }
+
+    const yielded = deltas.join('')
+    expect(yielded).not.toContain('<tool_call>')
+    expect(yielded).not.toContain('<function=')
+    expect(yielded).toContain('Let me call it.')
+    expect(yielded).toContain('Done.')
+
+    expect(final?.toolCalls).toHaveLength(1)
+    expect(final?.toolCalls?.[0]!.function.name).toBe('consult_expert')
+    expect(final?.finishReason).toBe('tool_calls')
   })
 
   it('merges Hermes-promoted tool calls with native ones from the same response', async () => {

@@ -14,6 +14,7 @@ import {
   type ProviderCapabilities,
 } from './base.js'
 import { parseHermesToolCalls } from './hermes-tool-call-parser.js'
+import { HermesStreamFilter } from './hermes-stream-filter.js'
 
 export interface LMStudioConfig {
   baseUrl: string
@@ -149,10 +150,10 @@ export class LMStudioProvider implements Provider {
     let reasoningBuffer = ''
     let reasoningTruncated = false
     let contentEmitted = false
-    // Accumulate content for post-stream Hermes-format tool-call detection.
-    // qwen3 occasionally regresses to <tool_call> XML emission for specific
-    // tools; we promote those into native tool_calls and strip the XML.
-    let contentBuffer = ''
+    // Route content deltas through a streaming filter that suppresses
+    // <tool_call> XML in the live UI (the end-of-stream Hermes parser still
+    // operates on the full assembled buffer for promotion to native calls).
+    const hermesStream = new HermesStreamFilter()
 
     for await (const event of parseSSE(res.body)) {
       if (event === '[DONE]') break
@@ -173,8 +174,8 @@ export class LMStudioProvider implements Provider {
       if (deltaText) {
         contentCount++
         contentEmitted = true
-        contentBuffer += deltaText
-        yield { delta: deltaText, done: false }
+        const filtered = hermesStream.push(deltaText)
+        if (filtered) yield { delta: filtered, done: false }
       }
       const reasoningDelta = choice.delta?.reasoning_content ?? ''
       if (reasoningDelta && !reasoningTruncated) {
@@ -207,11 +208,13 @@ export class LMStudioProvider implements Provider {
       }
     }
     const nativeToolCalls = assembleToolCalls(toolCallBuffers)
+
     // Reasoning-model fallback: if the model produced *only* reasoning and no
     // content (qwen3.x, deepseek-r occasionally do this on tool-result
-    // continuations), surface the reasoning as the response so the answer
-    // isn't silently dropped. Skipped when a tool call is in flight, since
-    // reasoning is internal to the tool-decision step.
+    // continuations, and qwen3 sometimes emits Hermes-format tool calls in
+    // reasoning_content rather than content), promote the reasoning into the
+    // content stream. We route it through the same Hermes filter so any
+    // <tool_call> XML hiding inside doesn't leak to the UI, then flush.
     let usedReasoningFallback = false
     if (
       !contentEmitted &&
@@ -220,15 +223,20 @@ export class LMStudioProvider implements Provider {
       reasoningBuffer.trim().length > 0
     ) {
       usedReasoningFallback = true
-      contentBuffer = reasoningBuffer
-      yield { delta: reasoningBuffer, done: false }
+      const filtered = hermesStream.push(reasoningBuffer)
+      if (filtered) yield { delta: filtered, done: false }
     }
 
-    // Hermes-format fallback: scan the assembled content for <tool_call> XML
-    // blocks and promote them into native tool_calls. qwen3 occasionally
-    // regresses to text-emission for specific tools (notably consult_expert);
-    // this catches that without changing the model.
-    const hermes = parseHermesToolCalls(contentBuffer)
+    // Flush any safe content the filter was still holding (e.g. a trailing
+    // partial-open-tag prefix that turned out not to be a real open).
+    const tail = hermesStream.flush()
+    if (tail) yield { delta: tail, done: false }
+
+    // Hermes-format fallback: scan the full assembled content for <tool_call>
+    // XML blocks (including the reasoning content if we promoted it) and lift
+    // them into native tool_calls. qwen3 regresses to text-emission for some
+    // tools; this catches that without changing the model.
+    const hermes = parseHermesToolCalls(hermesStream.assembled)
     const toolCalls =
       hermes.toolCalls.length === 0
         ? nativeToolCalls
