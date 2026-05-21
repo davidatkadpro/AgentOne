@@ -9,6 +9,10 @@ const newBtn = document.getElementById('new-session')
 let currentSessionId = null
 let activeAssistant = null
 let ws = null
+let wsSubscribedSession = null
+/** Profile the server is configured with — used so the "New conversation"
+ *  button stores the same profile metadata as the orchestrator actually runs. */
+let serverAgentProfile = '_base'
 
 function setSendEnabled(enabled) {
   sendBtn.disabled = !enabled || !currentSessionId
@@ -159,7 +163,10 @@ async function createSession() {
     const res = await fetch('/api/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agentProfile: '_base' }),
+      // Use the server's configured profile, not a hardcoded "_base".
+      // Otherwise the session's stored agentProfile (used by /cost) drifts
+      // from the orchestrator's actual profile loaded at server boot.
+      body: JSON.stringify({ agentProfile: serverAgentProfile }),
     })
     const data = await res.json()
     if (data.session) await openSession(data.session.id)
@@ -168,11 +175,31 @@ async function createSession() {
   }
 }
 
+async function loadServerInfo() {
+  try {
+    const res = await fetch('/api/health')
+    const data = await res.json()
+    if (data && typeof data.agentProfile === 'string') {
+      serverAgentProfile = data.agentProfile
+    }
+  } catch {
+    // Health probe is best-effort; createSession falls back to '_base'.
+  }
+}
+
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  ws = new WebSocket(`${proto}://${location.host}/ws`)
+  // Subscribe at handshake time via ?sessionId — race-free, no gap between
+  // socket.open and a follow-up subscribe message. The legacy message path
+  // is still wired below for adding/removing further subscriptions.
+  const query = currentSessionId ? `?sessionId=${encodeURIComponent(currentSessionId)}` : ''
+  ws = new WebSocket(`${proto}://${location.host}/ws${query}`)
+  wsSubscribedSession = currentSessionId
   ws.addEventListener('open', () => {
-    if (currentSessionId) subscribeWs(currentSessionId)
+    // If the current session changed before the socket opened, swap subs.
+    if (currentSessionId && currentSessionId !== wsSubscribedSession) {
+      subscribeWs(currentSessionId)
+    }
   })
   ws.addEventListener('message', (ev) => {
     let msg
@@ -191,7 +218,11 @@ function connectWs() {
 
 function subscribeWs(sessionId) {
   if (ws && ws.readyState === WebSocket.OPEN) {
+    if (wsSubscribedSession && wsSubscribedSession !== sessionId) {
+      ws.send(JSON.stringify({ op: 'unsubscribe', sessionId: wsSubscribedSession }))
+    }
     ws.send(JSON.stringify({ op: 'subscribe', sessionId }))
+    wsSubscribedSession = sessionId
   }
 }
 
@@ -246,7 +277,35 @@ function handleEvent(e) {
     case 'context.compression_failed':
       renderMeta(`Compression failed: ${e.reason}. Falling back to truncation.`, 'error')
       break
+    case 'context.truncated':
+      renderMeta(`Context truncated (${e.bytesBefore} → ${e.bytesAfter} bytes).`)
+      break
+    case 'expert.consulted':
+      renderMeta(
+        `Consulted ${e.expert} — ${formatUsd(e.costUsd)} (in ${e.inputTokens} / out ${e.outputTokens}). ` +
+          `Session total: ${formatUsd(e.sessionSpendUsd)}.`,
+      )
+      break
+    case 'expert.budget_exceeded':
+      renderMeta(
+        `Expert call to ${e.expert} cost ${formatUsd(e.costUsd)} — exceeded per-call budget of ${formatUsd(e.perCallBudgetUsd)}.`,
+        'error',
+      )
+      break
+    case 'tool.hook_denied':
+      renderMeta(`Tool ${e.tool} denied by hook "${e.hook}": ${e.reason}`, 'error')
+      break
+    case 'tool.hook_mocked':
+      renderMeta(`Tool ${e.tool} mocked by hook "${e.hook}" (handler skipped).`)
+      break
   }
+}
+
+function formatUsd(n) {
+  if (typeof n !== 'number') return '$?'
+  // Six decimals tracks fractional-cent expert calls — matches the /cost
+  // command's renderCostReport format so the units line up across UI surfaces.
+  return `$${n.toFixed(6)}`
 }
 
 async function send() {
@@ -401,3 +460,4 @@ inputEl.addEventListener('keydown', (e) => {
 
 connectWs()
 loadSessions()
+loadServerInfo()

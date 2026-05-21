@@ -95,6 +95,9 @@
       color: var(--muted);
       padding: 4px 12px;
       font-style: italic;
+      /* Preserve newlines so multi-line command output (notably /cost) renders
+         line-by-line instead of collapsing into one squashed paragraph. */
+      white-space: pre-wrap;
     }
     .meta.error { color: var(--err); }
     .tool-chip {
