@@ -14,6 +14,7 @@ import { loadAgentProfile } from '../profiles/agent-profile.js'
 import { ContextManager } from '../context/context-manager.js'
 import { AutoDistillScheduler } from '../orchestrator/auto-distill.js'
 import { AutoTitler } from '../orchestrator/auto-titler.js'
+import { loadEventHooks } from '../hooks/event-hook-runner.js'
 import { DocumentIndex } from '../memory/documents/doc-index.js'
 import { extractByFormat } from '../../skills/system/documents/tools/extractors.js'
 import { LMStudioProvider } from '../providers/lmstudio.js'
@@ -538,6 +539,26 @@ export async function bootstrap(): Promise<void> {
     },
   )
   autoTitler.start()
+
+  // Event hooks: optional YAML-declared subscribers run on every matching
+  // bus event. Used for tee-to-file logging, custom alerting, etc. Failures
+  // inside a handler are isolated — never propagate back into the bus.
+  if (config.eventHooksPath) {
+    try {
+      const runner = await loadEventHooks(config.eventHooksPath)
+      if (runner) {
+        runner.start(bus)
+        // eslint-disable-next-line no-console
+        console.log(`  Event hooks: ${runner.hookCount()} loaded from ${config.eventHooksPath}`)
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(`  Event hooks: file not found at ${config.eventHooksPath} (skipped)`)
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`  Event hooks: failed to load — ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
 
   const commands = buildCommandRegistry(skillIndex)
 

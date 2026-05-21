@@ -37,6 +37,7 @@ function fakeConfig(agentProfilesDir: string): ServerConfig {
     storageRoot: '',
     wikiPrefix: 'wiki',
     auditLogPath: null,
+    eventHooksPath: null,
     logEvents: false,
   }
 }

@@ -26,6 +26,10 @@ const Env = z.object({
   /** When set, install the example audit-log hook and write a JSONL record
    *  per tool call to this path. Empty / unset disables the hook. */
   AUDIT_LOG_PATH: z.string().optional(),
+  /** Optional path to a YAML file declaring event-bus hooks. Each entry
+   *  maps an event type (or "*") to a handler module. Missing file is
+   *  silently ignored. See src/hooks/event-hook-runner.ts. */
+  EVENT_HOOKS_PATH: z.string().optional(),
   LOG_EVENTS: z
     .enum(['0', '1', 'true', 'false'])
     .default('0')
@@ -53,6 +57,7 @@ export interface ServerConfig {
   storageRoot: string
   wikiPrefix: string
   auditLogPath: string | null
+  eventHooksPath: string | null
   logEvents: boolean
 }
 
@@ -79,6 +84,7 @@ export function loadConfigFromEnv(): ServerConfig {
     storageRoot: resolve(parsed.STORAGE_ROOT),
     wikiPrefix: parsed.WIKI_PREFIX,
     auditLogPath: parsed.AUDIT_LOG_PATH ? resolve(parsed.AUDIT_LOG_PATH) : null,
+    eventHooksPath: parsed.EVENT_HOOKS_PATH ? resolve(parsed.EVENT_HOOKS_PATH) : null,
     logEvents: parsed.LOG_EVENTS,
   }
 }
