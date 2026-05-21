@@ -72,7 +72,6 @@ export class LMStudioProvider implements Provider {
   readonly capabilities: ProviderCapabilities = {
     streaming: true,
     tools: true,
-    embeddings: true,
   }
   private readonly fetchImpl: typeof fetch
   private readonly maxRetries: number

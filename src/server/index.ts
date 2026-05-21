@@ -203,8 +203,19 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   })
 
   app.register(async function (instance) {
-    instance.get('/ws', { websocket: true }, (socket) => {
+    instance.get('/ws', { websocket: true }, (socket, req) => {
       const subscriptions = new Set<string>()
+
+      // Subscribe at handshake time via ?sessionId=xxx (repeatable) so a
+      // reconnecting client doesn't race against in-flight events. The
+      // legacy {op:'subscribe'} message path below still works.
+      const query = req.query as Record<string, unknown> | undefined
+      if (query) {
+        const raw = query.sessionId
+        const ids = Array.isArray(raw) ? raw : raw === undefined ? [] : [raw]
+        for (const id of ids) if (typeof id === 'string' && id) subscriptions.add(id)
+      }
+
       const off = deps.bus.onAny((e) => {
         if (subscriptions.size === 0) return
         if (!('sessionId' in e)) return

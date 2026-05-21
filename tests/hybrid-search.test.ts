@@ -15,9 +15,17 @@ function makeVec(seed: number): number[] {
   return v
 }
 
+// Tiny deterministic string→int so the FakeEmbedProvider picks a stable seed
+// per input. Distinct inputs land on distinct seeds for the lengths we test.
+function hash(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0
+  return Math.abs(h)
+}
+
 class FakeEmbedProvider implements Provider {
   readonly id = 'fake'
-  readonly capabilities = { streaming: false, tools: false, embeddings: true }
+  readonly capabilities = { streaming: false, tools: false }
   readonly calls: Array<string[]> = []
   constructor(private readonly vectorFor: (input: string) => number[]) {}
   async chat(): Promise<never> {
@@ -51,7 +59,7 @@ describe('reciprocalRankFusion', () => {
       content: turnId,
       snippet: turnId,
       createdAt: 0,
-      rank: 0,
+      score: 0,
     }
   }
 
@@ -61,7 +69,7 @@ describe('reciprocalRankFusion', () => {
   })
 
   it('boosts items appearing in multiple rankings', () => {
-    // 'b' is rank 2 in both — should outscore 'a' (rank 1 in only one).
+    // 'b' is rank 2 in both — should outscore 'a' (in only one ranking).
     const result = reciprocalRankFusion(
       [
         [hit('a'), hit('b')],
@@ -86,9 +94,9 @@ describe('reciprocalRankFusion', () => {
     expect(result.length).toBe(2)
   })
 
-  it('emits a negative-score-as-rank so smaller rank = better hit', () => {
+  it('emits negated RRF scores so the "smaller = better, sort ascending" contract holds', () => {
     const result = reciprocalRankFusion([[hit('a'), hit('b')]], 60, 10)
-    expect(result[0].rank).toBeLessThan(result[1].rank)
+    expect(result[0].score).toBeLessThan(result[1].score)
   })
 })
 
@@ -167,11 +175,63 @@ describe('buildHybridRecall', () => {
     expect(provider.calls.length).toBe(1) // we embedded the query exactly once
   })
 
+  it('caches the query embedding: repeat queries do not re-call provider.embed', async () => {
+    const provider = new FakeEmbedProvider((s) => makeVec(hash(s)))
+    const recall = buildHybridRecall({ store, provider, embeddingModel: 'fake-embed' })
+
+    await recall.searchHistory({ query: 'cosmic' })
+    await recall.searchHistory({ query: 'cosmic' })
+    await recall.searchHistory({ query: 'cosmic' })
+    expect(provider.calls.length).toBe(1)
+
+    // A different query embeds fresh.
+    await recall.searchHistory({ query: 'lunar' })
+    expect(provider.calls.length).toBe(2)
+  })
+
+  it('evicts the oldest entry when the LRU is full', async () => {
+    const provider = new FakeEmbedProvider((s) => makeVec(hash(s)))
+    const recall = buildHybridRecall({
+      store,
+      provider,
+      embeddingModel: 'fake-embed',
+      embedCacheMax: 2,
+    })
+
+    await recall.searchHistory({ query: 'a' })
+    await recall.searchHistory({ query: 'b' })
+    expect(provider.calls.length).toBe(2)
+
+    // Push out "a"; cache now holds {b, c}.
+    await recall.searchHistory({ query: 'c' })
+    expect(provider.calls.length).toBe(3)
+
+    // "a" is gone — must re-embed.
+    await recall.searchHistory({ query: 'a' })
+    expect(provider.calls.length).toBe(4)
+    // "c" is still cached — no extra call.
+    await recall.searchHistory({ query: 'c' })
+    expect(provider.calls.length).toBe(4)
+  })
+
+  it('skips the cache entirely when embedCacheMax is 0', async () => {
+    const provider = new FakeEmbedProvider((s) => makeVec(hash(s)))
+    const recall = buildHybridRecall({
+      store,
+      provider,
+      embeddingModel: 'fake-embed',
+      embedCacheMax: 0,
+    })
+    await recall.searchHistory({ query: 'x' })
+    await recall.searchHistory({ query: 'x' })
+    expect(provider.calls.length).toBe(2)
+  })
+
   it('tolerates a vector lane failure and still returns FTS5 hits', async () => {
     const turnId = seed('marsupials are weird and wonderful')
     const broken: Provider = {
       id: 'broken',
-      capabilities: { streaming: false, tools: false, embeddings: true },
+      capabilities: { streaming: false, tools: false },
       async chat() {
         throw new Error('unused')
       },

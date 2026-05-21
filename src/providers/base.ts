@@ -3,8 +3,6 @@ import type { ChatChunk, ChatRequest, ChatResponse } from '../core/types.js'
 export interface ProviderCapabilities {
   streaming: boolean
   tools: boolean
-  /** Set true when the provider implements `embed()`. */
-  embeddings?: boolean
 }
 
 export interface EmbedRequest {
@@ -32,7 +30,8 @@ export interface Provider {
 
   /**
    * Batch-embed text inputs. Optional — providers without an embeddings
-   * endpoint may omit this; callers should consult `capabilities.embeddings`.
+   * endpoint may omit this. Callers should truthy-check `provider.embed`
+   * directly rather than relying on a separate capabilities flag.
    */
   embed?(req: EmbedRequest): Promise<EmbedResponse>
 }

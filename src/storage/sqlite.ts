@@ -120,8 +120,19 @@ export interface TurnSearchHit {
   content: string
   snippet: string
   createdAt: number
-  /** FTS5 bm25 rank — lower is more relevant. */
-  rank: number
+  /**
+   * Score with the convention "smaller = better". The exact meaning depends
+   * on the lane that produced the hit:
+   *
+   *   - FTS5 (`searchTurns`):       bm25 rank — already negative for matches.
+   *   - vector (`vectorSearchTurns`): cosine distance (0..2) — 0 = identical.
+   *   - fused (`reciprocalRankFusion`): negated RRF sum, so higher RRF score
+   *                                     becomes more negative here.
+   *
+   * Consumers should treat this as an opaque ordering scalar — sort
+   * ascending and trust the relative order, not the absolute number.
+   */
+  score: number
 }
 
 export interface StoredToolCall {
@@ -883,8 +894,8 @@ export function createConversationStore(db: Db): ConversationStore {
           content: row.content,
           snippet: row.content.slice(0, 160),
           createdAt: row.created_at,
-          // Repurpose `rank` for vector distance (smaller = closer).
-          rank: row.distance,
+          // Vector lane: cosine distance (smaller = closer).
+          score: row.distance,
         })
         if (hits.length >= opts.k) break
       }
@@ -930,7 +941,9 @@ function rowToTurnSearchHit(row: TurnSearchRow): TurnSearchHit {
     content: row.content,
     snippet: row.snippet,
     createdAt: row.created_at,
-    rank: row.rank,
+    // FTS5 lane: bm25 rank (negative; smaller-magnitude-positive or
+    // more-negative = more relevant — both sort correctly ascending).
+    score: row.rank,
   }
 }
 

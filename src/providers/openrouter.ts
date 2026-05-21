@@ -81,7 +81,6 @@ export class OpenRouterProvider implements Provider {
   readonly capabilities: ProviderCapabilities = {
     streaming: true,
     tools: true,
-    embeddings: false,
   }
   private readonly fetchImpl: typeof fetch
   private readonly maxRetries: number

@@ -2,34 +2,13 @@ import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import { HookRegistry, type PreToolHook, type PostToolHook } from '@/skills/hooks.js'
 import { ToolRegistry } from '@/skills/registry.js'
-import type { ToolContext, ToolHandler, ToolResult } from '@/skills/tool.js'
+import type { ToolHandler, ToolResult } from '@/skills/tool.js'
 import { ok, fail } from '@/skills/tool.js'
-import type { StorageAdapter } from '@/storage/adapter.js'
-import type { WikiEngine } from '@/memory/wiki/engine.js'
-import type { ConversationStore } from '@/storage/sqlite.js'
-import type { HybridRecall } from '@/search/hybrid.js'
-import { ProviderRegistry } from '@/providers/registry.js'
-import { ExpertSpendTracker } from '@/skills/expert-spend.js'
-import type { PermissionGate } from '@/profiles/permission-gate.js'
 import { EventBus, type AgentEvent } from '@/core/events.js'
+import { fakeToolContext } from './fakes.js'
 
-function fakeCtx(): ToolContext {
-  return {
-    sessionId: 'sess-1',
-    agentProfile: 'test',
-    services: {
-      storage: {} as unknown as StorageAdapter,
-      wiki: {} as unknown as WikiEngine,
-      conversationStore: {} as unknown as ConversationStore,
-      recall: {} as unknown as HybridRecall,
-      providers: new ProviderRegistry(),
-      modelProfiles: new Map(),
-      eventBus: new EventBus(),
-    },
-    permissions: {} as unknown as PermissionGate,
-    expertSpend: new ExpertSpendTracker(),
-  }
-}
+const fakeCtx = (): ReturnType<typeof fakeToolContext> =>
+  fakeToolContext({ sessionId: 'sess-1' })
 
 const PSchema = z.object({ x: z.string() })
 

@@ -5,14 +5,8 @@ import { join } from 'node:path'
 import * as XLSX from 'xlsx'
 import { LocalFolderAdapter } from '@/storage/local-folder.js'
 import type { ToolContext } from '@/skills/tool.js'
-import type { WikiEngine } from '@/memory/wiki/engine.js'
-import type { ConversationStore } from '@/storage/sqlite.js'
-import type { HybridRecall } from '@/search/hybrid.js'
-import type { PermissionGate } from '@/profiles/permission-gate.js'
-import { ProviderRegistry } from '@/providers/registry.js'
-import { ExpertSpendTracker } from '@/skills/expert-spend.js'
-import { EventBus } from '@/core/events.js'
 import { handler as readDocument } from '../skills/system/documents/tools/read-document.js'
+import { fakeToolContext } from './fakes.js'
 
 // A minimal valid PDF rendering the literal string "Hello PDF". Built from
 // scratch (xref table + 4 objects) so the test has no external fixture file.
@@ -99,21 +93,7 @@ let root: string
 let adapter: LocalFolderAdapter
 
 function makeCtx(): ToolContext {
-  return {
-    sessionId: 's1',
-    agentProfile: 'test',
-    services: {
-      storage: adapter,
-      wiki: {} as unknown as WikiEngine,
-      conversationStore: {} as unknown as ConversationStore,
-      recall: {} as unknown as HybridRecall,
-      providers: new ProviderRegistry(),
-      modelProfiles: new Map(),
-      eventBus: new EventBus(),
-    },
-    permissions: {} as unknown as PermissionGate,
-    expertSpend: new ExpertSpendTracker(),
-  }
+  return fakeToolContext({ services: { storage: adapter } })
 }
 
 describe('read_document', () => {

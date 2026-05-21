@@ -52,7 +52,9 @@ async function api(path, opts = {}) {
 
 function waitForEvents(sessionId, types, timeoutMs = 120_000) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${WS_BASE}/ws`)
+    // Subscribe at handshake time via ?sessionId — race-free vs the legacy
+    // {op:'subscribe'} message which lands a tick after WS open.
+    const ws = new WebSocket(`${WS_BASE}/ws?sessionId=${encodeURIComponent(sessionId)}`)
     const collected = []
     const remaining = new Set(types)
     let settled = false
@@ -65,9 +67,6 @@ function waitForEvents(sessionId, types, timeoutMs = 120_000) {
       err ? reject(err) : resolve(collected)
     }
 
-    ws.addEventListener('open', () => {
-      ws.send(JSON.stringify({ op: 'subscribe', sessionId }))
-    })
     ws.addEventListener('message', (ev) => {
       try {
         const msg = JSON.parse(ev.data)

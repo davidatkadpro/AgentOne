@@ -6,11 +6,7 @@ import { EventBus } from '@/core/events.js'
 import type { ResolvedAgentProfile } from '@/profiles/agent-profile.js'
 import type { ModelProfile } from '@/core/types.js'
 import type { ToolContext } from '@/skills/tool.js'
-import type { StorageAdapter } from '@/storage/adapter.js'
-import type { WikiEngine } from '@/memory/wiki/engine.js'
-import type { ConversationStore } from '@/storage/sqlite.js'
-import type { HybridRecall } from '@/search/hybrid.js'
-import { FakeProvider } from './fakes.js'
+import { FakeProvider, fakeToolContext } from './fakes.js'
 import { handler as consultHandler } from '../skills/experts/consult/tools/consult.js'
 
 function expertProfile(overrides: Partial<ModelProfile> = {}): ModelProfile {
@@ -55,21 +51,17 @@ function makeCtx(opts: {
   spend?: ExpertSpendTracker
   bus?: EventBus
 }): ToolContext {
-  return {
+  return fakeToolContext({
     sessionId: 'sess-1',
     agentProfile: opts.profile.id,
     services: {
-      storage: {} as unknown as StorageAdapter,
-      wiki: {} as unknown as WikiEngine,
-      conversationStore: {} as unknown as ConversationStore,
-      recall: {} as unknown as HybridRecall,
       providers: opts.providers,
       modelProfiles: opts.modelProfiles,
       eventBus: opts.bus ?? new EventBus(),
     },
     permissions: new PermissionGate(opts.profile),
     expertSpend: opts.spend ?? new ExpertSpendTracker(),
-  }
+  })
 }
 
 describe('consult_expert tool', () => {

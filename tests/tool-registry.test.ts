@@ -1,33 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import { ToolRegistry } from '@/skills/registry.js'
-import type { ToolContext, ToolHandler } from '@/skills/tool.js'
-import type { StorageAdapter } from '@/storage/adapter.js'
-import type { WikiEngine } from '@/memory/wiki/engine.js'
-import type { ConversationStore } from '@/storage/sqlite.js'
-import type { HybridRecall } from '@/search/hybrid.js'
-import { ProviderRegistry } from '@/providers/registry.js'
-import { ExpertSpendTracker } from '@/skills/expert-spend.js'
-import type { PermissionGate } from '@/profiles/permission-gate.js'
-import { EventBus } from '@/core/events.js'
+import type { ToolHandler } from '@/skills/tool.js'
+import { fakeToolContext } from './fakes.js'
 
-function fakeCtx(): ToolContext {
-  return {
-    sessionId: 's1',
-    agentProfile: 'test',
-    services: {
-      storage: {} as unknown as StorageAdapter,
-      wiki: {} as unknown as WikiEngine,
-      conversationStore: {} as unknown as ConversationStore,
-      recall: {} as unknown as HybridRecall,
-      providers: new ProviderRegistry(),
-      modelProfiles: new Map(),
-      eventBus: new EventBus(),
-    },
-    permissions: {} as unknown as PermissionGate,
-    expertSpend: new ExpertSpendTracker(),
-  }
-}
+const fakeCtx = (): ReturnType<typeof fakeToolContext> => fakeToolContext()
 
 function register(reg: ToolRegistry, id: string, handler: ToolHandler<typeof PSchema>) {
   reg.register({

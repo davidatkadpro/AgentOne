@@ -14,7 +14,7 @@ function makeProvider(opts: { failOn?: number } = {}): ProbeProvider {
   const calls: string[][] = []
   const provider: ProbeProvider = {
     id: 'fake',
-    capabilities: { streaming: false, tools: false, embeddings: true },
+    capabilities: { streaming: false, tools: false },
     embedCalls: calls,
     async chat() {
       throw new Error('unused')
@@ -131,7 +131,7 @@ describe('EmbeddingIndexer.drainOnce', () => {
     h.store.appendTurn({ sessionId: sess.id, role: 'user', content: 'hi' })
     const provider: Provider = {
       id: 'wrong-dim',
-      capabilities: { streaming: false, tools: false, embeddings: true },
+      capabilities: { streaming: false, tools: false },
       async chat() {
         throw new Error('unused')
       },

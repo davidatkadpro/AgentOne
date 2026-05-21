@@ -106,12 +106,11 @@ describe('OpenRouterProvider', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
-  it('reports embeddings=false in capabilities', () => {
+  it('does not expose an embed() method (OpenRouter has no embeddings endpoint)', () => {
     const provider = new OpenRouterProvider({
       baseUrl: 'https://openrouter.ai/api/v1',
       apiKey: 'sk',
     })
-    expect(provider.capabilities.embeddings).toBe(false)
     expect((provider as { embed?: unknown }).embed).toBeUndefined()
   })
 })

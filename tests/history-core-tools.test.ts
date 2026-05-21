@@ -3,13 +3,8 @@ import { createDatabase, type Db } from '@/storage/db.js'
 import { createConversationStore, type ConversationStore } from '@/storage/sqlite.js'
 import { buildHistoryCoreTools } from '@/skills/history-core-tools.js'
 import type { ToolContext } from '@/skills/tool.js'
-import type { StorageAdapter } from '@/storage/adapter.js'
-import type { WikiEngine } from '@/memory/wiki/engine.js'
 import type { HybridRecall } from '@/search/hybrid.js'
-import { ProviderRegistry } from '@/providers/registry.js'
-import { ExpertSpendTracker } from '@/skills/expert-spend.js'
-import type { PermissionGate } from '@/profiles/permission-gate.js'
-import { EventBus } from '@/core/events.js'
+import { fakeToolContext } from './fakes.js'
 
 function makeCtx(store: ConversationStore): ToolContext {
   // Test-only recall stub: delegate straight to the FTS5 store path so the
@@ -19,21 +14,10 @@ function makeCtx(store: ConversationStore): ToolContext {
       return store.searchTurns(opts)
     },
   }
-  return {
+  return fakeToolContext({
     sessionId: 'current',
-    agentProfile: 'test',
-    services: {
-      storage: {} as unknown as StorageAdapter,
-      wiki: {} as unknown as WikiEngine,
-      conversationStore: store,
-      recall,
-      providers: new ProviderRegistry(),
-      modelProfiles: new Map(),
-      eventBus: new EventBus(),
-    },
-    permissions: {} as unknown as PermissionGate,
-    expertSpend: new ExpertSpendTracker(),
-  }
+    services: { conversationStore: store, recall },
+  })
 }
 
 describe('search_history tool', () => {

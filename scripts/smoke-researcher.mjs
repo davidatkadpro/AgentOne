@@ -44,7 +44,9 @@ async function api(path, opts = {}) {
  */
 function waitForTurn(sessionId, { quietMs = 5_000, timeoutMs = 180_000 } = {}) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${WS_BASE}/ws`)
+    // Subscribe at handshake time via ?sessionId — eliminates the race
+    // window where events could fire before a JSON subscribe message lands.
+    const ws = new WebSocket(`${WS_BASE}/ws?sessionId=${encodeURIComponent(sessionId)}`)
     const collected = []
     let settled = false
     let sawCompletion = false
@@ -64,7 +66,6 @@ function waitForTurn(sessionId, { quietMs = 5_000, timeoutMs = 180_000 } = {}) {
       quietTimer = setTimeout(() => done(null), quietMs)
     }
 
-    ws.addEventListener('open', () => ws.send(JSON.stringify({ op: 'subscribe', sessionId })))
     ws.addEventListener('message', (ev) => {
       try {
         const msg = JSON.parse(ev.data)
