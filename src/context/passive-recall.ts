@@ -63,10 +63,17 @@ export async function buildPassiveRecall(
   const trimmed = userMessage.trim()
   if (trimmed.length === 0) return null
 
+  // The wiki search engine phrase-quotes its input, so passing the verbatim
+  // user message ("What is the secret password?") looks for that literal
+  // string and finds nothing. Build a disjunctive query from the distinctive
+  // tokens (rare-words/proper-nouns) and use raw mode so FTS5 sees it as a
+  // real boolean query. History search keeps the verbatim text — the hybrid
+  // recall layer's RRF + vector lane handles long queries on its own.
+  const fts = extractFtsQuery(trimmed)
   const wikiPromise =
-    cfg.wikiHits > 0
+    cfg.wikiHits > 0 && fts
       ? deps.wiki
-          .search(trimmed, { limit: cfg.wikiHits })
+          .search(fts, { limit: cfg.wikiHits, mode: 'raw' })
           .catch(() => [] as Array<{ path: string; name: string; snippet: string }>)
       : Promise.resolve([])
 
@@ -125,6 +132,55 @@ export function recallToMessage(result: PassiveRecallResult): Message {
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s
   return s.slice(0, max - 1) + '…'
+}
+
+// English stopwords likely to appear in user messages. Not exhaustive — just
+// the ones that would dominate an FTS5 OR query and add no signal.
+const STOPWORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'can', 'do', 'does',
+  'for', 'from', 'has', 'have', 'how', 'i', 'if', 'in', 'is', 'it', 'its',
+  'me', 'my', 'no', 'not', 'of', 'on', 'or', 'our', 'so', 'that', 'the',
+  'them', 'they', 'this', 'to', 'us', 'was', 'we', 'were', 'what', 'when',
+  'where', 'which', 'who', 'why', 'will', 'with', 'would', 'you', 'your',
+  'yours', 'about', 'just', 'tell', 'please', 'find', 'show', 'give',
+])
+
+const MAX_TOKENS = 6
+
+/**
+ * Pull a small, FTS-friendly disjunctive query out of a natural-language
+ * user message. We keep tokens that look distinctive (5+ chars, or
+ * hyphenated, or capitalized mid-sentence), strip common stopwords, and
+ * OR them together. Returns null if no usable tokens remain.
+ *
+ * Exported for testing — the heuristic is the kind of thing that benefits
+ * from explicit examples in the test file.
+ */
+export function extractFtsQuery(message: string): string | null {
+  // Replace FTS5 operator characters with whitespace so they can't break
+  // out of token mode. We're constructing a real FTS expression — quoted
+  // tokens with explicit OR — so stray punctuation needs to be neutralised.
+  const cleaned = message.replace(/["()*]/g, ' ')
+  const rawTokens = cleaned.split(/[\s.,;!?:/\\]+/).filter(Boolean)
+  const scored: Array<{ token: string; score: number }> = []
+  const seen = new Set<string>()
+  for (const raw of rawTokens) {
+    const lower = raw.toLowerCase()
+    if (lower.length < 3) continue
+    if (STOPWORDS.has(lower)) continue
+    if (seen.has(lower)) continue
+    seen.add(lower)
+    // Crude distinctiveness: hyphenated > long > capitalized > everything else.
+    let score = lower.length
+    if (lower.includes('-')) score += 5
+    if (/[A-Z]/.test(raw) && raw !== raw.toUpperCase()) score += 3
+    scored.push({ token: lower, score })
+  }
+  if (scored.length === 0) return null
+  const picked = scored.sort((a, b) => b.score - a.score).slice(0, MAX_TOKENS)
+  // Quote each token so FTS5 treats it as a literal — protects against tokens
+  // that happen to be FTS keywords (e.g. "near", "or"). Then OR them.
+  return picked.map((p) => `"${p.token}"`).join(' OR ')
 }
 
 function formatBlock(sources: PassiveRecallSource[]): string {

@@ -24,6 +24,15 @@ export interface WikiSearchOpts {
   prefix?: string
   limit?: number
   offset?: number
+  /**
+   * 'phrase' (default) treats the input as a literal phrase to match —
+   * matches the wiki_search tool's "send me what to find" contract.
+   * 'raw' passes the input to FTS5 unmodified, letting callers compose
+   * boolean queries (OR, NEAR, prefix*). Use raw when the caller has
+   * already crafted an FTS5 expression. Errors in the raw expression
+   * surface as a SQLITE_ERROR thrown from the prepared statement.
+   */
+  mode?: 'phrase' | 'raw'
 }
 
 export interface WikiEngineConfig {
@@ -215,7 +224,10 @@ export class WikiEngine {
     await this.ready
     const limit = opts.limit ?? DEFAULT_SEARCH_LIMIT
     const offset = opts.offset ?? 0
-    const ftsQuery = sanitiseFtsQuery(query)
+    const mode = opts.mode ?? 'phrase'
+    const trimmed = query.trim()
+    if (!trimmed) return []
+    const ftsQuery = mode === 'raw' ? trimmed : sanitiseFtsQuery(query)
     if (!ftsQuery) return []
     if (opts.prefix) {
       const like = `${opts.prefix.replace(/[%_]/g, '')}%`

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildPassiveRecall,
+  extractFtsQuery,
   type PassiveRecallConfig,
 } from '@/context/passive-recall.js'
 import { EventBus, type AgentEvent } from '@/core/events.js'
@@ -108,7 +109,7 @@ describe('buildPassiveRecall', () => {
 
   it('truncates snippets to maxCharsPerHit', async () => {
     const long = 'x'.repeat(500)
-    const res = await buildPassiveRecall('q', { ...baseCfg, maxCharsPerHit: 50 }, {
+    const res = await buildPassiveRecall('platypus', { ...baseCfg, maxCharsPerHit: 50 }, {
       wiki: fakeWiki([{ path: 'p', name: 'P', snippet: long }]),
       recall: fakeRecall([]),
       sessionId: 's',
@@ -140,7 +141,7 @@ describe('buildPassiveRecall', () => {
   })
 
   it('swallows history failure and still surfaces wiki results', async () => {
-    const res = await buildPassiveRecall('q', baseCfg, {
+    const res = await buildPassiveRecall('platypus', baseCfg, {
       wiki: fakeWiki([{ path: 'p', name: 'P', snippet: 's' }]),
       recall: fakeRecall(() => {
         throw new Error('vector lane down')
@@ -190,7 +191,7 @@ describe('buildPassiveRecall', () => {
     bus.on('recall.injected', (e) => {
       events.push(e)
     })
-    await buildPassiveRecall('q', baseCfg, {
+    await buildPassiveRecall('platypus', baseCfg, {
       wiki: fakeWiki([{ path: 'p', name: 'P', snippet: 's' }]),
       recall: fakeRecall([]),
       sessionId: 's1',
@@ -204,6 +205,46 @@ describe('buildPassiveRecall', () => {
       sessionId: 's1',
       sources: [{ kind: 'wiki', ref: 'p', title: 'P' }],
     })
+  })
+
+  it('passes a keyword OR query (not the verbatim message) to wiki.search', async () => {
+    let capturedQuery: string | null = null
+    let capturedMode: string | undefined = undefined
+    const wiki = {
+      async search(query: string, opts?: { mode?: string }) {
+        capturedQuery = query
+        capturedMode = opts?.mode
+        return []
+      },
+    } as unknown as WikiEngine
+    await buildPassiveRecall(
+      'What is the secret password for the passive-recall fixture? Quote it verbatim.',
+      baseCfg,
+      { wiki, recall: fakeRecall([]), sessionId: 's' },
+    )
+    expect(capturedQuery).not.toBeNull()
+    // The verbatim message — as a phrase — would never match. The fix
+    // is to send a disjunctive OR query over distinctive tokens, in raw mode.
+    expect(capturedMode).toBe('raw')
+    expect(capturedQuery).toContain(' OR ')
+    expect(capturedQuery).toContain('passive-recall')
+  })
+
+  it('skips the wiki lane when the message has no extractable tokens', async () => {
+    let wikiCalls = 0
+    const wiki = {
+      async search() {
+        wikiCalls++
+        return []
+      },
+    } as unknown as WikiEngine
+    // All stopwords / too-short tokens.
+    await buildPassiveRecall('the it of an a', baseCfg, {
+      wiki,
+      recall: fakeRecall([]),
+      sessionId: 's',
+    })
+    expect(wikiCalls).toBe(0)
   })
 
   it('does not emit recall.injected when no sources match', async () => {
@@ -220,5 +261,57 @@ describe('buildPassiveRecall', () => {
     })
     await new Promise((r) => setImmediate(r))
     expect(events.length).toBe(0)
+  })
+})
+
+describe('extractFtsQuery', () => {
+  it('keeps distinctive multi-character tokens', () => {
+    const q = extractFtsQuery('What is the platypus diet?')
+    expect(q).not.toBeNull()
+    expect(q!).toContain('platypus')
+    // 'what', 'the' are stopwords; 'is' is too short — none should appear.
+    expect(q!).not.toMatch(/\bwhat\b/i)
+    expect(q!).not.toMatch(/\bthe\b/i)
+  })
+
+  it('uses OR between tokens', () => {
+    const q = extractFtsQuery('marsupials echidna platypus')
+    expect(q).toContain(' OR ')
+  })
+
+  it('quotes each token so FTS5 keywords cannot break out', () => {
+    // "or" and "near" are FTS5 operators — quoted, they become literals.
+    const q = extractFtsQuery('near platypus diet')
+    expect(q).toBeTruthy()
+    expect(q!).toMatch(/"near"|"platypus"|"diet"/)
+  })
+
+  it('returns null when the message is all stopwords', () => {
+    expect(extractFtsQuery('the of and or is in to a')).toBeNull()
+  })
+
+  it('returns null when the message is all too-short tokens', () => {
+    expect(extractFtsQuery('a b c d e f')).toBeNull()
+  })
+
+  it('strips FTS5-operator punctuation so it cannot escape token mode', () => {
+    const q = extractFtsQuery('what is "platypus" * (curious)')
+    // Should not contain unescaped quotes/parens/asterisks at the
+    // expression level — only inside the quoted tokens we built.
+    expect(q).toBeTruthy()
+    // The query is of the form "tok1" OR "tok2" — no other quote pairs.
+    expect(q!.match(/"/g)?.length).toBe((q!.split(' OR ').length) * 2)
+  })
+
+  it('caps token count', () => {
+    const long = Array.from({ length: 20 }, (_, i) => `token${i}distinctive`).join(' ')
+    const q = extractFtsQuery(long)
+    // 6 token cap → 6 quoted strings → 12 quote characters
+    expect(q!.split(' OR ').length).toBe(6)
+  })
+
+  it('deduplicates repeated tokens', () => {
+    const q = extractFtsQuery('platypus platypus platypus')
+    expect(q!.split(' OR ').length).toBe(1)
   })
 })
