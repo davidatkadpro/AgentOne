@@ -289,7 +289,9 @@ export class Orchestrator {
       categories,
     })
 
-    const expertSpend = new ExpertSpendTracker()
+    // Persist via the conversation store so expert budgets survive restarts.
+    // Constructor rehydrates from `expert_spend_v1` for this session.
+    const expertSpend = new ExpertSpendTracker({ sessionId, store: this.cfg.store })
     return { sessionId, registry, loadedSkills, permissions, systemMessage, expertSpend }
   }
 

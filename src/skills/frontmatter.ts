@@ -43,4 +43,5 @@ export const RESERVED_SLASH_COMMANDS: ReadonlySet<string> = new Set([
   'compact',
   'sessions',
   'clear',
+  'cost',
 ])

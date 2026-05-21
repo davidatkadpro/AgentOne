@@ -64,6 +64,31 @@ export interface ConversationStore {
     rows: Array<{ turnId: string; embedding: Buffer; model: string; dim: number }>,
   ): void
   vectorSearchTurns(opts: VectorSearchOptions): TurnSearchHit[]
+
+  /**
+   * Persisted expert-spend ledger. Written by ExpertSpendTracker after each
+   * consult_expert call; read by /cost for cross-session totals and by the
+   * tracker on session resume to rehydrate its in-memory cache.
+   */
+  appendExpertSpend(input: {
+    sessionId: string
+    model: string
+    costUsd: number
+    inputTokens: number
+    outputTokens: number
+  }): void
+  listExpertSpendForSession(sessionId: string): Array<{
+    model: string
+    costUsd: number
+    inputTokens: number
+    outputTokens: number
+  }>
+  /** Aggregate spend. Pass `sessionId` to scope to one session, omit for lifetime. */
+  sumExpertSpend(opts?: { sessionId?: string }): {
+    totalUsd: number
+    totalCalls: number
+    byModel: Array<{ model: string; calls: number; costUsd: number }>
+  }
 }
 
 export interface VectorSearchOptions {
@@ -251,12 +276,13 @@ function rowToToolCall(row: ToolCallRow): StoredToolCall {
  */
 function migrate(db: Db): void {
   const version = (db.pragma('user_version', { simple: true }) as number) ?? 0
-  if (version >= 5) return
+  if (version >= 6) return
 
   if (version < 2) runV2Migration(db)
   if (version < 3) runV3Migration(db)
   if (version < 4) runV4Migration(db)
   if (version < 5) runV5Migration(db)
+  if (version < 6) runV6Migration(db)
 }
 
 function runV2Migration(db: Db): void {
@@ -353,6 +379,32 @@ function runV5Migration(db: Db): void {
       END;
     `)
     db.pragma('user_version = 5')
+  })
+  tx()
+}
+
+function runV6Migration(db: Db): void {
+  const tx = db.transaction(() => {
+    // Persisted expert-spend ledger. Used by ExpertSpendTracker (per-session
+    // cache rehydrates from this on session resume) and by /cost (cross-
+    // session lifetime totals). FK cascades on sessions so deleting a
+    // session also clears its spend history.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS expert_spend_v1 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        model TEXT NOT NULL,
+        cost_usd REAL NOT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        ts INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_expert_spend_session
+        ON expert_spend_v1(session_id);
+      CREATE INDEX IF NOT EXISTS idx_expert_spend_model
+        ON expert_spend_v1(model);
+    `)
+    db.pragma('user_version = 6')
   })
   tx()
 }
@@ -547,6 +599,44 @@ export function createConversationStore(db: Db): ConversationStore {
     },
   )
 
+  const appendExpertSpendStmt = db.prepare(
+    `INSERT INTO expert_spend_v1
+       (session_id, model, cost_usd, input_tokens, output_tokens, ts)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+  const listSpendForSessionStmt = db.prepare(
+    `SELECT model, cost_usd AS costUsd, input_tokens AS inputTokens, output_tokens AS outputTokens
+     FROM expert_spend_v1
+     WHERE session_id = ?
+     ORDER BY ts ASC`,
+  )
+  const sumSpendAllStmt = db.prepare(
+    `SELECT
+       COALESCE(SUM(cost_usd), 0) AS totalUsd,
+       COUNT(*) AS totalCalls
+     FROM expert_spend_v1`,
+  )
+  const sumSpendForSessionStmt = db.prepare(
+    `SELECT
+       COALESCE(SUM(cost_usd), 0) AS totalUsd,
+       COUNT(*) AS totalCalls
+     FROM expert_spend_v1
+     WHERE session_id = ?`,
+  )
+  const sumSpendByModelAllStmt = db.prepare(
+    `SELECT model, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS costUsd
+     FROM expert_spend_v1
+     GROUP BY model
+     ORDER BY costUsd DESC`,
+  )
+  const sumSpendByModelForSessionStmt = db.prepare(
+    `SELECT model, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS costUsd
+     FROM expert_spend_v1
+     WHERE session_id = ?
+     GROUP BY model
+     ORDER BY costUsd DESC`,
+  )
+
   const searchTurnsStmt = db.prepare<{
     query: string
     sessionId: string | null
@@ -704,6 +794,45 @@ export function createConversationStore(db: Db): ConversationStore {
     insertEmbeddingsBatch(rows) {
       if (rows.length === 0) return
       insertEmbeddingsBatchTx(rows, Date.now())
+    },
+
+    appendExpertSpend({ sessionId, model, costUsd, inputTokens, outputTokens }) {
+      appendExpertSpendStmt.run(
+        sessionId,
+        model,
+        costUsd,
+        inputTokens,
+        outputTokens,
+        Date.now(),
+      )
+    },
+
+    listExpertSpendForSession(sessionId) {
+      return listSpendForSessionStmt.all(sessionId) as Array<{
+        model: string
+        costUsd: number
+        inputTokens: number
+        outputTokens: number
+      }>
+    },
+
+    sumExpertSpend(opts) {
+      const sessionId = opts?.sessionId
+      const total = (sessionId
+        ? sumSpendForSessionStmt.get(sessionId)
+        : sumSpendAllStmt.get()) as { totalUsd: number; totalCalls: number }
+      const byModel = (sessionId
+        ? sumSpendByModelForSessionStmt.all(sessionId)
+        : sumSpendByModelAllStmt.all()) as Array<{
+        model: string
+        calls: number
+        costUsd: number
+      }>
+      return {
+        totalUsd: total.totalUsd,
+        totalCalls: total.totalCalls,
+        byModel,
+      }
     },
 
     vectorSearchTurns(opts) {

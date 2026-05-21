@@ -83,7 +83,10 @@ export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
     })
 
     const cost = res.costUsd ?? 0
-    ctx.expertSpend.add(args.expert, cost)
+    ctx.expertSpend.add(args.expert, cost, {
+      inputTokens: res.inputTokens,
+      outputTokens: res.outputTokens,
+    })
 
     await ctx.services.eventBus.emit({
       type: 'expert.consulted',
