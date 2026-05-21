@@ -16,6 +16,13 @@ export interface EmbeddingIndexerConfig {
   backfillBatch?: number
   /** Idle delay between drains when no new work arrives. Default 500ms. */
   idleMs?: number
+  /**
+   * Re-emit `embedding.failed` every N consecutive failures so a
+   * permanently-broken endpoint stays observable past the first event.
+   * 1 emits on every failure (noisy); large values silence escalation.
+   * Default 10.
+   */
+  failureEscalationStep?: number
 }
 
 /**
@@ -32,18 +39,23 @@ export class EmbeddingIndexer {
   private readonly batchSize: number
   private readonly backfillBatch: number
   private readonly idleMs: number
+  private readonly failureEscalationStep: number
   private running = false
   private stopped = false
   private wakeResolver: (() => void) | null = null
   /** Set when a nudge arrives while a drain is in flight. Consumed at the
    *  top of the next loop iteration so the nudge isn't lost. */
   private pendingNudge = false
-  private failureSignalled = false
+  /** Running count of consecutive failures. Reset on any successful drain.
+   *  Used both to drive escalation (emit on the 1st, then every Nth) and
+   *  to surface the count on the event payload. */
+  private consecutiveFailures = 0
 
   constructor(private readonly cfg: EmbeddingIndexerConfig) {
     this.batchSize = cfg.batchSize ?? 16
     this.backfillBatch = cfg.backfillBatch ?? 64
     this.idleMs = cfg.idleMs ?? 500
+    this.failureEscalationStep = cfg.failureEscalationStep ?? 10
   }
 
   /** Kick the loop to drain work now (used after appendTurn). If the loop
@@ -82,14 +94,21 @@ export class EmbeddingIndexer {
         // Consume any nudge that arrived during the drain so the next
         // iteration re-checks the queue immediately.
         this.pendingNudge = false
-        this.failureSignalled = false
+        this.consecutiveFailures = 0
       } catch (err) {
-        if (!this.failureSignalled) {
-          this.failureSignalled = true
+        this.consecutiveFailures++
+        // Emit on the first failure of a new chain, then again every Nth
+        // failure thereafter — keeps a permanently-broken endpoint
+        // observable without flooding the bus on the steady state.
+        const shouldEmit =
+          this.consecutiveFailures === 1 ||
+          this.consecutiveFailures % this.failureEscalationStep === 0
+        if (shouldEmit) {
           await this.cfg.eventBus.emit({
             type: 'embedding.failed',
             sessionId: null,
             reason: err instanceof Error ? err.message : String(err),
+            consecutiveFailures: this.consecutiveFailures,
             ts: Date.now(),
           })
         }

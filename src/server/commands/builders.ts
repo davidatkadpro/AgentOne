@@ -7,6 +7,7 @@ import { compactCommand } from './compact.js'
 import { loadCommand } from './load.js'
 import { costCommand } from './cost.js'
 import { distillCommand } from './distill.js'
+import { backupCommand } from './backup.js'
 import type { SkillIndex } from '../../skills/loader.js'
 
 /**
@@ -22,6 +23,7 @@ export function buildCommandRegistry(skillIndex: SkillIndex): CommandRegistry {
   reg.register(loadCommand)
   reg.register(costCommand)
   reg.register(distillCommand)
+  reg.register(backupCommand)
   // /help lists everything including skill slash commands.
   reg.register(
     buildHelpCommand(() => {

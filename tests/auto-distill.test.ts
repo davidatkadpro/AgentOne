@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, writeFile, mkdir, utimes, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AutoDistillScheduler } from '@/orchestrator/auto-distill.js'
@@ -53,12 +53,28 @@ async function newHarness(providerOpts: { respond?: () => string; failWith?: Err
   }
 }
 
-function buildScheduler(h: Harness, overrides: Partial<{ enabled: boolean; idleMinutes: number; scanIntervalMinutes: number; now: () => number }> = {}) {
+function buildScheduler(
+  h: Harness,
+  overrides: Partial<{
+    enabled: boolean
+    idleMinutes: number
+    scanIntervalMinutes: number
+    draftsMaxAgeDays: number
+    storageRoot: string
+    now: () => number
+  }> = {},
+) {
   return new AutoDistillScheduler(
     {
       enabled: overrides.enabled ?? true,
       idleMinutes: overrides.idleMinutes ?? 30,
       scanIntervalMinutes: overrides.scanIntervalMinutes ?? 5,
+      ...(overrides.draftsMaxAgeDays !== undefined
+        ? { draftsMaxAgeDays: overrides.draftsMaxAgeDays }
+        : {}),
+      ...(overrides.storageRoot !== undefined
+        ? { storageRoot: overrides.storageRoot }
+        : {}),
     },
     {
       store: h.store,
@@ -255,5 +271,104 @@ describe('AutoDistillScheduler.start / stop', () => {
     expect(distilled.length).toBeGreaterThan(0)
     sched.stop()
     await h.cleanup()
+  })
+})
+
+describe('AutoDistillScheduler.pruneDraftsIfConfigured', () => {
+  let h: Harness
+  beforeEach(async () => {
+    h = await newHarness()
+  })
+  afterEach(async () => {
+    await h.cleanup()
+  })
+
+  const DAY = 24 * 60 * 60 * 1000
+
+  async function plantDraft(filename: string, mtimeOffset: number): Promise<void> {
+    const draftsDir = join(h.root, 'wiki', 'drafts')
+    await mkdir(draftsDir, { recursive: true })
+    const abs = join(draftsDir, filename)
+    await writeFile(abs, '### Old note\n\nstale\n', 'utf-8')
+    const stamp = new Date(Date.now() + mtimeOffset)
+    await utimes(abs, stamp, stamp)
+  }
+
+  it('does nothing when draftsMaxAgeDays is omitted or 0', async () => {
+    await plantDraft('a.md', -10 * DAY)
+    const sched = buildScheduler(h, { storageRoot: h.root })
+    const pruned = await sched.pruneDraftsIfConfigured(Date.now())
+    expect(pruned).toEqual([])
+    const remaining = await readdir(join(h.root, 'wiki', 'drafts'))
+    expect(remaining).toContain('a.md')
+  })
+
+  it('deletes drafts older than the cutoff', async () => {
+    await plantDraft('old.md', -10 * DAY)
+    await plantDraft('fresh.md', -1 * DAY)
+
+    const sched = buildScheduler(h, {
+      draftsMaxAgeDays: 7,
+      storageRoot: h.root,
+    })
+    const pruned = await sched.pruneDraftsIfConfigured(Date.now())
+    expect(pruned).toEqual(['drafts/old.md'])
+    const remaining = await readdir(join(h.root, 'wiki', 'drafts'))
+    expect(remaining).toEqual(['fresh.md'])
+  })
+
+  it('emits drafts.pruned with the list and threshold', async () => {
+    await plantDraft('stale1.md', -30 * DAY)
+    await plantDraft('stale2.md', -30 * DAY)
+
+    const sched = buildScheduler(h, {
+      draftsMaxAgeDays: 7,
+      storageRoot: h.root,
+    })
+    await sched.pruneDraftsIfConfigured(Date.now())
+    const event = h.events.find((e) => e.type === 'drafts.pruned')
+    expect(event).toBeDefined()
+    if (event?.type === 'drafts.pruned') {
+      expect(event.olderThanDays).toBe(7)
+      expect(event.paths.sort()).toEqual(['drafts/stale1.md', 'drafts/stale2.md'])
+    }
+  })
+
+  it('skips non-md files in the drafts directory', async () => {
+    await plantDraft('a.md', -30 * DAY)
+    // Plant a non-markdown file with old mtime; should not be touched.
+    const stray = join(h.root, 'wiki', 'drafts', 'notes.txt')
+    await writeFile(stray, 'stray', 'utf-8')
+    const old = new Date(Date.now() - 30 * DAY)
+    await utimes(stray, old, old)
+
+    const sched = buildScheduler(h, {
+      draftsMaxAgeDays: 7,
+      storageRoot: h.root,
+    })
+    await sched.pruneDraftsIfConfigured(Date.now())
+    const remaining = await readdir(join(h.root, 'wiki', 'drafts'))
+    expect(remaining).toEqual(['notes.txt'])
+  })
+
+  it('returns [] cleanly when the drafts directory does not exist', async () => {
+    const sched = buildScheduler(h, {
+      draftsMaxAgeDays: 7,
+      storageRoot: h.root,
+    })
+    // No drafts dir created — should be a no-op, no throw.
+    const pruned = await sched.pruneDraftsIfConfigured(Date.now())
+    expect(pruned).toEqual([])
+  })
+
+  it('tick() invokes prune', async () => {
+    await plantDraft('a.md', -30 * DAY)
+    const sched = buildScheduler(h, {
+      draftsMaxAgeDays: 7,
+      storageRoot: h.root,
+    })
+    await sched.tick(Date.now())
+    const remaining = await readdir(join(h.root, 'wiki', 'drafts'))
+    expect(remaining).toEqual([])
   })
 })

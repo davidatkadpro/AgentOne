@@ -1,3 +1,5 @@
+import { readdir, stat, unlink } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { ConversationStore } from '../storage/sqlite.js'
 import { turnsToMessages } from '../storage/sqlite.js'
 import type { WikiEngine } from '../memory/wiki/engine.js'
@@ -9,6 +11,11 @@ export interface AutoDistillConfig {
   enabled: boolean
   idleMinutes: number
   scanIntervalMinutes: number
+  /** When > 0, prune drafts older than this many days during each scan. */
+  draftsMaxAgeDays?: number
+  /** Storage root for the drafts directory (typically the StorageAdapter's
+   *  root). Required when draftsMaxAgeDays > 0; ignored otherwise. */
+  storageRoot?: string
 }
 
 export interface AutoDistillDeps {
@@ -94,7 +101,49 @@ export class AutoDistillScheduler {
    * Run one scan. Returns the list of sessions that were distilled this
    * tick. Pure-ish — uses `now` via cfg, no real timers. Exposed for tests.
    */
+  /** Run the drafts-prune step. Returns the list of pruned paths.
+   *  Exposed for tests so it can be driven without the full tick path. */
+  async pruneDraftsIfConfigured(now: number): Promise<string[]> {
+    const maxAge = this.cfg.draftsMaxAgeDays ?? 0
+    if (maxAge <= 0) return []
+    if (!this.cfg.storageRoot) return []
+    const cutoff = now - maxAge * 24 * 60 * 60 * 1000
+    const draftsDir = join(this.cfg.storageRoot, 'wiki', 'drafts')
+    let entries: string[]
+    try {
+      entries = await readdir(draftsDir)
+    } catch {
+      // No drafts directory yet — nothing to prune.
+      return []
+    }
+    const pruned: string[] = []
+    for (const file of entries) {
+      if (!file.endsWith('.md')) continue
+      const abs = join(draftsDir, file)
+      try {
+        const info = await stat(abs)
+        if (info.mtimeMs >= cutoff) continue
+        await unlink(abs)
+        pruned.push(`drafts/${file}`)
+      } catch {
+        // Race against another writer / permission glitch — skip and move on.
+      }
+    }
+    if (pruned.length > 0) {
+      await this.deps.eventBus.emit({
+        type: 'drafts.pruned',
+        paths: pruned,
+        olderThanDays: maxAge,
+        ts: now,
+      })
+    }
+    return pruned
+  }
+
   async tick(now: number): Promise<{ distilled: string[]; skipped: Array<{ sessionId: string; reason: SkipReason }> }> {
+    // Prune stale drafts at the start of each scan — cheap fs walk, only
+    // touches files older than the configured cutoff.
+    await this.pruneDraftsIfConfigured(now)
     const distilled: string[] = []
     const skipped: Array<{ sessionId: string; reason: SkipReason }> = []
     const idleMs = this.cfg.idleMinutes * 60 * 1000

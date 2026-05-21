@@ -57,6 +57,7 @@ function makeCtx(args: {
     wiki: {} as never,
     compressorProvider: {} as never,
     compressorModel: 'unused',
+    db: {} as never,
   }
 }
 

@@ -122,6 +122,10 @@ export type AgentEvent =
       type: 'embedding.failed'
       sessionId: null
       reason: string
+      /** How many consecutive failures have piled up. 1 on the first drop;
+       *  re-emitted every escalationStep failures (default 10) so a
+       *  permanently-broken endpoint stays observable. */
+      consecutiveFailures: number
       ts: number
     }
   | {
@@ -166,6 +170,14 @@ export type AgentEvent =
       type: 'session.auto_distill_skipped'
       sessionId: string
       reason: 'no_turns' | 'too_short' | 'no_notes' | 'parse_failure' | 'already_distilled' | 'provider_error'
+      ts: number
+    }
+  | {
+      type: 'drafts.pruned'
+      /** Relative paths under wiki/ (e.g. "drafts/distilled-xxx.md"). */
+      paths: string[]
+      /** The age threshold that triggered the prune. */
+      olderThanDays: number
       ts: number
     }
   | {

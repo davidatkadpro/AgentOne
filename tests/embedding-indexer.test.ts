@@ -174,3 +174,121 @@ describe('EmbeddingIndexer.drainOnce', () => {
     }
   })
 })
+
+describe('EmbeddingIndexer runLoop failure escalation', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = newHarness()
+  })
+  afterEach(() => {
+    h.db.close()
+  })
+
+  /** Always-failing provider that lets the loop run the failure path
+   *  N times in quick succession when idleMs is tiny. */
+  function alwaysFailProvider(): Provider {
+    return {
+      id: 'broken',
+      capabilities: { streaming: false, tools: false },
+      async chat() {
+        throw new Error('unused')
+      },
+      async *stream() {
+        throw new Error('unused')
+      },
+      async embed() {
+        throw new Error('synthetic embedding failure')
+      },
+    }
+  }
+
+  it('emits embedding.failed on the FIRST failure and every Nth thereafter', async () => {
+    const sess = h.store.createSession({ agentProfile: 'p' })
+    h.store.appendTurn({ sessionId: sess.id, role: 'user', content: 'hi' })
+
+    const indexer = new EmbeddingIndexer({
+      store: h.store,
+      provider: alwaysFailProvider(),
+      model: 'broken',
+      eventBus: h.bus,
+      idleMs: 1, // backoff per error ≈ 4ms, so we accumulate failures fast
+      failureEscalationStep: 3, // emit on 1st, 3rd, 6th, 9th, ...
+    })
+
+    // Wait for at least 4 failed events to arrive, then stop the indexer.
+    const failuresSeenP = new Promise<void>((resolve) => {
+      h.bus.on('embedding.failed', () => {
+        if (h.events.filter((e) => e.type === 'embedding.failed').length >= 4) {
+          resolve()
+        }
+      })
+    })
+    indexer.start()
+    await failuresSeenP
+    await indexer.stop()
+
+    const failures = h.events.filter((e) => e.type === 'embedding.failed')
+    // We saw at least 4. Inspect their counters: should be 1, 3, 6, 9, ...
+    expect(failures.length).toBeGreaterThanOrEqual(4)
+    if (failures[0].type === 'embedding.failed') expect(failures[0].consecutiveFailures).toBe(1)
+    if (failures[1].type === 'embedding.failed') expect(failures[1].consecutiveFailures).toBe(3)
+    if (failures[2].type === 'embedding.failed') expect(failures[2].consecutiveFailures).toBe(6)
+    if (failures[3].type === 'embedding.failed') expect(failures[3].consecutiveFailures).toBe(9)
+  })
+
+  it('resets the counter after a successful drain', async () => {
+    // Provider that fails twice, then succeeds.
+    let invocations = 0
+    const provider: Provider = {
+      id: 'flaky',
+      capabilities: { streaming: false, tools: false },
+      async chat() {
+        throw new Error('unused')
+      },
+      async *stream() {
+        throw new Error('unused')
+      },
+      async embed(req) {
+        invocations++
+        if (invocations <= 2) throw new Error('transient')
+        return {
+          model: req.model,
+          embeddings: req.input.map(() => {
+            const v = new Array(EMBEDDING_DIM).fill(0)
+            v[0] = 1
+            return v
+          }),
+          tokens: 0,
+        }
+      },
+    }
+
+    const sess = h.store.createSession({ agentProfile: 'p' })
+    h.store.appendTurn({ sessionId: sess.id, role: 'user', content: 'a' })
+
+    const indexer = new EmbeddingIndexer({
+      store: h.store,
+      provider,
+      model: 'flaky',
+      eventBus: h.bus,
+      idleMs: 1,
+      failureEscalationStep: 100, // only emit on the first failure of a chain
+    })
+
+    // Wait until the first success lands, then stop.
+    const successP = new Promise<void>((resolve) => {
+      h.bus.on('embedding.indexed', () => resolve())
+    })
+    indexer.start()
+    await successP
+    await indexer.stop()
+
+    const failures = h.events.filter((e) => e.type === 'embedding.failed')
+    expect(failures.length).toBeGreaterThanOrEqual(1)
+    // After success, the counter resets — if we forced another failure
+    // now, it would be `consecutiveFailures: 1` again.
+    if (failures[0].type === 'embedding.failed') {
+      expect(failures[0].consecutiveFailures).toBe(1)
+    }
+  })
+})

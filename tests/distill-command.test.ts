@@ -57,6 +57,7 @@ async function newHarness(): Promise<Harness> {
       wiki,
       compressorProvider: provider,
       compressorModel: 'fake-model',
+      db,
     }),
   }
 }

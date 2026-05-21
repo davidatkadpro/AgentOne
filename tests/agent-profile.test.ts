@@ -153,13 +153,14 @@ passive_recall:
     expect(p.passiveRecall.historyHits).toBe(3)
   })
 
-  it('auto_distill: defaults to disabled with 30-min idle / 5-min scan', async () => {
+  it('auto_distill: defaults to disabled with 30-min idle / 5-min scan / 0-day retention', async () => {
     await write('_base', `id: _base\ndefault_model: local-fast\n`)
     const p = await loadAgentProfile(dir, '_base')
     expect(p.autoDistill).toEqual({
       enabled: false,
       idleMinutes: 30,
       scanIntervalMinutes: 5,
+      draftsMaxAgeDays: 0,
     })
   })
 
@@ -175,6 +176,24 @@ auto_distill:
     )
     const p = await loadAgentProfile(dir, 'a')
     expect(p.autoDistill.scanIntervalMinutes).toBe(10) // 60/6
+  })
+
+  it('auto_distill: drafts_max_age_days defaults to 0 (disabled) and round-trips when set', async () => {
+    await write('off', `id: off\ndefault_model: m\nauto_distill:\n  enabled: true\n`)
+    const offProfile = await loadAgentProfile(dir, 'off')
+    expect(offProfile.autoDistill.draftsMaxAgeDays).toBe(0)
+
+    await write(
+      'on',
+      `id: on
+default_model: m
+auto_distill:
+  enabled: true
+  drafts_max_age_days: 30
+`,
+    )
+    const onProfile = await loadAgentProfile(dir, 'on')
+    expect(onProfile.autoDistill.draftsMaxAgeDays).toBe(30)
   })
 
   it('auto_distill: respects an explicit scan_interval_minutes', async () => {

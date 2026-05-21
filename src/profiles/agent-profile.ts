@@ -41,6 +41,9 @@ const AutoDistillSchema = z
     /** Background scan frequency in minutes. Defaults to idle_minutes / 6,
      *  clamped to [1, 30]. Lower = more responsive, higher = less load. */
     scan_interval_minutes: z.number().int().positive().max(60).optional(),
+    /** Delete drafts under wiki/drafts/ whose mtime is older than this many
+     *  days. Omitted / 0 disables pruning — drafts pile up indefinitely. */
+    drafts_max_age_days: z.number().int().nonnegative().max(3650).optional(),
   })
   .optional()
 
@@ -93,6 +96,8 @@ export interface ResolvedAgentProfile {
     enabled: boolean
     idleMinutes: number
     scanIntervalMinutes: number
+    /** When > 0, prune drafts older than this many days during scans. */
+    draftsMaxAgeDays: number
   }
   /** Tool-id deny patterns (union of base + child). See HookRegistry.matchesToolId. */
   denyTools: string[]
@@ -236,6 +241,7 @@ export async function loadAgentProfile(
     enabled: rawDistill?.enabled ?? false,
     idleMinutes: distillIdleMinutes,
     scanIntervalMinutes: distillScanInterval,
+    draftsMaxAgeDays: rawDistill?.drafts_max_age_days ?? 0,
   }
 
   return {

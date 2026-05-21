@@ -30,37 +30,24 @@ at commits `99a73de..5076cbe`).
 
 ---
 
-## Operational hardening (deferred — do before production-like use)
+## Operational hardening (DONE — 2026-05-22)
 
-4. **DB backup script**
-   - Single-file SQLite at `data/agentone.db`. Should be a one-line
-     cron/script (e.g., `sqlite3 .backup` to a dated path under
-     `data/backups/`).
-   - Catches the "lose expert spend + audit log on DB corruption" gap.
-     FTS+vector indexes are recoverable from turns; the spend ledger
-     and event log are NOT.
-   - Suggested: a `scripts/backup-db.mjs` plus a `/backup` slash
-     command for manual triggering, plus optional `BACKUP_INTERVAL_HOURS`
-     env to schedule.
+4. ~~**DB backup script**~~ — done. `src/storage/backup.ts` wraps
+   better-sqlite3's online-backup API; `scripts/backup-db.mjs` is the
+   CLI; `/backup` is a slash command that writes to
+   `<storageRoot>/backups/agentone-<timestamp>.db` by default. Scheduled
+   backups (`BACKUP_INTERVAL_HOURS`) deferred — manual + cron is enough
+   for v1.
 
-5. **Drafts cleanup story**
-   - Auto-distill writes drafts indefinitely. After a year of daily
-     use, `wiki/drafts/distilled-*.md` will have 365+ pages and pollute
-     passive recall.
-   - Options:
-     - Auto-expire after N days (configurable per profile)
-     - Auto-delete on successful "promote to canonical wiki" action
-     - Move-to-archive instead of delete
-   - Recommended: opt-in `drafts_max_age_days` in `auto_distill` profile
-     block. Scheduler prunes on the same scan cycle.
+5. ~~**Drafts cleanup story**~~ — done. `auto_distill.drafts_max_age_days`
+   in the profile YAML; AutoDistillScheduler.pruneDraftsIfConfigured()
+   runs at the start of each scan and emits `drafts.pruned` with the
+   deleted paths. Default 0 = disabled (drafts retain forever).
 
-6. **Embedding indexer escalation**
-   - Currently emits `embedding.failed` once per error cycle, then
-     retries silently every ~5s. A permanently-broken endpoint produces
-     a single failure event and then nothing.
-   - Fix: re-emit `embedding.failed` after every 10 consecutive
-     failures so the user/UI knows the system is still degraded.
-   - Trivial change; ~20 lines in `src/search/embedding-indexer.ts`.
+6. ~~**Embedding indexer escalation**~~ — done. `consecutiveFailures`
+   counter on the indexer, configurable `failureEscalationStep` (default
+   10). `embedding.failed` event gains a `consecutiveFailures` field;
+   emit fires on the 1st, then every Nth, then resets on success.
 
 ---
 

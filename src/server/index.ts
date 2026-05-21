@@ -24,7 +24,7 @@ import { ProviderRegistry } from '../providers/registry.js'
 import type { Provider } from '../providers/base.js'
 import { HookRegistry } from '../skills/hooks.js'
 import { buildAuditLogHook } from '../skills/audit-log-hook.js'
-import { createDatabase } from '../storage/db.js'
+import { createDatabase, type Db } from '../storage/db.js'
 import { createConversationStore, type ConversationStore } from '../storage/sqlite.js'
 import { LocalFolderAdapter } from '../storage/local-folder.js'
 import { WikiEngine } from '../memory/wiki/engine.js'
@@ -72,6 +72,8 @@ export interface AppDeps {
    *  ContextManager uses for summarisation; reused by /distill. */
   compressorProvider: Provider
   compressorModel: string
+  /** Raw SQLite handle. Used by /backup to drive the online-backup API. */
+  db: Db
 }
 
 const CommandRequestBody = z.object({
@@ -337,6 +339,7 @@ async function dispatchCommand(
       wiki: deps.wiki,
       compressorProvider: deps.compressorProvider,
       compressorModel: deps.compressorModel,
+      db: deps.db,
     })
   }
   const manifest = deps.skillIndex.bySlashCommand.get(body.name)
@@ -578,13 +581,16 @@ export async function bootstrap(): Promise<void> {
   // the existing session list, and runs periodic scans in the background.
   let autoDistillScheduler: AutoDistillScheduler | null = null
   if (agentProfile.autoDistill.enabled) {
-    autoDistillScheduler = new AutoDistillScheduler(agentProfile.autoDistill, {
-      store,
-      wiki,
-      compressorProvider,
-      compressorModel: compressorModel.model,
-      eventBus: bus,
-    })
+    autoDistillScheduler = new AutoDistillScheduler(
+      { ...agentProfile.autoDistill, storageRoot: config.storageRoot },
+      {
+        store,
+        wiki,
+        compressorProvider,
+        compressorModel: compressorModel.model,
+        eventBus: bus,
+      },
+    )
     autoDistillScheduler.start()
     // eslint-disable-next-line no-console
     console.log(
@@ -604,6 +610,7 @@ export async function bootstrap(): Promise<void> {
     commands,
     compressorProvider,
     compressorModel: compressorModel.model,
+    db,
   })
 
   await wiki.whenReady()

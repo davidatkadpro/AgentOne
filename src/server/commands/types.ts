@@ -1,5 +1,6 @@
 import type { z } from 'zod'
 import type { ConversationStore } from '../../storage/sqlite.js'
+import type { Db } from '../../storage/db.js'
 import type { SkillIndex } from '../../skills/loader.js'
 import type { Orchestrator } from '../../orchestrator/turn.js'
 import type { ContextManager } from '../../context/context-manager.js'
@@ -27,6 +28,10 @@ export interface CommandContext {
    *  same lightweight model already validated for summarisation tasks. */
   compressorProvider: Provider
   compressorModel: string
+  /** Raw SQLite handle. Currently only /backup uses this — every other
+   *  command goes through `store`. Held here so /backup can call into
+   *  the online-backup API without crossing another abstraction. */
+  db: Db
 }
 
 /** Discriminated union mirroring what the frontend can render. */
