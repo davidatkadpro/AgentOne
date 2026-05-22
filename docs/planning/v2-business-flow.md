@@ -188,6 +188,64 @@ eagerly at project creation.
 `phase.created`, `phase.completed`, `task.created`, `task.updated`,
 `task.completed`, `task.blocked`.
 
+**Frontend panel** (decided in the 2026-05-23 grill; complements
+[`../adr/0006-frontend-shell-architecture.md`](../adr/0006-frontend-shell-architecture.md)
+and inherits its uniform master/detail shell):
+
+- **List `/projects`**: dense rows — `number`, `name + client` (2-line cell),
+  `status` badge, inline budget mini-bar (% invoiced of budget, sourced from
+  the `project_budget` SQL view), last-activity timestamp. Default filter
+  `status in (pending, active, blocked)` with a "Show completed" toggle.
+  Sort default: last activity desc. Search by number or name. KPI strip
+  above the list with clickable count pills: Active · Blocked · Awaiting
+  invoice · Overdue.
+- **Create `+ New project`**: modal dialog. Fields: `number` (server
+  auto-suggests next `YY###`, editable), `name`, `client?`, `description?`,
+  `phase template` dropdown defaulting to `Empty` with an `AEC standard
+  (SD/DD/CD/CA)` option. Future templates live under
+  `drafts/_templates/projects/<name>/`. Folder created eagerly on submit;
+  redirect to `/projects/:id`.
+- **Detail `/projects/:id` is the hub** for all cross-module data tied to
+  the project. Header strip: `number · name · client · status` badge ·
+  budget rollup chip · `open folder` link · `Open in chat with project
+  context` link. Below the strip, **eight tabs** in this order:
+  1. **Tasks** — phase/task tree (always-visible main content).
+  2. **Scope** — renders `projects/<n>/in/<date>/scope.md` as markdown.
+  3. **Emails** — list of emails filed to `projects/<n>/in/` via the email module.
+  4. **Files** — read-only folder browser for `projects/<n>/in/` and siblings; `open folder` link to OS.
+  5. **Proposals** — list of estimates + proposals targeting this project.
+  6. **Invoices** — invoices + payments + drift status.
+  7. **Drafts** — drafts in `projects/<n>/drafts/` plus global `wiki/drafts/` tagged with this project.
+  8. **Activity** — timeline of `audit_log` entries + relevant events for this project.
+  Each tab is lazy-loaded via its owning module's GET endpoint; tabs that
+  don't apply (no proposals yet, no invoices yet) render an empty state
+  rather than being hidden.
+- **Tasks tab — phase/task tree**: expandable rows. Phases at top level,
+  tasks under phases, subtasks under tasks (self-referential `task` rows).
+  **Phases are mandatory** — `task.phase_id` is `NOT NULL`. If a task is
+  added before any phase exists, the system auto-creates a renameable
+  `Uncategorized` phase. Inline edit: click title to rename; click status
+  badge to open an enum popover. Add buttons: `+ Phase` at root, `+ Task`
+  per phase, `+ Subtask` inline on a task. Dependencies show as a chip on
+  the row (`blocked on Task #14`); a `Dependencies` link opens a popover
+  for editing. Drag-to-reorder/reparent is deferred to a polish pass.
+- **Task row click → right-edge `Sheet`**, deep-linkable via `?task=<id>`
+  on the URL. Sheet body: description (markdown), status, dependencies
+  picker, subtasks list, attachments (files referenced from the task body).
+  Tree stays visible behind the Sheet.
+- **Agent integration**: each tab has an `Ask agent ▾` menu exposing
+  context-aware skills — e.g. on **Tasks**: "Break down this phase into
+  tasks", "Summarize what's blocked"; on **Scope**: "Generate estimate
+  from scope"; on **Emails**: "Draft a reply to the most recent". Each
+  menu item spawns a session via `seed.initialMessage` with the project
+  (and tab-specific) context pre-populated. The session streams in chat;
+  any `request_user_input` calls surface via the notification tray (per
+  ADR-0006). The header-strip `Open in chat with project context` link is
+  the freeform escape hatch.
+- **Status enum colour map**: `pending` (slate), `active` (emerald),
+  `blocked` (amber), `completed` (zinc with strikethrough), `cancelled`
+  (zinc, muted). Same map used everywhere status appears.
+
 ### `modules/email/`
 
 A light email triage surface. **Not** a mail client replacement.
@@ -232,6 +290,65 @@ fields: `email.read(id)`, `email.fetchAttachment(id, name)`,
 
 **Events**: `email.received`, `email.filed`, `email.action_started`,
 `email.action_completed`.
+
+**Frontend panel** (decided in the 2026-05-23 grill; complements
+[`../adr/0006-frontend-shell-architecture.md`](../adr/0006-frontend-shell-architecture.md)
+and inherits its uniform master/detail shell):
+
+- **List `/email`**: **Inbox-only — no folder navigator**. The `move`
+  capability in EmailSource exists so AgentOne can file emails away to
+  projects, not for the user to browse `Sent` / `Trash` / `Drafts`. Filed
+  emails surface contextually in the project's **Emails** tab. This keeps
+  the panel a triage surface, not a mail client.
+- **Row design**: compact 2-line. Line 1 — sender (bold if unread) and
+  date right-aligned. Line 2 — subject (bold if unread) and snippet
+  preview. Right edge — `📎` for attachments, `→ 24001` chip for
+  filed-status (clickable; routes to `/projects/24001` with the
+  **Emails** tab focused). Filter pills above the list: Unread · Filed ·
+  Has attachments. Search filters client-side on subject + sender +
+  snippet (full-body search is deferred because the local `email` table
+  is an index, not a body mirror).
+- **Sync**: server-driven. The EmailSource adapter (Graph poller or
+  Maildir fs-watcher) emits `email.received` on the WS bus; the list
+  invalidates via TanStack Query and refetches. A manual **Refresh**
+  button in the list header hits a new `POST /api/email/poll` to force a
+  source check (useful when the user knows an email just arrived).
+  **No client polling** — adheres to the ADR-0006 rule.
+- **Detail `/email/:id`**: top toolbar with subject + sender + date,
+  then an **action toolbar** rendering buttons dynamically from `GET
+  /api/email/actions` (see below), then the rendered body (sanitized
+  HTML via DOMPurify in a constrained container, plain-text fallback for
+  non-HTML messages), then the attachments list (download links via
+  `GET /api/email/:id/attachments/:name`; no inline preview in v2).
+  Opening a message auto-marks it read; a `Mark unread` button reverts.
+- **Action discovery — new endpoint `GET /api/email/actions`** that
+  scans `modules/email/skills/` and returns
+  `{ name, label, description, icon?, defaultProfile, requiresConfirmation? }`
+  per Skill, derived from SKILL.md frontmatter. Frontend renders the
+  primary actions as named buttons and overflows the rest into a `▾ More
+  actions` menu. **Drop a folder under `modules/email/skills/` and it
+  appears in the toolbar — no frontend change required.** Actions with
+  `requiresConfirmation: true` show a shadcn `AlertDialog` before
+  spawning the session.
+- **Inline session stream on the detail page**: after clicking an
+  action, a collapsible block under the toolbar streams the spawned
+  session live (assistant deltas + tool chips, same renderer as the
+  Chat route). `request_user_input` calls still surface via the
+  notification tray (per ADR-0006); a banner inside the inline stream
+  links to it. An `Open in full chat` link escapes to `/chat/<sessionId>`
+  for freeform follow-up.
+- **Row-level action state**: each list row reflects
+  `email.action_started` → `email.action_completed` as a small chip
+  (`▶ filing…` → `✓ filed to 24001` or `✗ failed`), so the user can see
+  status when scrolling the list away from the detail page.
+- **Single-message actions only in v2** — no multi-select / bulk
+  operations. Deferred to v2.x. Skill authors can implement batched
+  flows inside a single session if needed.
+- **New API endpoints required**: `GET /api/email/actions` (discovery),
+  `POST /api/email/poll` (manual refresh),
+  `GET /api/email/:id/attachments/:name` (attachment download). The
+  existing `POST /api/email/actions` from the action-dispatch design
+  is unchanged.
 
 ### `modules/proposals/`
 
