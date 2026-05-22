@@ -335,11 +335,14 @@ best-case for a focused contributor; multiply by 1.5–2× for alongside-other-w
 - WebSocket: emit `notification.*` events.
 - No domain modules yet — this is plumbing.
 
-### → Frontend grill session ←
+### → Frontend grill session ← (complete — 2026-05-22)
 
-The operator runs a separate grill session focused on frontend architecture
-(layout, panel-vs-route, state management, chat-vs-panel interplay) before
-Phase 1.5 begins.
+Outcome recorded in [`../adr/0006-frontend-shell-architecture.md`](../adr/0006-frontend-shell-architecture.md):
+chat-as-route, top bar + left sidebar + centred chat pane, uniform master/detail
+for module panels, notification tray as the cross-page awareness channel, profile
+management promoted from picker-only to full UI editor (new server endpoints
+needed). Platform stack pinned: Vite + React 19 + React Router 6 + TanStack
+Query + Zustand + shadcn/Tailwind + react-hook-form + zod + react-markdown.
 
 ### Phase 1.5 — React parity rewrite (~1 week)
 - React + the chosen stack. Reproduces today's vanilla-JS UX exactly: session

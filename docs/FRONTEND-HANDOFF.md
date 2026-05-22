@@ -95,8 +95,22 @@ Sessions are ordered newest-first by `createdAt`.
 
 ### `POST /api/sessions`
 
-Body: `{ "agentProfile": string, "title"?: string }`. The session id is
-returned for subscription.
+Body: `{ "agentProfile"?: string, "title"?: string }`. The session id is
+returned for subscription. `agentProfile` is optional — when omitted, the
+session inherits the server's boot profile (see `GET /api/health`).
+
+**Path A single-profile-per-server.** This server boots with one profile
+(env `AGENT_PROFILE`). If you POST an `agentProfile` that doesn't match,
+the server returns `409 Conflict`:
+
+```json
+{ "error": "PROFILE_MISMATCH", "message": "Server is running agent profile \"_base\" — cannot create a session under \"researcher\". Restart with AGENT_PROFILE=researcher, or omit agentProfile to use the boot profile." }
+```
+
+The same 409 surfaces from `POST /api/sessions/:id/messages` and
+`POST /api/sessions/:id/command` when an existing session's persisted
+profile doesn't match the boot profile (e.g. resuming a session
+created under a different `AGENT_PROFILE`).
 
 ```json
 { "session": { "id": "...", "title": null, "agentProfile": "...", "createdAt": ... } }
@@ -337,8 +351,8 @@ Every event has `{ type, ts }` and either a `sessionId` or
 
 #### Expert spend
 
-- **`expert.consulted`** `{ sessionId, expert, model, inputTokens, outputTokens, costUsd, sessionSpendUsd, ts }` —
-  a `consult_expert` call landed; surface cost in the stream.
+- **`expert.consulted`** `{ sessionId, expert, model, inputTokens, outputTokens, costUsd, sessionSpendUsd, latencyMs, ts }` —
+  a `consult_expert` call landed; surface cost + latency in the stream.
 - **`expert.budget_exceeded`** `{ sessionId, expert, costUsd, perCallBudgetUsd, ts }` —
   budget gate denied the call.
 
@@ -508,21 +522,28 @@ during the transition if you set them up that way.
 
 ## Open questions for the frontend team
 
-These are decisions the React team should make explicitly, ideally
-before starting:
+The shell architecture and platform stack are now decided. See
+[`./adr/0006-frontend-shell-architecture.md`](./adr/0006-frontend-shell-architecture.md)
+for the full record:
 
-1. **Bundler**: Vite / Next / Remix / something else? The server doesn't
-   care, but the build output dir matters for `FRONTEND_DIR`.
-2. **State management**: a single `useReducer` per session is probably
-   enough — the source of truth is the server.
-3. **Markdown library**: marked, react-markdown, or write your own?
-   Assistant messages will eventually need code-block rendering,
-   syntax highlighting, and citation links to wiki pages.
-4. **Component library**: bare React + CSS modules, or pull in
-   something like radix-ui / shadcn?
+- **Bundler**: Vite + React 19 SPA. Build emits to `dist/`; serve via `FRONTEND_DIR=./dist`.
+- **State management**: TanStack Query for REST; Zustand (per-session slices) for WS-driven state.
+- **Markdown**: `react-markdown` + `remark-gfm` + `rehype-highlight`.
+- **Component library**: shadcn/ui on Tailwind, lucide-react icons, react-hook-form + zod for forms.
+- **Shell**: top bar (theme + notifications bell) + left sidebar (Chat, modules, Drafts, Skills, Settings, then session list) + main pane (chat centred, modules fill).
+- **Cross-page awareness**: notification tray (right-edge Sheet, manual open) renders `request_user_input` questions with inline option buttons; no auto-route, no modal.
 
-These are not blocking for the contract — the server doesn't change
-based on the answer. They affect velocity and consistency only.
+### Server-side work this adds
+
+The full-editor scope for agent profiles extends the v1 contract with:
+
+- `POST /api/profiles` — create
+- `PATCH /api/profiles/:id` — edit
+- `DELETE /api/profiles/:id` — delete (refuses active boot profile; refuses if non-archived sessions reference it)
+
+The active boot profile retains the restart constraint; the editor surfaces a "Changes apply on next restart" banner rather than implying live reload.
+
+The orchestrator's `notification.created` events for `request_user_input` must put `{ question, options? }` into `payload_json` in a shape the frontend can render directly.
 
 ---
 
