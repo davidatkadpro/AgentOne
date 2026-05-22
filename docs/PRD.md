@@ -329,11 +329,26 @@ Each step ships a working system. A demoable build exists from step 4.
 
 The complete glossary is in [`CONTEXT.md`](../CONTEXT.md). Key terms used throughout this PRD include: Skill, SKILL.md, Category, Default Skill, Core Tool, Agent Profile, Base Profile, Model Profile, Role, Provider Tier, Expert, Wiki, Document, Drafts, Conversation History, Hook, Slash Command, System Command.
 
+### Roadmap beyond V1
+
+V2 turns AgentOne from "a chat-driven local agent with memory" into a
+desk-side operations app — adding email triage, project management,
+estimate/proposal generation, and QBO-integrated invoicing — without
+shrinking the agent's role. The plan introduces a second extensibility
+primitive (**Module**) alongside Skill, opens module services to non-chat
+callers (HTTP, hooks, schedulers), and adds spawned sessions / notifications
+so work can begin and surface attention from outside chat.
+
+See [`./planning/v2-business-flow.md`](./planning/v2-business-flow.md) for the
+full plan and build order.
+
 ### Architectural records
 
 - [ADR-0001](./adr/0001-skill-system-as-primary-extensibility.md) — Skill system as primary extensibility; Core Tools are architectural only.
 - [ADR-0002](./adr/0002-three-tree-storage-layout.md) — Three-tree storage layout on SharePoint.
 - [ADR-0003](./adr/0003-event-bus-is-observational.md) — Event bus is observational, not control flow.
+- [ADR-0004](./adr/0004-modules-as-second-extensibility-primitive.md) — Modules as a second extensibility primitive; open service surface; audit log.
+- [ADR-0005](./adr/0005-non-chat-session-activation.md) — Non-chat session activation: spawned sessions, awaiting-input, notifications.
 
 ### Trust and threat model (single-user, local)
 
