@@ -545,6 +545,10 @@ The active boot profile retains the restart constraint; the editor surfaces a "C
 
 The orchestrator's `notification.created` events for `request_user_input` must put `{ question, options? }` into `payload_json` in a shape the frontend can render directly.
 
+### Phase 1.5 punch list
+
+The full Phase 1.5 build — every shell surface, the Chat parity rewrite, the Settings → Profiles editor, the Skills catalog, the notification tray, and the five shared module components — is broken into trackable items in [`./planning/phase-1.5-react-punchlist.md`](./planning/phase-1.5-react-punchlist.md). Start there for the work breakdown; this doc remains the API/contract reference.
+
 ---
 
 ## Glossary
