@@ -26,6 +26,7 @@ import { HookRegistry } from '../skills/hooks.js'
 import { buildAuditLogHook } from '../skills/audit-log-hook.js'
 import { createDatabase, type Db } from '../storage/db.js'
 import { createConversationStore, type ConversationStore } from '../storage/sqlite.js'
+import { createNotifications } from '../modules/notifications.js'
 import { LocalFolderAdapter } from '../storage/local-folder.js'
 import { WikiEngine } from '../memory/wiki/engine.js'
 import { Orchestrator } from '../orchestrator/turn.js'
@@ -432,6 +433,7 @@ export async function bootstrap(): Promise<void> {
 
   const db = createDatabase({ path: config.dbPath })
   const store = createConversationStore(db)
+  const notifications = createNotifications(db)
   const storage = new LocalFolderAdapter({ root: config.storageRoot })
   const wiki = new WikiEngine({ storage, db, prefix: config.wikiPrefix })
   const documents = new DocumentIndex({
@@ -582,6 +584,7 @@ export async function bootstrap(): Promise<void> {
       providers,
       modelProfiles,
       eventBus: bus,
+      notifications,
     },
   })
 

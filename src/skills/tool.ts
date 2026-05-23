@@ -9,6 +9,7 @@ import type { ModelProfile } from '../core/types.js'
 import type { EventBus } from '../core/events.js'
 import type { PermissionGate } from '../profiles/permission-gate.js'
 import type { ExpertSpendTracker } from './expert-spend.js'
+import type { Notifications } from '../modules/notifications.js'
 
 /**
  * Stable error codes the agent can reason about. Tools should always return
@@ -55,6 +56,9 @@ export interface ToolServices {
    *  model and its provider here. */
   modelProfiles: Map<string, ModelProfile>
   eventBus: EventBus
+  /** User-facing notification tray. Written by request_user_input,
+   *  hooks, and modules; read by the UI via REST/WebSocket. */
+  notifications: Notifications
 }
 
 export interface ToolContext {

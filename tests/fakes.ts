@@ -10,6 +10,7 @@ import type { ConversationStore } from '../src/storage/sqlite.js'
 import type { HybridRecall } from '../src/search/hybrid.js'
 import type { PermissionGate } from '../src/profiles/permission-gate.js'
 import type { ToolContext, ToolServices } from '../src/skills/tool.js'
+import type { Notifications } from '../src/modules/notifications.js'
 
 export interface FakeProviderOptions {
   id?: string
@@ -89,6 +90,7 @@ export function fakeServices(overrides: Partial<ToolServices> = {}): ToolService
     providers: new ProviderRegistry(),
     modelProfiles: new Map<string, ModelProfile>(),
     eventBus: new EventBus(),
+    notifications: {} as unknown as Notifications,
     ...overrides,
   }
 }

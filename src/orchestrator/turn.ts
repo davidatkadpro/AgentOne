@@ -13,6 +13,7 @@ import type { ToolContext, ToolServices } from '../skills/tool.js'
 import { buildCoreSkillTools } from '../skills/core-tools.js'
 import { buildWikiCoreTools } from '../skills/wiki-core-tools.js'
 import { buildHistoryCoreTools } from '../skills/history-core-tools.js'
+import { buildRequestUserInputTool } from '../skills/request-user-input-tool.js'
 import type { ResolvedAgentProfile } from '../profiles/agent-profile.js'
 import { PermissionGate } from '../profiles/permission-gate.js'
 import { composeSystemMessage } from '../context/prompt-composer.js'
@@ -122,6 +123,15 @@ export class Orchestrator {
       state.currentCancellation.abort()
     }
     state.currentCancellation = new AbortController()
+
+    // Resume from awaiting_input — the user's message is the answer the
+    // agent was paused waiting for. The orchestrator owns this transition
+    // because the storage layer is intentionally not auto-flipping state on
+    // appendTurn ([[adr-0005]]).
+    const persisted = this.cfg.store.getSession(sessionId)
+    if (persisted?.state === 'awaiting_input') {
+      this.cfg.store.setSessionState(sessionId, 'active')
+    }
 
     const userTurn = this.cfg.store.appendTurn({
       sessionId,
@@ -379,6 +389,8 @@ export class Orchestrator {
     for (const t of buildHistoryCoreTools()) {
       registry.register(t)
     }
+
+    registry.register(buildRequestUserInputTool())
 
     // Default skills are surfaced in the system prompt by header (name +
     // description) but NOT eagerly loaded — their tool schemas would cost
@@ -655,6 +667,17 @@ export class Orchestrator {
               ts: Date.now(),
             })
           }
+        }
+
+        // If any tool transitioned the session to awaiting_input (the
+        // request_user_input core tool, today; any future tool that does the
+        // same would behave identically), end the turn. Don't schedule a
+        // next iteration — the agent has explicitly asked to wait for the
+        // user. The session resumes the next time handleUserMessage runs.
+        const sessionAfterTools = this.cfg.store.getSession(state.sessionId)
+        if (sessionAfterTools?.state === 'awaiting_input') {
+          finalTurnId = assistantTurn.id
+          return
         }
       }
 

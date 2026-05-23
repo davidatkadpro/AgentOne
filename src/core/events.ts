@@ -197,6 +197,15 @@ export type AgentEvent =
       kind: 'soft' | 'hard'
       ts: number
     }
+  | {
+      type: 'session.awaiting_input'
+      sessionId: string
+      /** Id of the notification surfaced when the agent requested input. */
+      notificationId: number
+      /** The question the agent posed (the `question` arg to request_user_input). */
+      question: string
+      ts: number
+    }
 
 export type EventType = AgentEvent['type']
 export type EventByType<T extends EventType> = Extract<AgentEvent, { type: T }>
