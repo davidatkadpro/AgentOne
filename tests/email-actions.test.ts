@@ -279,4 +279,37 @@ describe('Email action dispatcher', () => {
     expect(res.statusCode).toBe(404)
     expect(res.json()).toMatchObject({ error: 'EMAIL_NOT_FOUND' })
   })
+
+  // ── P3P1: canonical /api/email/actions dispatch ───────────────────────
+  it('POST /api/email/actions (canonical path) dispatches via contextId', async () => {
+    const email = h.service.ingestEmail(
+      {
+        sourceKind: 'maildir',
+        sourceId: 'msg-ctx',
+        receivedAt: Date.now(),
+        fromAddress: 'a@b.com',
+        subject: 'ADR-0007',
+      },
+      { actor: { type: 'scheduler', id: 'test' } },
+    )
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/api/email/actions',
+      payload: { action: 'file-to-project', contextId: email.id },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(h.fakeOrchestrator.spawnSession).toHaveBeenCalledTimes(1)
+    const spawnArg = h.fakeOrchestrator.spawnSession.mock.calls[0]![0]
+    expect(spawnArg.initialMessage).toContain(email.id)
+  })
+
+  // ── P3P5: accept both emailId + contextId; missing both → 400 ──────────
+  it('POST returns 400 when neither contextId nor emailId is provided', async () => {
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/api/email/actions',
+      payload: { action: 'file-to-project' },
+    })
+    expect(res.statusCode).toBe(400)
+  })
 })

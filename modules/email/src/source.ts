@@ -20,6 +20,21 @@ export interface SourceEmailDetail extends SourceEmailSummary {
   attachmentNames: string[]
 }
 
+/** Rendered body returned by EmailSource.getBody — the shape the
+ *  `/api/email/:id/body` route returns. `content` is plain text (kind:'text')
+ *  or sanitised HTML (kind:'html'). Sanitisation is the source's
+ *  responsibility: by the time this value crosses the route boundary it must
+ *  be safe to render in the browser. */
+export interface SourceEmailBody {
+  kind: 'text' | 'html'
+  content: string
+  attachments: Array<{
+    filename: string
+    bytes: number
+    contentType: string | null
+  }>
+}
+
 export interface EmailSourceListOptions {
   /** Skip messages received at or before this ms-epoch. */
   sinceMs?: number
@@ -39,10 +54,19 @@ export interface EmailSource {
 
   list(opts?: EmailSourceListOptions): Promise<SourceEmailSummary[]>
   get(sourceId: string): Promise<SourceEmailDetail>
+  /** Returns the rendered body for the React detail view. Implementations
+   *  MUST sanitise HTML before returning. Defaults to plain text when not
+   *  overridden (built from `get(sourceId).body`). */
+  getBody?(sourceId: string): Promise<SourceEmailBody>
   fetchAttachment(sourceId: string, attachmentName: string): Promise<Buffer>
 
   /** Optional — sources that track read state remotely can implement this so
    *  the UI's "mark read" propagates back to the mailbox. Sources that don't
    *  (e.g. a maildir folder) just leave it undefined. */
   markRead?(sourceId: string, isRead: boolean): Promise<void>
+
+  /** Optional — sources that can push new-message notifications start a
+   *  watcher here. The callback fires once per newly-detected message; the
+   *  service maps it to `ingestEmail`. Returns an unsubscribe function. */
+  watch?(onNewMessage: (sourceId: string) => void): () => void
 }

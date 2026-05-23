@@ -51,4 +51,10 @@ export const queryKeys = {
       ['projects', 'activity', id, offset ?? 0] as const,
     nextNumber: () => ['projects', 'next-number'] as const,
   },
+  emails: {
+    all: () => ['emails'] as const,
+    list: (opts?: Record<string, unknown>) => ['emails', 'list', opts ?? {}] as const,
+    detail: (id: string) => ['emails', 'detail', id] as const,
+    body: (id: string) => ['emails', 'body', id] as const,
+  },
 } as const

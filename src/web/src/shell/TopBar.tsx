@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { Bell, Sun, Moon, Monitor } from 'lucide-react'
+import { AlertTriangle, Bell, Sun, Moon, Monitor } from 'lucide-react'
 import { useHealth } from '@/api/health'
 import { useUiStore } from '@/stores/ui'
 import { useNotificationsStore } from '@/stores/notifications'
@@ -21,6 +21,15 @@ export function TopBar() {
         AgentOne
       </Link>
       <div className="flex-1" />
+      {health.data?.emailSource?.configured && !health.data.emailSource.ok ? (
+        <span
+          className="inline-flex items-center gap-1 text-xs text-warn"
+          title="Email source is unreachable"
+          data-testid="email-source-warning"
+        >
+          <AlertTriangle size={12} /> Email source offline
+        </span>
+      ) : null}
       {health.data ? (
         <span className="text-xs text-muted flex items-center gap-2">
           <span

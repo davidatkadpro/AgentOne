@@ -90,6 +90,13 @@ export interface EmailService {
    *  yet. Returns the number of newly-ingested rows. Re-running is a no-op
    *  because ingestEmail is idempotent over (source_kind, source_id). */
   pollSource(source: EmailSource, ctx: ActorContext): Promise<{ ingested: number }>
+  /** Ingest a single sourceId from the source (no list traversal). Used by
+   *  the fs-watcher path so a new .eml arrival doesn't require a full re-scan. */
+  ingestOne(
+    source: EmailSource,
+    sourceId: string,
+    ctx: ActorContext,
+  ): Promise<Email | null>
 }
 
 export interface EmailServiceDeps {
@@ -417,6 +424,32 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         ingested += 1
       }
       return { ingested }
+    },
+
+    async ingestOne(source, sourceId, ctx) {
+      // Fast-path for the fs-watcher: look up just the one message and
+      // ingest. The source.get() call carries the full body, but we only
+      // need the summary fields. Idempotent via the (sourceKind, sourceId)
+      // unique check below.
+      const before = getBySourceStmt.get(source.kind, sourceId)
+      if (before) return rowToEmail(before as EmailRow)
+      let detail
+      try {
+        detail = await source.get(sourceId)
+      } catch {
+        return null
+      }
+      const ingestInput: IngestEmailInput = {
+        sourceKind: source.kind,
+        sourceId,
+        receivedAt: detail.receivedAt,
+        fromAddress: detail.fromAddress,
+        fromName: detail.fromName,
+        subject: detail.subject,
+        snippet: detail.snippet,
+        hasAttachments: detail.hasAttachments,
+      }
+      return this.ingestEmail(ingestInput, ctx)
     },
   }
 }

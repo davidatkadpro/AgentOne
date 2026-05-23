@@ -24,11 +24,19 @@ export interface EmailActionDiscovery {
   errors: Array<{ skill: string; error: string }>
 }
 
-const DispatchBody = z.object({
-  action: z.string().regex(/^[a-z0-9-]+$/),
-  emailId: z.string().min(1),
-  args: z.record(z.unknown()).optional(),
-})
+// ADR-0007 / P3P5: accept both the legacy `emailId` field and the canonical
+// `contextId` field. After the next minor we can drop `emailId` — until then
+// either is accepted with a `.refine` that ensures at least one is present.
+const DispatchBody = z
+  .object({
+    action: z.string().regex(/^[a-z0-9-]+$/),
+    emailId: z.string().min(1).optional(),
+    contextId: z.string().min(1).optional(),
+    args: z.record(z.unknown()).optional(),
+  })
+  .refine((b) => b.emailId !== undefined || b.contextId !== undefined, {
+    message: 'Either contextId or emailId is required',
+  })
 
 export interface RegisterEmailActionsDeps {
   service: EmailService
@@ -173,13 +181,16 @@ export async function registerEmailActions(
 ): Promise<void> {
   const { service, orchestrator, skillsDir, eventBus } = deps
 
+  // Legacy discovery path only — ADR-0007's canonical
+  // `GET /api/<module>/actions` is registered globally via
+  // `registerModuleActionsDiscovery`. POST is mounted at both prefixes so
+  // both shapes of dispatch (legacy `emailId`, ADR-0007 `contextId`) work.
   app.get('/api/v1/email/actions', async () => {
     let mtimeMs: number
     try {
       const s = await stat(skillsDir)
       mtimeMs = s.mtimeMs
     } catch {
-      // Skills dir missing — no actions.
       return { actions: [], errors: [] }
     }
     if (discoveryCache && discoveryCache.mtimeMs === mtimeMs) {
@@ -190,81 +201,83 @@ export async function registerEmailActions(
     return result
   })
 
-  app.post('/api/v1/email/actions', async (req, reply) => {
-    const body = DispatchBody.safeParse(req.body ?? {})
-    if (!body.success) {
-      reply.code(400)
-      return { error: 'INVALID_BODY', details: body.error.flatten() }
-    }
-    const email = service.getEmail(body.data.emailId)
-    if (!email) {
-      reply.code(404)
-      return { error: 'EMAIL_NOT_FOUND' }
-    }
-    const skill = await loadActionFrontmatter(skillsDir, body.data.action)
-    if (!skill) {
-      reply.code(404)
-      return { error: 'UNKNOWN_ACTION', action: body.data.action }
-    }
-    const scope = {
-      email: serializeEmail(email),
-      contextId: body.data.emailId,
-      args: body.data.args ?? {},
-    }
-    const seedMessage = renderTemplate(skill.promptTemplate, scope).trim()
-    if (seedMessage.length === 0) {
-      reply.code(422)
-      return {
-        error: 'EMPTY_PROMPT_TEMPLATE',
-        message: `Skill "${body.data.action}" rendered to an empty prompt.`,
+  for (const url of ['/api/v1/email/actions', '/api/email/actions']) {
+    app.post(url, async (req, reply) => {
+      const body = DispatchBody.safeParse(req.body ?? {})
+      if (!body.success) {
+        reply.code(400)
+        return { error: 'INVALID_BODY', details: body.error.flatten() }
       }
-    }
-    const spawnInput: Parameters<typeof orchestrator.spawnSession>[0] = {
-      spawnedBy: `modules/email/${body.data.action}`,
-      initialMessage: seedMessage,
-      title: skill.fm.label ?? body.data.action,
-      allowedSkills: [`email/${body.data.action}`],
-    }
-    if (skill.fm.default_profile) {
-      spawnInput.agentProfile = skill.fm.default_profile
-    }
-    const result = await orchestrator.spawnSession(spawnInput)
-    if (eventBus) {
-      void eventBus.emit({
-        type: 'email.action_started',
-        emailId: body.data.emailId,
-        action: body.data.action,
-        sessionId: result.session.id,
-        ts: Date.now(),
-      })
-    }
-    // Drain the stream in the background so the route returns immediately
-    // and the client subscribes via WebSocket. The action_completed event
-    // fires when the spawned turn ends (success OR error). The session may
-    // still be awaiting_input after this — that's a different signal the UI
-    // surfaces via the notification tray.
-    void (async () => {
-      let ok = true
-      try {
-        for await (const _ of result.handle.stream) {
-          // discard
+      const emailId = body.data.contextId ?? body.data.emailId
+      if (!emailId) {
+        reply.code(400)
+        return { error: 'INVALID_BODY', message: 'Missing contextId / emailId' }
+      }
+      const email = service.getEmail(emailId)
+      if (!email) {
+        reply.code(404)
+        return { error: 'EMAIL_NOT_FOUND' }
+      }
+      const skill = await loadActionFrontmatter(skillsDir, body.data.action)
+      if (!skill) {
+        reply.code(404)
+        return { error: 'UNKNOWN_ACTION', action: body.data.action }
+      }
+      const scope = {
+        email: serializeEmail(email),
+        contextId: emailId,
+        args: body.data.args ?? {},
+      }
+      const seedMessage = renderTemplate(skill.promptTemplate, scope).trim()
+      if (seedMessage.length === 0) {
+        reply.code(422)
+        return {
+          error: 'EMPTY_PROMPT_TEMPLATE',
+          message: `Skill "${body.data.action}" rendered to an empty prompt.`,
         }
-      } catch {
-        ok = false
       }
+      const spawnInput: Parameters<typeof orchestrator.spawnSession>[0] = {
+        spawnedBy: `modules/email/${body.data.action}`,
+        initialMessage: seedMessage,
+        title: skill.fm.label ?? body.data.action,
+        allowedSkills: [`email/${body.data.action}`],
+      }
+      if (skill.fm.default_profile) {
+        spawnInput.agentProfile = skill.fm.default_profile
+      }
+      const result = await orchestrator.spawnSession(spawnInput)
       if (eventBus) {
-        await eventBus.emit({
-          type: 'email.action_completed',
-          emailId: body.data.emailId,
+        void eventBus.emit({
+          type: 'email.action_started',
+          emailId,
           action: body.data.action,
           sessionId: result.session.id,
-          ok,
           ts: Date.now(),
         })
       }
-    })()
-    return { sessionId: result.session.id, action: body.data.action }
-  })
+      void (async () => {
+        let ok = true
+        try {
+          for await (const _ of result.handle.stream) {
+            // discard
+          }
+        } catch {
+          ok = false
+        }
+        if (eventBus) {
+          await eventBus.emit({
+            type: 'email.action_completed',
+            emailId,
+            action: body.data.action,
+            sessionId: result.session.id,
+            ok,
+            ts: Date.now(),
+          })
+        }
+      })()
+      return { sessionId: result.session.id, action: body.data.action }
+    })
+  }
 }
 
 /** Light JSON-safe view of the Email row for template rendering. We expose

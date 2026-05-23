@@ -25,6 +25,10 @@ vi.mock('@/lib/query-client', () => ({
       detail: (id: string) => ['projects', 'detail', id],
       activity: (id: string) => ['projects', 'activity', id],
     },
+    emails: {
+      all: () => ['emails'],
+      detail: (id: string) => ['emails', 'detail', id],
+    },
   },
 }))
 vi.mock('@/stores/ws', () => ({
@@ -36,6 +40,9 @@ vi.mock('@/stores/session-stream', () => ({
 }))
 vi.mock('@/stores/notifications', () => ({
   useNotificationsStore: { getState: () => ({ applyEvent: vi.fn() }) },
+}))
+vi.mock('@/stores/email-chips', () => ({
+  useEmailChipsStore: { getState: () => ({ applyEvent: vi.fn() }) },
 }))
 
 describe('invalidateForEvent — projects dispatch fanout', () => {
@@ -107,5 +114,37 @@ describe('invalidateForEvent — projects dispatch fanout', () => {
   it('module.reloaded invalidates that module-actions key only', async () => {
     await dispatch({ type: 'module.reloaded', module: 'projects', ts: 1 })
     expect(invalidated).toEqual([['module-actions', 'projects']])
+  })
+
+  it('email.received invalidates the emails branch', async () => {
+    await dispatch({
+      type: 'email.received',
+      emailId: 'e1',
+      sourceKind: 'maildir',
+      sourceId: 'msg-1',
+      ts: 1,
+    })
+    expect(invalidated).toEqual([['emails']])
+  })
+
+  it('email.read invalidates emails branch + that detail', async () => {
+    await dispatch({ type: 'email.read', emailId: 'e1', ts: 1 })
+    expect(invalidated).toEqual([['emails'], ['emails', 'detail', 'e1']])
+  })
+
+  it('email.filed invalidates emails branch + detail + project detail + project activity', async () => {
+    await dispatch({
+      type: 'email.filed',
+      emailId: 'e1',
+      projectId: 'p-1',
+      folderPath: 'projects/24001/in/x',
+      ts: 1,
+    })
+    expect(invalidated).toEqual([
+      ['emails'],
+      ['emails', 'detail', 'e1'],
+      ['projects', 'detail', 'p-1'],
+      ['projects', 'activity', 'p-1'],
+    ])
   })
 })

@@ -107,6 +107,7 @@ export interface HealthResponse {
   wikiPrefix: string
   agentProfile: string
   capabilities?: { pandoc: boolean }
+  emailSource?: { kind: string; ok: boolean; configured: boolean }
 }
 
 export interface ModuleAction {
@@ -205,4 +206,51 @@ export interface ProjectFilesEntry {
   kind: 'file' | 'directory'
   bytes: number
   mtime: string
+}
+
+// ── Email module ──────────────────────────────────────────────────────────
+
+export interface Email {
+  id: string
+  sourceKind: string
+  sourceId: string
+  receivedAt: number
+  fromAddress: string
+  fromName: string | null
+  subject: string | null
+  snippet: string | null
+  hasAttachments: boolean
+  isRead: boolean
+  filedProjectId: string | null
+  filedFolderPath: string | null
+  filedAt: number | null
+  metadata: Record<string, unknown>
+  createdAt: number
+}
+
+export interface EmailAttachmentSummary {
+  filename: string
+  bytes: number
+  contentType: string | null
+}
+
+export interface EmailBody {
+  emailId: string
+  kind: 'html' | 'text'
+  content: string
+  attachments: EmailAttachmentSummary[]
+}
+
+export interface EmailActionChip {
+  emailId: string
+  action: string
+  sessionId: string
+  status: 'running' | 'completed' | 'failed'
+  result?: { projectId?: string; projectNumber?: string }
+  startedAt: number
+  endedAt?: number
+}
+
+export interface EmailPollResult {
+  ingested: number
 }

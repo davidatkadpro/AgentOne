@@ -4,6 +4,7 @@ import { nextReconnectDelayMs } from './ws-backoff'
 import { useWsStore, subscribedSessions } from '@/stores/ws'
 import { useSessionStreamStore } from '@/stores/session-stream'
 import { useNotificationsStore } from '@/stores/notifications'
+import { useEmailChipsStore } from '@/stores/email-chips'
 import { queryClient, queryKeys } from './query-client'
 
 let ws: WebSocket | null = null
@@ -71,6 +72,29 @@ export function invalidateForEvent(event: AgentEvent): void {
         queryKey: queryKeys.projects.activity(event.projectId),
       })
       break
+    case 'email.received':
+      void queryClient.invalidateQueries({ queryKey: queryKeys.emails.all() })
+      break
+    case 'email.read':
+      void queryClient.invalidateQueries({ queryKey: queryKeys.emails.all() })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.emails.detail(event.emailId),
+      })
+      break
+    case 'email.filed':
+      void queryClient.invalidateQueries({ queryKey: queryKeys.emails.all() })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.emails.detail(event.emailId),
+      })
+      if (event.projectId) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.projects.detail(event.projectId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.projects.activity(event.projectId),
+        })
+      }
+      break
   }
 }
 
@@ -137,6 +161,7 @@ export function connectWebSocket(): void {
     if (!parsed) return
     useSessionStreamStore.getState().applyEvent(parsed)
     useNotificationsStore.getState().applyEvent(parsed)
+    useEmailChipsStore.getState().applyEvent(parsed)
     invalidateForEvent(parsed)
   })
   ws.addEventListener('close', () => {

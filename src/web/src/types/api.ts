@@ -16,6 +16,9 @@ import type {
   ProjectBudget,
   ActivityEntry,
   ProjectFilesEntry,
+  Email,
+  EmailBody,
+  EmailPollResult,
 } from './domain'
 
 export interface ListSessionsResponse {
@@ -232,4 +235,42 @@ export type ProjectBudgetResponse = ProjectBudget
 
 export interface NextProjectNumberResponse {
   number: string
+}
+
+// ── Email ──────────────────────────────────────────────────────────────────
+
+export interface ListEmailsQuery {
+  isRead?: boolean
+  filed?: boolean
+  hasAttachments?: boolean
+  projectId?: string
+  limit?: number
+}
+export interface ListEmailsResponse {
+  emails: Email[]
+}
+
+export interface EmailDetailResponse {
+  email: Email
+}
+
+export type EmailBodyResponse = EmailBody
+
+export interface UpdateEmailRequest {
+  isRead: boolean
+}
+export interface UpdateEmailResponse {
+  email: Email
+}
+
+export type PollEmailResponse = EmailPollResult
+
+export interface DispatchEmailActionRequest {
+  action: string
+  contextId: string
+  args?: Record<string, unknown>
+}
+export interface DispatchEmailActionResponse {
+  sessionId: string
+  action: string
 }

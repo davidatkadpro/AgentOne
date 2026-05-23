@@ -153,6 +153,21 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   app.get('/api/health', async () => {
     await deps.wiki.whenReady()
+    // Q2: surface the email source's state so the top-bar can show a banner
+    // when the configured maildir is unreachable. We re-stat on each request
+    // — cheap on local disk and avoids stale "ok" reports.
+    let emailSource: { kind: string; ok: boolean; configured: boolean } | undefined
+    if (deps.config.emailMaildirPath) {
+      try {
+        const { stat: fsstat } = await import('node:fs/promises')
+        await fsstat(deps.config.emailMaildirPath)
+        emailSource = { kind: 'maildir', ok: true, configured: true }
+      } catch {
+        emailSource = { kind: 'maildir', ok: false, configured: true }
+      }
+    } else {
+      emailSource = { kind: 'none', ok: true, configured: false }
+    }
     return {
       status: 'ok',
       model: deps.conversationModel.id,
@@ -163,6 +178,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       capabilities: {
         pandoc: pandocAvailable,
       },
+      emailSource,
     }
   })
 
@@ -705,7 +721,22 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       service: emailService,
     }
     if (deps.config.emailMaildirPath) {
-      emailDeps.source = new MaildirEmailSource({ root: deps.config.emailMaildirPath })
+      const source = new MaildirEmailSource({ root: deps.config.emailMaildirPath })
+      emailDeps.source = source
+      // P3P7: fs-watcher on the maildir root. New `.eml` files auto-ingest
+      // without waiting for the manual POST /api/email/poll.
+      const stopWatch = source.watch?.((sourceId) => {
+        void emailService
+          .ingestOne(source, sourceId, { actor: { type: 'scheduler', id: 'email-watch' } })
+          .catch(() => {
+            // best-effort; broken individual messages don't break the watcher
+          })
+      })
+      if (stopWatch) {
+        app.addHook('onClose', async () => {
+          stopWatch()
+        })
+      }
     }
     await registerEmailRoutes(app, emailDeps)
     await registerEmailActions(app, {
