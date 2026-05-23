@@ -25,12 +25,12 @@ The reference for *what* each surface contains is [`../FRONTEND-HANDOFF.md`](../
 | P1 Settings (G1-G8) | 6 | 1 (G3 react-hook-form) | 1 (G7 needs P1S6) |
 | P1 Server (P1S1-P1S7) | 6 | 0 | 1 (P1S6) |
 | P2 Module components (M1-M5) | 0 | 5 (no dev-route fixtures) | 0 |
-| P2 Module discovery (P2S1) | 0 | 0 | 1 (blocks Phase 2 toolbars) |
+| P2 Module discovery (P2S1) | 1 | 0 | 0 |
 | P3 Stubs (E1-E2) | 2 | 0 | 0 |
 | P3 Removal (R1) | 0 | 0 | 1 (deferred) |
-| **Total** | **29** | **9** | **4** |
+| **Total** | **30** | **9** | **3** |
 
-The 4 remaining todos: P1S6 (`GET /api/hooks`), P2S1 (`GET /api/<module>/actions` discovery), R1 (legacy removal). The 9 in-progress items are mostly polish — none are blockers for Phase 2 except P2S1.
+The 3 remaining todos: P1S6 (`GET /api/hooks`), R1 (legacy removal). The 9 in-progress items are mostly polish — none are blockers for Phase 2.
 - **Depends on**: lists item IDs that must land first.
 - **Done means**: the acceptance criteria are met *and* an entry exists in the rewrite's testing/storybook surface where applicable.
 - The rewrite happens in a new workspace under `src/web/` (TypeScript + Vite). The legacy `src/frontend/` stays served until Phase 1.5 is feature-complete, then is removed in a single commit.
@@ -337,8 +337,8 @@ Each lives under `src/web/components/module/` and is pure render + callbacks; st
 - **Acceptance**: dev-route walks through a 3-state machine end-to-end.
 
 ### P2S1. `GET /api/<module>/actions` discovery endpoint
-**Status**: ☐ · **Depends on**: —
-**Status detail**: only the dispatch surface (`POST /api/email/actions`) exists today. The new GET discovery convention with SKILL.md frontmatter scanning (label / icon / surface / tabs / requires_confirmation) hasn't been built. M1/M3 currently receive an empty list and render zero entries against a real module. **Blocks Phase 2 if Projects wants a real action toolbar.**
+**Status**: ☑ · **Depends on**: —
+**Note**: shared helper at `src/modules/action-discovery.ts` (`discoverActions()` + `registerModuleActionsDiscovery()`); mounted once per booted module in `src/server/index.ts` for email/projects/proposals/invoicing. Mtime-keyed cache invalidates when a skill folder changes. 11 existing module skills surface with sensible defaults (`surface: 'ask_agent'`, label = title-cased name). 10 new integration tests in `tests/action-discovery.test.ts`.
 - Convention from ADR-0007: each module exposes its own `/api/<module>/actions` route that scans `modules/<name>/skills/*/SKILL.md` for the new frontmatter fields (`label`, `icon`, `default_profile`, `prompt_template`, `requires_confirmation`, `surface`, `tabs`).
 - Response shape: `{ ok: true, actions: Array<ActionDescriptor> } | { ok: false, error }` per skill, mirroring `GET /api/profiles`.
 - Implemented once as a shared loader; modules wire it via a one-line route registration.

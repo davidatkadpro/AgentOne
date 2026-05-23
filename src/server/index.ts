@@ -50,6 +50,7 @@ import { registerProjectsRoutes } from '../../modules/projects/src/routes.js'
 import { createEmailService } from '../../modules/email/src/service.js'
 import { registerEmailRoutes } from '../../modules/email/src/routes.js'
 import { registerEmailActions } from '../../modules/email/src/actions.js'
+import { registerModuleActionsDiscovery } from '../modules/action-discovery.js'
 import { MaildirEmailSource } from '../../modules/email/src/sources/maildir.js'
 import { createProposalsService, type ProposalsService } from '../../modules/proposals/src/service.js'
 import { registerProposalsRoutes } from '../../modules/proposals/src/routes.js'
@@ -705,6 +706,18 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       orchestrator: deps.orchestrator,
       skillsDir: join(emailHandle.rootPath, 'skills'),
       eventBus: deps.bus,
+    })
+  }
+
+  // Action discovery (ADR-0007 / P2S1). One uniform GET /api/<module>/actions
+  // per booted module that has a skills/ subdir — the frontend's
+  // <ActionToolbar> / <AskAgentMenu> consume this without per-module wiring.
+  for (const moduleName of ['email', 'projects', 'proposals', 'invoicing'] as const) {
+    const handle = deps.modules.get(moduleName)
+    if (handle?.status !== 'active') continue
+    registerModuleActionsDiscovery(app, {
+      module: moduleName,
+      skillsDir: join(handle.rootPath, 'skills'),
     })
   }
 
