@@ -864,6 +864,14 @@ Query + Zustand + shadcn/Tailwind + react-hook-form + zod + react-markdown.
 - `create-new-project` skill (trivial after file-to-project works).
 - `GraphEmailSource` as a sub-phase once OAuth is set up.
 
+> Frontend impl spec + tracked work breakdown:
+> [`./phase-3-email-impl-spec.md`](./phase-3-email-impl-spec.md) (folder layout,
+> types, body-rendering pipeline, backend route gaps) and
+> [`./phase-3-email-punchlist.md`](./phase-3-email-punchlist.md) (32 tracked
+> items, 28 in-scope + 4 deferred to the GraphEmailSource sub-phase).
+> Realistic estimate: **6-10 days** for the `MaildirEmailSource` half; Graph
+> adds 3-5 once OAuth is set up.
+
 ### Phase 4 — Scope extractor + Proposals (~1–2 weeks)
 - `scope-extractor` Email skill (writes `scope.md`).
 - `modules/proposals/`: schema, service, `build-estimate` skill, markdown-only
