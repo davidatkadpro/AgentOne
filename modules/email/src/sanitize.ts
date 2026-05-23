@@ -167,6 +167,17 @@ export function sanitizeEmailHtml(input: string, opts: SanitizeOptions = {}): st
         i = end + 1
         continue
       }
+      // Bare `<` followed by something that can't start a tag — treat as
+      // literal text. Without this, an email body like "a < b" or "if x<3"
+      // would either be lost (no `>` follows) or eat a huge chunk of the
+      // document if a `>` happens to appear later. Tag names must start
+      // with [A-Za-z]; `/`, `!`, `?` were already handled above.
+      const after = input[i + 1]
+      if (after === undefined || !/[A-Za-z]/.test(after)) {
+        out.push('&lt;')
+        i += 1
+        continue
+      }
       // Open tag.
       const tagEnd = findTagEnd(input, i)
       if (tagEnd === -1) {

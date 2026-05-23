@@ -109,4 +109,35 @@ describe('sanitizeEmailHtml', () => {
     expect(out).toContain('title="a &gt; b"')
     expect(out).toContain('x</a>')
   })
+
+  it('treats a bare `<` followed by text as literal (no data loss)', () => {
+    expect(sanitizeEmailHtml(`a < b`)).toBe('a &lt; b')
+    expect(sanitizeEmailHtml(`if x<3 then`)).toBe('if x&lt;3 then')
+  })
+
+  it('treats a trailing bare `<` as literal', () => {
+    expect(sanitizeEmailHtml(`hello <`)).toBe('hello &lt;')
+  })
+
+  it('preserves <p>x &lt; y</p> intact (already-escaped HTML)', () => {
+    expect(sanitizeEmailHtml(`<p>x &lt; y</p>`)).toBe('<p>x &lt; y</p>')
+  })
+
+  it('case-insensitive tag matching strips <SCRIPT>', () => {
+    expect(sanitizeEmailHtml(`<P>ok</P><SCRIPT>alert(1)</SCRIPT>`)).not.toContain('SCRIPT')
+    expect(sanitizeEmailHtml(`<P>ok</P><SCRIPT>alert(1)</SCRIPT>`)).not.toContain('script')
+    expect(sanitizeEmailHtml(`<P>ok</P>`)).toBe('<p>ok</p>')
+  })
+
+  it('rejects javascript: with mixed case', () => {
+    const out = sanitizeEmailHtml(`<a href="JavaScript:alert(1)">x</a>`)
+    expect(out).not.toMatch(/javascript:/i)
+  })
+
+  it('handles nested <script> blocks correctly', () => {
+    const out = sanitizeEmailHtml(`<p>safe</p><script>x</script><script>y</script><p>also safe</p>`)
+    expect(out).not.toContain('script')
+    expect(out).toContain('<p>safe</p>')
+    expect(out).toContain('<p>also safe</p>')
+  })
 })

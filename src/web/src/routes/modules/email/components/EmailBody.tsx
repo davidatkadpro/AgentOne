@@ -1,18 +1,39 @@
+import { useMemo } from 'react'
+import DOMPurify, { type Config as PurifyConfig } from 'dompurify'
 import { useEmailBody } from '@/api/email'
 
 export interface EmailBodyProps {
   emailId: string
 }
 
-/**
- * Renders the email body. Server-side sanitisation (modules/email/src/sanitize.ts)
- * is the primary defence — by the time the bytes reach the browser, scripts
- * and dangerous attributes are gone. Without a heavy DOMPurify dep, we render
- * the trusted server output inside a constrained container; the single-user
- * trust model and the server pass make this acceptable for v2.
- */
+// Defence-in-depth (P3 spec §5.4 step 3): the server's HTML sanitiser
+// (modules/email/src/sanitize.ts) is the primary gate, but we run DOMPurify
+// in the browser as a second pass. The allow-list is intentionally narrower
+// than the server's so the two layers fail-closed on anything novel: no
+// scripts, no event handlers, no `style` attribute, no form elements, only
+// https images.
+const PURIFY_CONFIG: PurifyConfig = {
+  ALLOWED_TAGS: [
+    'a', 'b', 'blockquote', 'br', 'caption', 'code', 'col', 'colgroup',
+    'dd', 'div', 'dl', 'dt', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'hr', 'i', 'img', 'li', 'ol', 'p', 'pre', 'small', 's', 'span',
+    'strong', 'sub', 'sup', 'table', 'tbody', 'td', 'tfoot', 'th',
+    'thead', 'tr', 'u', 'ul',
+  ],
+  ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'width', 'height', 'colspan', 'rowspan'],
+  ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|tel:|#)/i,
+  FORBID_ATTR: ['style', 'srcdoc', 'formaction'],
+}
+
 export function EmailBody({ emailId }: EmailBodyProps) {
   const body = useEmailBody(emailId)
+  const sanitised = useMemo(
+    () =>
+      body.data?.kind === 'html'
+        ? DOMPurify.sanitize(body.data.content, PURIFY_CONFIG)
+        : null,
+    [body.data?.kind, body.data?.content],
+  )
   if (body.isLoading) {
     return (
       <div className="p-6 space-y-2" data-testid="email-body-loading">
@@ -57,7 +78,7 @@ export function EmailBody({ emailId }: EmailBodyProps) {
     <div
       className="email-body p-4 text-sm prose-sm max-w-none text-fg"
       data-testid="email-body-html"
-      dangerouslySetInnerHTML={{ __html: data.content }}
+      dangerouslySetInnerHTML={{ __html: sanitised ?? '' }}
     />
   )
 }

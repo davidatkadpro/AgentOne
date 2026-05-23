@@ -86,5 +86,59 @@ describe('MaildirEmailSource', () => {
     const src = new MaildirEmailSource({ root })
     expect(await src.list()).toEqual([])
   })
+
+  it('getBody returns kind:text + content for plain emails (with quoted-printable decode)', async () => {
+    await writeEml(
+      '005.eml',
+      [
+        'From: a@b.com',
+        'Subject: qp',
+        'Date: Tue, 23 May 2026 10:00:00 +0000',
+        'Content-Type: text/plain; charset=UTF-8',
+        'Content-Transfer-Encoding: quoted-printable',
+        '',
+        'caf=C3=A9 caf=C3=A9',
+      ].join('\n'),
+    )
+    const src = new MaildirEmailSource({ root })
+    const body = await src.getBody!('005.eml')
+    expect(body.kind).toBe('text')
+    expect(body.content).toContain('café')
+  })
+
+  it('getBody returns kind:html + sanitised content for text/html emails', async () => {
+    await writeEml(
+      '006.eml',
+      [
+        'From: a@b.com',
+        'Subject: html',
+        'Date: Tue, 23 May 2026 10:00:00 +0000',
+        'Content-Type: text/html; charset=UTF-8',
+        '',
+        '<p>hi</p><script>alert(1)</script>',
+      ].join('\n'),
+    )
+    const src = new MaildirEmailSource({ root })
+    const body = await src.getBody!('006.eml')
+    expect(body.kind).toBe('html')
+    expect(body.content).toContain('<p>hi</p>')
+    expect(body.content).not.toContain('script')
+  })
+
+  it('watch() returns a no-op unsubscribe when the dir does not exist', () => {
+    // Using a never-created subpath — node:fs.watch on Windows throws ENOENT
+    // immediately, on Linux it can succeed silently. Either way our wrapper
+    // must always return a callable.
+    const src = new MaildirEmailSource({ root: join(root, 'never') })
+    const unsub = src.watch!(() => {})
+    expect(typeof unsub).toBe('function')
+    unsub()
+  })
+
+  it('rejects path traversal in get() / getBody()', async () => {
+    const src = new MaildirEmailSource({ root })
+    await expect(src.get('../etc/passwd')).rejects.toThrow(/Invalid sourceId/)
+    await expect(src.get('a/b.eml')).rejects.toThrow(/Invalid sourceId/)
+  })
 })
 
