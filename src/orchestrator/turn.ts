@@ -71,6 +71,27 @@ interface SessionState {
 const DEFAULT_MAX_ITERATIONS = 8
 const DEFAULT_SESSION_CACHE_MAX = 32
 
+/**
+ * Thrown by buildSessionState when a persisted session's agentProfile
+ * doesn't match the boot profile. The server layer catches this and maps
+ * it to a 409 Conflict so the client can surface a clear message.
+ */
+export class ProfileMismatchError extends Error {
+  readonly code = 'PROFILE_MISMATCH' as const
+  constructor(
+    public readonly sessionId: string,
+    public readonly sessionProfile: string,
+    public readonly bootProfile: string,
+  ) {
+    super(
+      `Session ${sessionId} was created under agent profile "${sessionProfile}", ` +
+        `but this server is running "${bootProfile}". Restart with ` +
+        `AGENT_PROFILE=${sessionProfile} to open it.`,
+    )
+    this.name = 'ProfileMismatchError'
+  }
+}
+
 const MAX_ITER_HIT_NOTICE =
   '[Tool loop terminated: iteration cap reached. The agent issued more tool calls than permitted in a single user message. Re-prompt to continue.]'
 
@@ -315,6 +336,18 @@ export class Orchestrator {
   }
 
   private async buildSessionState(sessionId: string): Promise<SessionState> {
+    // Path A multi-profile guard: this server boots with a single profile, so
+    // refuse to open a session that was created under a different one. The
+    // alternative (silently using boot-profile skills/permissions for a
+    // session whose persisted agentProfile points at something else) leaks
+    // budgets, deny-lists, and default skills across profiles. Path B —
+    // resolving the session's profile at build time — comes when
+    // multi-profile-per-server becomes a real product need.
+    const session = this.cfg.store.getSession(sessionId)
+    if (session && session.agentProfile !== this.cfg.profile.id) {
+      throw new ProfileMismatchError(sessionId, session.agentProfile, this.cfg.profile.id)
+    }
+
     // Compose a per-session HookRegistry: cross-cutting hooks from the
     // server config (audit-log, redaction) plus profile-derived hooks
     // (deny_tools). Each session gets a fresh registry so a profile's

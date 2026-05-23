@@ -73,6 +73,7 @@ export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
   if (args.system) messages.push({ role: 'system', content: args.system })
   messages.push({ role: 'user', content: `${args.context}\n\n---\n\n${args.question}` })
 
+  const startMs = Date.now()
   try {
     const res = await provider.chat({
       model: expertProfile.model,
@@ -81,6 +82,7 @@ export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
       maxTokens: args.max_tokens ?? expertProfile.params.maxTokens ?? 2048,
       topP: expertProfile.params.topP ?? 1,
     })
+    const latencyMs = Date.now() - startMs
 
     const cost = res.costUsd ?? 0
     ctx.expertSpend.add(args.expert, cost, {
@@ -97,6 +99,7 @@ export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
       outputTokens: res.outputTokens,
       costUsd: cost,
       sessionSpendUsd: ctx.expertSpend.total,
+      latencyMs,
       ts: Date.now(),
     })
 

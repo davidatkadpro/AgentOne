@@ -51,29 +51,24 @@ at commits `99a73de..5076cbe`).
 
 ---
 
-## Latent bugs (real, not yet hit)
+## Latent bugs (DONE — 2026-05-22)
 
-7. **Multi-profile runtime alignment**
-   - Sessions persist their `agentProfile` in the store, but the
-     orchestrator always uses the boot profile from `AGENT_PROFILE`.
-   - Concrete failure mode: create session under `researcher`, restart
-     server with `AGENT_PROFILE=_base`, open the session. The
-     orchestrator uses `_base`'s skills/permissions/budgets for a
-     session that was created under `researcher`.
-   - Two paths to fix:
-     - **Path A (strict)**: enforce single-profile-per-server. Refuse
-       to open sessions whose `agentProfile` ≠ the boot profile.
-     - **Path B (proper)**: orchestrator looks up the session's
-       profile at `buildSessionState` time, builds the registry +
-       passive recall + hooks against that profile.
-   - Recommended: Path A short-term (one check, one error message),
-     Path B when multi-profile is a real product need.
+7. ~~**Multi-profile runtime alignment**~~ — Path A shipped.
+   `ProfileMismatchError` thrown from
+   [src/orchestrator/turn.ts](../../src/orchestrator/turn.ts)
+   `buildSessionState` when a session's persisted `agentProfile` differs
+   from the boot profile; server maps the same condition to `409
+   PROFILE_MISMATCH` on `POST /api/sessions`, `/messages`, and
+   `/command`. `POST /api/sessions` now defaults the agentProfile to the
+   boot profile when omitted. Path B (resolve per-session at
+   buildSessionState time) is the long-term answer when multi-profile is
+   a real product need.
 
-8. **Expert response latency** (PRD #40)
-   - Server captures latency on `consult_expert` calls but doesn't
-     surface it on the `expert.consulted` event payload.
-   - Add `latencyMs: number` to the event type and emit it. One-field
-     addition.
+8. ~~**Expert response latency**~~ (PRD #40) — done. `latencyMs: number`
+   added to the `expert.consulted` event type; measured around the
+   `provider.chat()` call in
+   [skills/experts/consult/tools/consult.ts](../../skills/experts/consult/tools/consult.ts).
+   Frontend prints it next to in/out tokens. Frontend handoff doc updated.
 
 ---
 

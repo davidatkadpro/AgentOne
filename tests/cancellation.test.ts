@@ -308,3 +308,49 @@ describe('Orchestrator.cancelSession', () => {
   })
 })
 
+describe('Orchestrator profile mismatch guard (Path A)', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = newHarness((_req) => [
+      { delta: 'ok', done: false },
+      { delta: '', done: true, inputTokens: 1, outputTokens: 1, finishReason: 'stop' },
+    ])
+  })
+  afterEach(() => {
+    h.cleanup()
+  })
+
+  it('rejects handleUserMessage for a session created under a different profile', async () => {
+    // Boot profile is 'test' (baseAgentProfile.id). Plant a session under
+    // a foreign profile and assert the orchestrator refuses to open it.
+    const session = h.store.createSession({ agentProfile: 'researcher' })
+    await expect(
+      h.orchestrator.handleUserMessage(session.id, 'hi'),
+    ).rejects.toMatchObject({
+      code: 'PROFILE_MISMATCH',
+      sessionProfile: 'researcher',
+      bootProfile: 'test',
+    })
+  })
+
+  it('allows handleUserMessage when profiles match', async () => {
+    const session = h.store.createSession({ agentProfile: 'test' })
+    h.provider.resetGate()
+    h.provider.releaseGate()
+    const handle = await h.orchestrator.handleUserMessage(session.id, 'hi')
+    await drain(handle.stream)
+    // No throw == pass.
+  })
+
+  it('does not cache a failed mismatch build (next call still errors, not "stuck")', async () => {
+    const session = h.store.createSession({ agentProfile: 'researcher' })
+    await expect(
+      h.orchestrator.handleUserMessage(session.id, 'hi'),
+    ).rejects.toMatchObject({ code: 'PROFILE_MISMATCH' })
+    // A second call still gets the same error (not e.g. a stale rejected promise).
+    await expect(
+      h.orchestrator.handleUserMessage(session.id, 'hi again'),
+    ).rejects.toMatchObject({ code: 'PROFILE_MISMATCH' })
+  })
+})
+

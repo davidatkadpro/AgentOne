@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { ProviderRegistry } from '@/providers/registry.js'
 import { ExpertSpendTracker } from '@/skills/expert-spend.js'
 import { PermissionGate } from '@/profiles/permission-gate.js'
-import { EventBus } from '@/core/events.js'
+import { EventBus, type AgentEvent } from '@/core/events.js'
 import type { ResolvedAgentProfile } from '@/profiles/agent-profile.js'
 import type { ModelProfile } from '@/core/types.js'
 import type { ToolContext } from '@/skills/tool.js'
@@ -79,9 +79,9 @@ describe('consult_expert tool', () => {
       providers,
     })
 
-    const events: string[] = []
-    ctx.services.eventBus.onAny((e) => {
-      events.push(e.type)
+    const consulted: AgentEvent[] = []
+    ctx.services.eventBus.on('expert.consulted', (e) => {
+      consulted.push(e)
     })
 
     const result = await consultHandler(
@@ -98,7 +98,11 @@ describe('consult_expert tool', () => {
       session_spend_usd: 0.05,
     })
     expect(ctx.expertSpend.total).toBeCloseTo(0.05, 4)
-    expect(events).toContain('expert.consulted')
+    expect(consulted).toHaveLength(1)
+    const evt = consulted[0]!
+    if (evt.type !== 'expert.consulted') throw new Error('expected expert.consulted')
+    expect(evt.latencyMs).toBeGreaterThanOrEqual(0)
+    expect(Number.isFinite(evt.latencyMs)).toBe(true)
   })
 
   it('denies when the expert is not in the agent profile allow-list', async () => {

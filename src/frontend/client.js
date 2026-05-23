@@ -301,7 +301,7 @@ function handleEvent(e) {
       break
     case 'expert.consulted':
       renderMeta(
-        `Consulted ${e.expert} — ${formatUsd(e.costUsd)} (in ${e.inputTokens} / out ${e.outputTokens}). ` +
+        `Consulted ${e.expert} — ${formatUsd(e.costUsd)} (in ${e.inputTokens} / out ${e.outputTokens}, ${e.latencyMs}ms). ` +
           `Session total: ${formatUsd(e.sessionSpendUsd)}.`,
       )
       break

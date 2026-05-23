@@ -42,7 +42,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const SendMessageBody = z.object({ text: z.string().min(1) })
 const RenameSessionBody = z.object({ title: z.string().min(1).max(200) })
 const CreateSessionBody = z.object({
-  agentProfile: z.string().default('_base'),
+  /** Optional. When omitted, the server uses its boot agentProfile. When
+   *  present and != boot profile, /api/sessions returns 409 (Path A
+   *  single-profile-per-server). */
+  agentProfile: z.string().optional(),
   title: z.string().nullable().optional(),
 })
 const SessionIdParams = z.object({ id: z.string().uuid() })
@@ -127,8 +130,23 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       reply.code(400)
       return { error: 'Invalid body', details: parsed.error.flatten() }
     }
+    // Path A: single-profile-per-server. An explicit mismatch is rejected;
+    // an omitted profile inherits the boot profile so callers don't have to
+    // know it. The orchestrator enforces the same invariant at session-open
+    // time as a defence-in-depth for sessions created by older clients.
+    const requested = parsed.data.agentProfile
+    if (requested !== undefined && requested !== deps.config.agentProfile) {
+      reply.code(409)
+      return {
+        error: 'PROFILE_MISMATCH',
+        message:
+          `Server is running agent profile "${deps.config.agentProfile}" — ` +
+          `cannot create a session under "${requested}". ` +
+          `Restart with AGENT_PROFILE=${requested}, or omit agentProfile to use the boot profile.`,
+      }
+    }
     const session = deps.store.createSession({
-      agentProfile: parsed.data.agentProfile,
+      agentProfile: requested ?? deps.config.agentProfile,
       title: parsed.data.title ?? null,
     })
     await deps.bus.emit({
@@ -171,6 +189,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     if (!session) {
       reply.code(404)
       return { error: 'Session not found' }
+    }
+    const mismatch = profileMismatchResponse(session, deps.config.agentProfile)
+    if (mismatch) {
+      reply.code(409)
+      return mismatch
     }
     const body = SendMessageBody.safeParse(req.body ?? {})
     if (!body.success) {
@@ -242,6 +265,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     if (!params.success) {
       reply.code(400)
       return { error: 'Invalid session id' }
+    }
+    const session = deps.store.getSession(params.data.id)
+    if (session) {
+      const mismatch = profileMismatchResponse(session, deps.config.agentProfile)
+      if (mismatch) {
+        reply.code(409)
+        return mismatch
+      }
     }
     const body = CommandRequestBody.safeParse(req.body ?? {})
     if (!body.success) {
@@ -315,6 +346,20 @@ async function drain(stream: AsyncIterable<string>): Promise<void> {
   // here only drives its generator past completion so the finally-block
   // persists the assistant turn.
   for await (const _ of stream) void _
+}
+
+function profileMismatchResponse(
+  session: { agentProfile: string },
+  bootProfile: string,
+): { error: 'PROFILE_MISMATCH'; message: string } | null {
+  if (session.agentProfile === bootProfile) return null
+  return {
+    error: 'PROFILE_MISMATCH',
+    message:
+      `Session was created under agent profile "${session.agentProfile}", ` +
+      `but this server is running "${bootProfile}". ` +
+      `Restart with AGENT_PROFILE=${session.agentProfile} to open it.`,
+  }
 }
 
 /**

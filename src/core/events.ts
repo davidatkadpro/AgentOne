@@ -137,6 +137,10 @@ export type AgentEvent =
       outputTokens: number
       costUsd: number
       sessionSpendUsd: number
+      /** Wall-clock duration of the provider.chat() call, in milliseconds.
+       *  Surfaced for the UI to render alongside cost/tokens and to feed
+       *  into the future "expert response latency" PRD metric. */
+      latencyMs: number
       ts: number
     }
   | {
