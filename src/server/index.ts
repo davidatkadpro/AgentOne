@@ -399,6 +399,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       service: emailService,
       orchestrator: deps.orchestrator,
       skillsDir: join(emailHandle.rootPath, 'skills'),
+      eventBus: deps.bus,
     })
   }
 

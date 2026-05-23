@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 import { createDatabase, type Db } from '@/storage/db.js'
 import { applyModuleMigrations } from '@/modules/migrations.js'
 import { createAuditLog } from '@/modules/audit-log.js'
-import { EventBus } from '@/core/events.js'
+import { EventBus, type AgentEvent } from '@/core/events.js'
 import { createEmailService, type EmailService } from '../modules/email/src/service.js'
 import {
   discoverEmailActions,
@@ -104,6 +104,8 @@ interface Harness {
   app: FastifyInstance
   service: EmailService
   skillsDir: string
+  bus: EventBus
+  events: AgentEvent[]
   fakeOrchestrator: {
     spawnSession: ReturnType<typeof vi.fn>
   }
@@ -147,15 +149,20 @@ async function newHarness(): Promise<Harness> {
       handle: { stream: (async function* () {})() },
     })),
   }
+  const events: AgentEvent[] = []
+  bus.onAny((e) => {
+    events.push(e)
+  })
   const app = Fastify({ logger: false })
   await registerEmailActions(app, {
     service,
     orchestrator: fakeOrchestrator as unknown as Orchestrator,
     skillsDir,
+    eventBus: bus,
   })
   await app.ready()
   __resetDiscoveryCache()
-  return { db, app, service, skillsDir, fakeOrchestrator }
+  return { db, app, service, skillsDir, bus, events, fakeOrchestrator }
 }
 
 async function dispose(h: Harness): Promise<void> {
@@ -225,6 +232,42 @@ describe('Email action dispatcher', () => {
     })
     expect(res.statusCode).toBe(404)
     expect(res.json()).toMatchObject({ error: 'UNKNOWN_ACTION' })
+  })
+
+  it('POST emits email.action_started immediately and email.action_completed after the drain', async () => {
+    const email = h.service.ingestEmail(
+      {
+        sourceKind: 'maildir',
+        sourceId: 'msg-evt',
+        receivedAt: Date.now(),
+        fromAddress: 'a@b.com',
+      },
+      { actor: { type: 'scheduler', id: 'test' } },
+    )
+    await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/email/actions',
+      payload: { action: 'file-to-project', emailId: email.id },
+    })
+    // The drain runs after the route returns. Let microtasks settle.
+    await new Promise((r) => setImmediate(r))
+    await new Promise((r) => setImmediate(r))
+
+    const started = h.events.find((e) => e.type === 'email.action_started')
+    const completed = h.events.find((e) => e.type === 'email.action_completed')
+    expect(started).toMatchObject({
+      type: 'email.action_started',
+      emailId: email.id,
+      action: 'file-to-project',
+      sessionId: 'spawned-1',
+    })
+    expect(completed).toMatchObject({
+      type: 'email.action_completed',
+      emailId: email.id,
+      action: 'file-to-project',
+      sessionId: 'spawned-1',
+      ok: true,
+    })
   })
 
   it('POST returns 404 EMAIL_NOT_FOUND for an unknown email', async () => {

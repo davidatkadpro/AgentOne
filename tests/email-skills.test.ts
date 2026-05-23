@@ -20,15 +20,32 @@ describe('modules/email/skills', () => {
     )
   })
 
-  it('discoverEmailActions returns file-to-project from the real skills folder', async () => {
+  it('discoverEmailActions returns all 3 email actions from the real skills folder', async () => {
     const result = await discoverEmailActions(
       join(REPO, 'modules', 'email', 'skills'),
     )
     expect(result.errors).toEqual([])
-    const file = result.actions.find((a) => a.name === 'file-to-project')
-    expect(file).toBeDefined()
-    expect(file?.label).toBe('File to project')
-    expect(file?.surface).toBe('action')
-    expect(file?.tabs).toEqual(['emails'])
+    const names = result.actions.map((a) => a.name).sort()
+    expect(names).toEqual([
+      'create-new-project',
+      'file-to-project',
+      'scope-extractor',
+    ])
+  })
+
+  it('create-new-project SKILL.md parses with all three tool handlers present', async () => {
+    const idx = await loadSkillIndex({
+      root: join(REPO, 'skills'),
+      moduleSkillRoots: [
+        { module: 'email', root: join(REPO, 'modules', 'email', 'skills') },
+      ],
+    })
+    const manifest = idx.skills.get('email/create-new-project')
+    expect(manifest).toBeDefined()
+    expect(manifest?.frontmatter.tools?.map((t) => t.id).sort()).toEqual([
+      'create_project',
+      'file_email_to_project',
+      'suggest_next_project_number',
+    ])
   })
 })

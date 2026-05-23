@@ -67,6 +67,12 @@ export interface SpawnSessionInput {
   title?: string
   /** Optional. Defaults to the orchestrator's boot profile. */
   agentProfile?: string
+  /** Skills to load into the session before the first turn runs. Each entry
+   *  is a qualifiedName (e.g. `email/file-to-project`). Skills that fail
+   *  to load (not in index, permission-denied, broken handler) are skipped
+   *  rather than aborting the spawn — the action will still run, just
+   *  without those tools. */
+  allowedSkills?: string[]
 }
 
 export interface SpawnSessionResult {
@@ -164,6 +170,18 @@ export class Orchestrator {
       spawnedBy: input.spawnedBy,
       ts,
     })
+    if (input.allowedSkills && input.allowedSkills.length > 0) {
+      // Pre-load skills so the first turn sees their tools. Failures don't
+      // abort the spawn — they surface as `skill.load_failed` events and
+      // the agent proceeds with whatever tools made it in.
+      for (const skillName of input.allowedSkills) {
+        try {
+          await this.loadSkillIntoSession(session.id, skillName)
+        } catch {
+          // load_failed event already emitted; nothing more to do.
+        }
+      }
+    }
     const handle = await this.handleUserMessage(session.id, input.initialMessage)
     return { session, handle }
   }
@@ -320,11 +338,15 @@ export class Orchestrator {
     }
     const decision = permissions.canLoadSkill(skillName)
     if (decision.verdict === 'deny') {
-      return {
-        toolsRegistered: [],
-        loaded: false,
-        reason: `permission denied: ${decision.reason}`,
-      }
+      const reason = `permission denied: ${decision.reason}`
+      await this.cfg.eventBus.emit({
+        type: 'skill.load_failed',
+        sessionId,
+        name: skillName,
+        reason,
+        ts: Date.now(),
+      })
+      return { toolsRegistered: [], loaded: false, reason }
     }
     await this.cfg.eventBus.emit({
       type: 'skill.loading',

@@ -44,7 +44,10 @@ const agentProfile: ResolvedAgentProfile = {
   compressorModel: null,
   defaultSkills: [],
   permissions: {
-    skills: { allow: [], deny: [] },
+    // Allow everything for the test — the dispatcher pre-loads action Skills,
+    // so the runtime profile must grant access. Real operator profiles will
+    // need a similar allow rule (e.g. `email/*`) to enable email actions.
+    skills: { allow: ['**'], deny: [] },
     experts: { allow: [], budgetPerCallUsd: null, budgetPerSessionUsd: null },
   },
   passiveRecall: { enabled: false, wikiHits: 2, historyHits: 2, maxCharsPerHit: 240 },
@@ -176,6 +179,45 @@ describe('Orchestrator.spawnSession', () => {
       spawnedBy: 'http://api/email/actions',
       agentProfile: 'ops',
     })
+  })
+
+  it('pre-loads allowedSkills before the first turn (skill.loaded fires)', async () => {
+    h = newHarness([
+      [
+        {
+          delta: '',
+          done: true,
+          inputTokens: 1,
+          outputTokens: 1,
+          finishReason: 'stop',
+        },
+      ],
+    ])
+    // Register a fake skill in the index that has zero tools so it loads
+    // trivially. We only need the load-attempt path to fire — skill.load_failed
+    // would still arrive if the skill name was missing.
+    h.orchestrator['cfg'].skillIndex.skills.set('email/fake', {
+      qualifiedName: 'email/fake',
+      category: 'email',
+      name: 'fake',
+      description: 'fake skill',
+      frontmatter: { name: 'fake', description: 'fake skill' },
+      body: '',
+      folder: '/tmp/fake',
+      skillMdPath: '/tmp/fake/SKILL.md',
+      slashCommand: null,
+    })
+    const result = await h.orchestrator.spawnSession({
+      spawnedBy: 'modules/email/fake-action',
+      initialMessage: 'do',
+      allowedSkills: ['email/fake'],
+    })
+    await drain(result.handle.stream)
+    const skillEvents = h.events.filter((e) =>
+      e.type.startsWith('skill.') && 'name' in e && e.name === 'email/fake',
+    )
+    // Should see skill.loading then skill.loaded at minimum.
+    expect(skillEvents.map((e) => e.type)).toContain('skill.loaded')
   })
 
   it('accepts an optional title and sets it on the session', async () => {

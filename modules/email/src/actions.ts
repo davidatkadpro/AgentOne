@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify'
 import { SkillFrontmatterSchema } from '../../../src/skills/frontmatter.js'
 import { parseFrontmatter } from '../../../src/memory/wiki/frontmatter.js'
 import type { Orchestrator } from '../../../src/orchestrator/turn.js'
+import type { EventBus } from '../../../src/core/events.js'
 import type { Email, EmailService } from './service.js'
 
 export interface EmailActionDescriptor {
@@ -36,6 +37,10 @@ export interface RegisterEmailActionsDeps {
    *  discovery (scan SKILL.md files) and for the dispatcher to re-read the
    *  prompt_template on each call. */
   skillsDir: string
+  /** Required to emit `email.action_started` / `email.action_completed`
+   *  alongside the spawn — without it the dispatcher still works but the
+   *  email row list won't show the per-row "▶ filing… → ✓ filed" chip. */
+  eventBus?: EventBus
 }
 
 interface CachedDiscovery {
@@ -166,7 +171,7 @@ export async function registerEmailActions(
   app: FastifyInstance,
   deps: RegisterEmailActionsDeps,
 ): Promise<void> {
-  const { service, orchestrator, skillsDir } = deps
+  const { service, orchestrator, skillsDir, eventBus } = deps
 
   app.get('/api/v1/email/actions', async () => {
     let mtimeMs: number
@@ -218,20 +223,44 @@ export async function registerEmailActions(
       spawnedBy: `modules/email/${body.data.action}`,
       initialMessage: seedMessage,
       title: skill.fm.label ?? body.data.action,
+      allowedSkills: [`email/${body.data.action}`],
     }
     if (skill.fm.default_profile) {
       spawnInput.agentProfile = skill.fm.default_profile
     }
     const result = await orchestrator.spawnSession(spawnInput)
+    if (eventBus) {
+      void eventBus.emit({
+        type: 'email.action_started',
+        emailId: body.data.emailId,
+        action: body.data.action,
+        sessionId: result.session.id,
+        ts: Date.now(),
+      })
+    }
     // Drain the stream in the background so the route returns immediately
-    // and the client subscribes via WebSocket.
+    // and the client subscribes via WebSocket. The action_completed event
+    // fires when the spawned turn ends (success OR error). The session may
+    // still be awaiting_input after this — that's a different signal the UI
+    // surfaces via the notification tray.
     void (async () => {
+      let ok = true
       try {
         for await (const _ of result.handle.stream) {
           // discard
         }
       } catch {
-        // The orchestrator emits failure events; nothing more to do here.
+        ok = false
+      }
+      if (eventBus) {
+        await eventBus.emit({
+          type: 'email.action_completed',
+          emailId: body.data.emailId,
+          action: body.data.action,
+          sessionId: result.session.id,
+          ok,
+          ts: Date.now(),
+        })
       }
     })()
     return { sessionId: result.session.id, action: body.data.action }
