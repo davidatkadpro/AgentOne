@@ -350,6 +350,7 @@ full plan and build order.
 - [ADR-0004](./adr/0004-modules-as-second-extensibility-primitive.md) — Modules as a second extensibility primitive; open service surface; audit log.
 - [ADR-0005](./adr/0005-non-chat-session-activation.md) — Non-chat session activation: spawned sessions, awaiting-input, notifications.
 - [ADR-0006](./adr/0006-frontend-shell-architecture.md) — Frontend shell: chat-as-route with notification-mediated cross-page awareness.
+- [ADR-0007](./adr/0007-module-panel-conventions.md) — Module panel conventions: dynamic actions, inline agent feedback, scoped views.
 
 ### Trust and threat model (single-user, local)
 
