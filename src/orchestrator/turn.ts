@@ -53,6 +53,27 @@ export interface TurnHandle {
   stream: AsyncIterable<string>
 }
 
+export interface SpawnSessionInput {
+  /** Provenance string recorded on the session row and emitted on
+   *  `session.spawned`. Free-form — e.g. `modules/email`,
+   *  `http://api/email/actions`, `scheduler/auto-distill`. */
+  spawnedBy: string
+  /** The first user message the orchestrator runs immediately. Mandatory —
+   *  spawnSession is the "kick off work" entry point. Sessions created with
+   *  no seed message should use store.createSession directly. */
+  initialMessage: string
+  /** Optional title persisted on the session row. The auto-titler still runs
+   *  on the first turn for sessions left untitled. */
+  title?: string
+  /** Optional. Defaults to the orchestrator's boot profile. */
+  agentProfile?: string
+}
+
+export interface SpawnSessionResult {
+  session: import('../core/types.js').Session
+  handle: TurnHandle
+}
+
 interface SessionState {
   sessionId: string
   registry: ToolRegistry
@@ -113,6 +134,38 @@ export class Orchestrator {
   constructor(private readonly cfg: OrchestratorConfig) {
     this.maxIterations = cfg.maxIterations ?? DEFAULT_MAX_ITERATIONS
     this.sessionCacheMax = cfg.sessionCacheMax ?? DEFAULT_SESSION_CACHE_MAX
+  }
+
+  /**
+   * Create a Session programmatically and immediately run its first turn
+   * with `initialMessage` as the user input. The session row records
+   * `spawnedBy` for audit, and a `session.spawned` event is emitted alongside
+   * the normal `session.created`. The returned `handle.stream` is the same
+   * shape as `handleUserMessage` — the caller drains it or hands it to a
+   * background drainer.
+   */
+  async spawnSession(input: SpawnSessionInput): Promise<SpawnSessionResult> {
+    const session = this.cfg.store.createSession({
+      agentProfile: input.agentProfile ?? this.cfg.profile.id,
+      title: input.title ?? null,
+      spawnedBy: input.spawnedBy,
+    })
+    const ts = Date.now()
+    await this.cfg.eventBus.emit({
+      type: 'session.created',
+      sessionId: session.id,
+      agentProfile: session.agentProfile,
+      ts,
+    })
+    await this.cfg.eventBus.emit({
+      type: 'session.spawned',
+      sessionId: session.id,
+      agentProfile: session.agentProfile,
+      spawnedBy: input.spawnedBy,
+      ts,
+    })
+    const handle = await this.handleUserMessage(session.id, input.initialMessage)
+    return { session, handle }
   }
 
   async handleUserMessage(sessionId: string, userText: string): Promise<TurnHandle> {

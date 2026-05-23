@@ -1,5 +1,15 @@
 export type AgentEvent =
   | { type: 'session.created'; sessionId: string; agentProfile: string; ts: number }
+  | {
+      type: 'session.spawned'
+      sessionId: string
+      agentProfile: string
+      /** Free-text provenance string — e.g. 'modules/email' or
+       *  'http://api/email/actions'. Recorded so the audit log can attribute
+       *  the first turn to its non-human caller. */
+      spawnedBy: string
+      ts: number
+    }
   | { type: 'message.user.received'; sessionId: string; turnId: string; ts: number }
   | { type: 'message.assistant.started'; sessionId: string; turnId: string; ts: number }
   | { type: 'message.assistant.delta'; sessionId: string; turnId: string; delta: string }
@@ -216,6 +226,37 @@ export type AgentEvent =
   | { type: 'task.updated'; projectId: string; taskId: string; ts: number }
   | { type: 'task.completed'; projectId: string; taskId: string; ts: number }
   | { type: 'task.blocked'; projectId: string; taskId: string; reason: string | null; ts: number }
+  // -- contributed by modules/email --
+  | {
+      type: 'email.received'
+      emailId: string
+      sourceKind: string
+      sourceId: string
+      ts: number
+    }
+  | { type: 'email.read'; emailId: string; ts: number }
+  | {
+      type: 'email.filed'
+      emailId: string
+      projectId: string
+      folderPath: string
+      ts: number
+    }
+  | {
+      type: 'email.action_started'
+      emailId: string
+      action: string
+      sessionId: string
+      ts: number
+    }
+  | {
+      type: 'email.action_completed'
+      emailId: string
+      action: string
+      sessionId: string
+      ok: boolean
+      ts: number
+    }
 
 export type EventType = AgentEvent['type']
 export type EventByType<T extends EventType> = Extract<AgentEvent, { type: T }>

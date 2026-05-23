@@ -12,6 +12,12 @@ export const ToolDeclaration = z.object({
   description: z.string().min(1),
 })
 
+/** Surface a Skill can advertise itself on. `ask_agent` is the default for
+ *  module-scoped Skills — the action shows up in the right-tab "Ask agent ▾"
+ *  menu, filtered by `tabs`. `action` puts it in the panel's main toolbar.
+ *  `both` does both. */
+export const ActionSurface = z.enum(['action', 'ask_agent', 'both'])
+
 export const SkillFrontmatterSchema = z.object({
   name: z.string().regex(KEBAB, 'skill name must be kebab-case'),
   description: z.string().min(1),
@@ -20,6 +26,15 @@ export const SkillFrontmatterSchema = z.object({
   slash_command: z.string().regex(KEBAB).optional(),
   docs: z.array(z.string()).optional(),
   version: z.string().optional(),
+  // -- Action-surface fields (per v2-business-flow.md action discovery contract).
+  // All optional so existing Skills keep loading unchanged.
+  label: z.string().optional(),
+  icon: z.string().optional(),
+  default_profile: z.string().optional(),
+  prompt_template: z.string().optional(),
+  requires_confirmation: z.boolean().optional(),
+  surface: ActionSurface.optional(),
+  tabs: z.array(z.string()).optional(),
 })
 
 export type SkillFrontmatter = z.infer<typeof SkillFrontmatterSchema>

@@ -38,6 +38,7 @@ function fakeConfig(agentProfilesDir: string): ServerConfig {
     wikiPrefix: 'wiki',
     auditLogPath: null,
     eventHooksPath: null,
+    emailMaildirPath: null,
     logEvents: false,
   }
 }

@@ -46,6 +46,7 @@ function fakeConfig(): ServerConfig {
     wikiPrefix: 'wiki',
     auditLogPath: null,
     eventHooksPath: null,
+    emailMaildirPath: null,
     logEvents: false,
   }
 }

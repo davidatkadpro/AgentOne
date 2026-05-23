@@ -30,6 +30,10 @@ const Env = z.object({
    *  maps an event type (or "*") to a handler module. Missing file is
    *  silently ignored. See src/hooks/event-hook-runner.ts. */
   EVENT_HOOKS_PATH: z.string().optional(),
+  /** Optional absolute path to a folder of `.eml` files for the
+   *  MaildirEmailSource (dev / offline fallback). Unset means no email
+   *  source is wired and `POST /api/v1/email/poll` returns 503. */
+  EMAIL_MAILDIR_PATH: z.string().optional(),
   LOG_EVENTS: z
     .enum(['0', '1', 'true', 'false'])
     .default('0')
@@ -58,6 +62,7 @@ export interface ServerConfig {
   wikiPrefix: string
   auditLogPath: string | null
   eventHooksPath: string | null
+  emailMaildirPath: string | null
   logEvents: boolean
 }
 
@@ -85,6 +90,7 @@ export function loadConfigFromEnv(): ServerConfig {
     wikiPrefix: parsed.WIKI_PREFIX,
     auditLogPath: parsed.AUDIT_LOG_PATH ? resolve(parsed.AUDIT_LOG_PATH) : null,
     eventHooksPath: parsed.EVENT_HOOKS_PATH ? resolve(parsed.EVENT_HOOKS_PATH) : null,
+    emailMaildirPath: parsed.EMAIL_MAILDIR_PATH ? resolve(parsed.EMAIL_MAILDIR_PATH) : null,
     logEvents: parsed.LOG_EVENTS,
   }
 }

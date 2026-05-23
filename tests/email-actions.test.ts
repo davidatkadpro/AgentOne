@@ -1,0 +1,239 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import Fastify, { type FastifyInstance } from 'fastify'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { createDatabase, type Db } from '@/storage/db.js'
+import { applyModuleMigrations } from '@/modules/migrations.js'
+import { createAuditLog } from '@/modules/audit-log.js'
+import { EventBus } from '@/core/events.js'
+import { createEmailService, type EmailService } from '../modules/email/src/service.js'
+import {
+  discoverEmailActions,
+  registerEmailActions,
+  renderTemplate,
+  __resetDiscoveryCache,
+} from '../modules/email/src/actions.js'
+import type { Orchestrator } from '@/orchestrator/turn.js'
+
+describe('renderTemplate', () => {
+  it('substitutes simple top-level keys', () => {
+    expect(renderTemplate('Hi {{name}}', { name: 'David' })).toBe('Hi David')
+  })
+
+  it('walks dot paths', () => {
+    expect(renderTemplate('From {{email.subject}}', { email: { subject: 'rfi' } })).toBe(
+      'From rfi',
+    )
+  })
+
+  it('returns empty for missing keys (no crash)', () => {
+    expect(renderTemplate('A {{a.b.c}} B', { a: {} })).toBe('A  B')
+  })
+
+  it('survives null/undefined values', () => {
+    expect(renderTemplate('{{x}}', { x: null })).toBe('')
+  })
+})
+
+describe('discoverEmailActions', () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'agentone-actions-'))
+    __resetDiscoveryCache()
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  async function writeSkill(name: string, frontmatter: string, body = '# body'): Promise<void> {
+    await mkdir(join(dir, name), { recursive: true })
+    await writeFile(join(dir, name, 'SKILL.md'), `---\n${frontmatter}\n---\n\n${body}\n`)
+  }
+
+  it('returns empty when directory does not exist', async () => {
+    const result = await discoverEmailActions(join(dir, 'missing'))
+    expect(result.actions).toEqual([])
+    expect(result.errors).toEqual([])
+  })
+
+  it('lists valid SKILL.md entries', async () => {
+    await writeSkill(
+      'file-to-project',
+      [
+        'name: file-to-project',
+        'description: File this email into a project',
+        'label: File to project',
+        'icon: folder-input',
+        'default_profile: ops',
+        'requires_confirmation: false',
+        'surface: action',
+      ].join('\n'),
+    )
+    await writeSkill(
+      'create-new-project',
+      [
+        'name: create-new-project',
+        'description: Create a project from this email',
+      ].join('\n'),
+    )
+    const result = await discoverEmailActions(dir)
+    expect(result.actions).toHaveLength(2)
+    const file = result.actions.find((a) => a.name === 'file-to-project')!
+    expect(file.label).toBe('File to project')
+    expect(file.icon).toBe('folder-input')
+    expect(file.defaultProfile).toBe('ops')
+    expect(file.surface).toBe('action')
+    const create = result.actions.find((a) => a.name === 'create-new-project')!
+    expect(create.label).toBe('Create New Project') // title-cased from name
+    expect(create.surface).toBe('ask_agent') // default
+  })
+
+  it('surfaces frontmatter errors and skips the action', async () => {
+    await writeSkill('bad', 'name: Bad_Name\ndescription: x')
+    const result = await discoverEmailActions(dir)
+    expect(result.actions).toHaveLength(0)
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0].skill).toBe('bad')
+  })
+})
+
+interface Harness {
+  db: Db
+  app: FastifyInstance
+  service: EmailService
+  skillsDir: string
+  fakeOrchestrator: {
+    spawnSession: ReturnType<typeof vi.fn>
+  }
+}
+
+async function newHarness(): Promise<Harness> {
+  const db = createDatabase({ path: ':memory:', skipMkdir: true })
+  const projectsSql = readFileSync(
+    join(process.cwd(), 'modules', 'projects', 'schema', '001_init.sql'),
+    'utf-8',
+  )
+  applyModuleMigrations(db, 'projects', [{ version: 1, name: '001_init', sql: projectsSql }])
+  const emailSql = readFileSync(
+    join(process.cwd(), 'modules', 'email', 'schema', '001_init.sql'),
+    'utf-8',
+  )
+  applyModuleMigrations(db, 'email', [{ version: 1, name: '001_init', sql: emailSql }])
+  const audit = createAuditLog(db)
+  const bus = new EventBus()
+  const service = createEmailService({ db, eventBus: bus, audit })
+  const skillsDir = await mkdtemp(join(tmpdir(), 'agentone-action-dispatch-'))
+  await mkdir(join(skillsDir, 'file-to-project'), { recursive: true })
+  await writeFile(
+    join(skillsDir, 'file-to-project', 'SKILL.md'),
+    [
+      '---',
+      'name: file-to-project',
+      'description: File this email into a project',
+      'default_profile: ops',
+      'prompt_template: |',
+      "  File email {{email.id}} ({{email.subject}}) into the right project.",
+      '---',
+      '',
+      '# body',
+    ].join('\n'),
+  )
+
+  const fakeOrchestrator = {
+    spawnSession: vi.fn(async () => ({
+      session: { id: 'spawned-1', spawnedBy: 'modules/email/file-to-project' },
+      handle: { stream: (async function* () {})() },
+    })),
+  }
+  const app = Fastify({ logger: false })
+  await registerEmailActions(app, {
+    service,
+    orchestrator: fakeOrchestrator as unknown as Orchestrator,
+    skillsDir,
+  })
+  await app.ready()
+  __resetDiscoveryCache()
+  return { db, app, service, skillsDir, fakeOrchestrator }
+}
+
+async function dispose(h: Harness): Promise<void> {
+  await h.app.close()
+  h.db.close()
+  await rm(h.skillsDir, { recursive: true, force: true })
+}
+
+describe('Email action dispatcher', () => {
+  let h: Harness
+  beforeEach(async () => {
+    h = await newHarness()
+  })
+  afterEach(async () => {
+    await dispose(h)
+  })
+
+  it('GET /api/v1/email/actions lists the discovered actions', async () => {
+    const res = await h.app.inject({ method: 'GET', url: '/api/v1/email/actions' })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { actions: Array<{ name: string }> }
+    expect(body.actions.map((a) => a.name)).toEqual(['file-to-project'])
+  })
+
+  it('POST /api/v1/email/actions spawns a session with the rendered template', async () => {
+    const email = h.service.ingestEmail(
+      {
+        sourceKind: 'maildir',
+        sourceId: 'msg-1',
+        receivedAt: Date.now(),
+        fromAddress: 'a@b.com',
+        subject: 'RFI fixtures',
+      },
+      { actor: { type: 'scheduler', id: 'test' } },
+    )
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/email/actions',
+      payload: { action: 'file-to-project', emailId: email.id },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { sessionId: string; action: string }
+    expect(body.sessionId).toBe('spawned-1')
+    expect(body.action).toBe('file-to-project')
+    expect(h.fakeOrchestrator.spawnSession).toHaveBeenCalledTimes(1)
+    const spawnArg = h.fakeOrchestrator.spawnSession.mock.calls[0][0]
+    expect(spawnArg.spawnedBy).toBe('modules/email/file-to-project')
+    expect(spawnArg.agentProfile).toBe('ops')
+    expect(spawnArg.initialMessage).toContain(email.id)
+    expect(spawnArg.initialMessage).toContain('RFI fixtures')
+  })
+
+  it('POST returns 404 UNKNOWN_ACTION for an unknown skill', async () => {
+    const email = h.service.ingestEmail(
+      {
+        sourceKind: 'maildir',
+        sourceId: 'msg-2',
+        receivedAt: Date.now(),
+        fromAddress: 'a@b.com',
+      },
+      { actor: { type: 'scheduler', id: 'test' } },
+    )
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/email/actions',
+      payload: { action: 'no-such-action', emailId: email.id },
+    })
+    expect(res.statusCode).toBe(404)
+    expect(res.json()).toMatchObject({ error: 'UNKNOWN_ACTION' })
+  })
+
+  it('POST returns 404 EMAIL_NOT_FOUND for an unknown email', async () => {
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/email/actions',
+      payload: { action: 'file-to-project', emailId: 'nope' },
+    })
+    expect(res.statusCode).toBe(404)
+    expect(res.json()).toMatchObject({ error: 'EMAIL_NOT_FOUND' })
+  })
+})

@@ -29,8 +29,12 @@ import { createConversationStore, type ConversationStore } from '../storage/sqli
 import { createNotifications } from '../modules/notifications.js'
 import { createAuditLog } from '../modules/audit-log.js'
 import { bootModules, type ModuleRegistry } from '../modules/registry.js'
-import { createProjectsService } from '../../modules/projects/src/service.js'
+import { createProjectsService, type ProjectsService } from '../../modules/projects/src/service.js'
 import { registerProjectsRoutes } from '../../modules/projects/src/routes.js'
+import { createEmailService } from '../../modules/email/src/service.js'
+import { registerEmailRoutes } from '../../modules/email/src/routes.js'
+import { registerEmailActions } from '../../modules/email/src/actions.js'
+import { MaildirEmailSource } from '../../modules/email/src/sources/maildir.js'
 import { LocalFolderAdapter } from '../storage/local-folder.js'
 import { WikiEngine } from '../memory/wiki/engine.js'
 import { Orchestrator } from '../orchestrator/turn.js'
@@ -52,6 +56,16 @@ const CreateSessionBody = z.object({
    *  single-profile-per-server). */
   agentProfile: z.string().optional(),
   title: z.string().nullable().optional(),
+  /** Optional spawn seed. When present, the orchestrator creates the session
+   *  AND runs the first turn with `seed.initialMessage` immediately, emitting
+   *  `session.spawned` for the audit log. Without `seed`, the route behaves
+   *  as before — just creates a row, awaiting a user message. */
+  seed: z
+    .object({
+      spawnedBy: z.string().min(1),
+      initialMessage: z.string().min(1),
+    })
+    .optional(),
 })
 const SessionIdParams = z.object({ id: z.string().uuid() })
 const WsClientMessage = z.union([
@@ -152,6 +166,19 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
           `cannot create a session under "${requested}". ` +
           `Restart with AGENT_PROFILE=${requested}, or omit agentProfile to use the boot profile.`,
       }
+    }
+    if (parsed.data.seed) {
+      // Spawned-session path: orchestrator owns row creation + first turn so
+      // session.spawned fires in the right order relative to message.user.received.
+      const spawnInput: Parameters<typeof deps.orchestrator.spawnSession>[0] = {
+        spawnedBy: parsed.data.seed.spawnedBy,
+        initialMessage: parsed.data.seed.initialMessage,
+      }
+      if (parsed.data.title != null) spawnInput.title = parsed.data.title
+      if (requested !== undefined) spawnInput.agentProfile = requested
+      const result = await deps.orchestrator.spawnSession(spawnInput)
+      void drain(result.handle.stream)
+      return { session: result.session }
     }
     const session = deps.store.createSession({
       agentProfile: requested ?? deps.config.agentProfile,
@@ -354,6 +381,25 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       typeof registerProjectsRoutes
     >[1]['service']
     await registerProjectsRoutes(app, { service: projectsService })
+  }
+
+  const emailHandle = deps.modules.get('email')
+  if (emailHandle?.status === 'active' && emailHandle.service) {
+    const emailService = emailHandle.service as Parameters<
+      typeof registerEmailRoutes
+    >[1]['service']
+    const emailDeps: Parameters<typeof registerEmailRoutes>[1] = {
+      service: emailService,
+    }
+    if (deps.config.emailMaildirPath) {
+      emailDeps.source = new MaildirEmailSource({ root: deps.config.emailMaildirPath })
+    }
+    await registerEmailRoutes(app, emailDeps)
+    await registerEmailActions(app, {
+      service: emailService,
+      orchestrator: deps.orchestrator,
+      skillsDir: join(emailHandle.rootPath, 'skills'),
+    })
   }
 
   return app
@@ -647,6 +693,21 @@ export async function bootstrap(): Promise<void> {
           audit: ctx.audit,
           storage: ctx.storage,
         }),
+      email: (ctx) => {
+        const projectsHandle = ctx.modules.get('projects')
+        const projects =
+          projectsHandle?.status === 'active' && projectsHandle.service
+            ? (projectsHandle.service as ProjectsService)
+            : undefined
+        const deps: Parameters<typeof createEmailService>[0] = {
+          db: ctx.db,
+          eventBus: ctx.eventBus,
+          audit: ctx.audit,
+          storage: ctx.storage,
+        }
+        if (projects) deps.projects = projects
+        return createEmailService(deps)
+      },
     },
   })
   for (const handle of modules.list()) {
