@@ -54,6 +54,7 @@ import { registerModuleActionsDiscovery } from '../modules/action-discovery.js'
 import { MaildirEmailSource } from '../../modules/email/src/sources/maildir.js'
 import { createProposalsService, type ProposalsService } from '../../modules/proposals/src/service.js'
 import { registerProposalsRoutes } from '../../modules/proposals/src/routes.js'
+import { registerProposalsActions } from '../../modules/proposals/src/actions.js'
 import { createInvoicingService } from '../../modules/invoicing/src/service.js'
 import { registerInvoicingRoutes } from '../../modules/invoicing/src/routes.js'
 import { LocalFolderAdapter } from '../storage/local-folder.js'
@@ -701,7 +702,25 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     const proposalsService = proposalsHandle.service as Parameters<
       typeof registerProposalsRoutes
     >[1]['service']
-    await registerProposalsRoutes(app, { service: proposalsService })
+    await registerProposalsRoutes(app, {
+      service: proposalsService,
+      audit: deps.audit,
+      storageRoot: deps.config.storageRoot,
+      modulesRoot: resolve(__dirname, '..', '..', 'modules'),
+      pandocAvailable,
+      eventBus: deps.bus,
+    })
+    // POST /api/proposals/actions — dispatch a Skill against a project
+    // context. Mirrors modules/email/src/actions.ts.
+    const projectsHandleForProposals = deps.modules.get('projects')
+    if (projectsHandleForProposals?.status === 'active' && projectsHandleForProposals.service) {
+      await registerProposalsActions(app, {
+        orchestrator: deps.orchestrator,
+        projects: projectsHandleForProposals.service as ProjectsService,
+        skillsDir: join(proposalsHandle.rootPath, 'skills'),
+        eventBus: deps.bus,
+      })
+    }
   }
 
   const invoicingHandle = deps.modules.get('invoicing')

@@ -96,6 +96,56 @@ export interface CreateProposalInput {
   metadata?: Record<string, unknown>
 }
 
+export interface UpdateEstimateLineInput {
+  id?: string                          // when present, attempt to keep the same row id
+  kind?: LineKind
+  description: string
+  qty?: number
+  unit?: string | null
+  unitPrice?: number
+  metadata?: Record<string, unknown>
+}
+
+export interface UpdateEstimateInput {
+  estimateId: string
+  status?: EstimateStatus
+  notes?: string | null
+  sourceScopePath?: string | null
+  metadata?: Record<string, unknown>
+  /** Full replacement of the line items list when provided. */
+  lines?: UpdateEstimateLineInput[]
+}
+
+export interface ArtifactRow {
+  kind: 'estimate' | 'proposal'
+  id: string
+  number: string
+  projectId: string
+  projectNumber: string
+  projectName: string
+  status: EstimateStatus | ProposalStatus
+  /** "Estimate · draft", "Proposal · issued", etc. */
+  displayStatus: string
+  totalCents: number
+  lastActivity: number
+  source: 'from scope.md' | 'manual'
+  scopeFilePath: string | null
+}
+
+export interface ListArtifactsOptions {
+  projectId?: string
+  /** A combined estimate+proposal status enum, e.g. "Estimate · draft" or "Proposal · issued". */
+  status?: string[]
+  limit?: number
+}
+
+export interface ProposalDetail {
+  estimate: Estimate
+  proposal: Proposal | null
+  /** Walking previousEstimateId backwards, newest predecessor first. */
+  predecessorEstimates: Estimate[]
+}
+
 export interface ProposalsService {
   createEstimate(input: CreateEstimateInput, ctx: ActorContext): Estimate
   getEstimate(id: string): Estimate | undefined
@@ -105,6 +155,8 @@ export interface ProposalsService {
     status: EstimateStatus,
     ctx: ActorContext,
   ): void
+  updateEstimate(input: UpdateEstimateInput, ctx: ActorContext): Estimate
+  reviseEstimate(estimateId: string, ctx: ActorContext): Estimate
   createProposal(input: CreateProposalInput, ctx: ActorContext): Promise<Proposal>
   getProposal(id: string): Proposal | undefined
   listProposalsForProject(projectId: string): Proposal[]
@@ -113,6 +165,17 @@ export interface ProposalsService {
     status: ProposalStatus,
     ctx: ActorContext,
   ): void
+  supersedeProposal(
+    id: string,
+    supersededByProposalId: string | null,
+    ctx: ActorContext,
+  ): void
+  /** Resolve an estimate-or-proposal id into the unified detail shape used by the
+   *  Proposals panel split view. Returns undefined when the id matches nothing. */
+  getProposalDetail(id: string): ProposalDetail | undefined
+  /** Cross-project artifact stream: estimates without a proposal render as the
+   *  estimate row; estimates with a proposal render as the proposal row. */
+  listArtifacts(opts?: ListArtifactsOptions): ArtifactRow[]
 }
 
 export interface ProposalsServiceDeps {
@@ -360,12 +423,37 @@ export function createProposalsService(deps: ProposalsServiceDeps): ProposalsSer
     'SELECT project_id, number FROM proposal WHERE id = ?',
   )
 
+  const deleteEstimateLinesStmt = deps.db.prepare(
+    `DELETE FROM estimate_line WHERE estimate_id = ?`,
+  )
+  const updateEstimateMetaStmt = deps.db.prepare(
+    `UPDATE estimate
+       SET source_scope_path = ?, notes = ?, metadata_json = ?, updated_at = ?
+     WHERE id = ?`,
+  )
+  const supersedeProposalStmt = deps.db.prepare(
+    `UPDATE proposal
+       SET status = 'superseded',
+           previous_proposal_id = COALESCE(?, previous_proposal_id),
+           updated_at = ?
+     WHERE id = ?`,
+  )
+  const listAllProposalsStmt = deps.db.prepare(
+    `SELECT * FROM proposal ORDER BY created_at DESC, rowid DESC`,
+  )
+  const listAllEstimatesStmt = deps.db.prepare(
+    `SELECT * FROM estimate ORDER BY created_at DESC, rowid DESC`,
+  )
+  const findProposalByEstimateStmt = deps.db.prepare(
+    `SELECT * FROM proposal WHERE estimate_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+  )
+
   function loadLines(estimateId: string): EstimateLine[] {
     const rows = listLinesStmt.all(estimateId) as EstimateLineRow[]
     return rows.map(rowToLine)
   }
 
-  return {
+  const service: ProposalsService = {
     createEstimate(input, ctx) {
       const id = randomUUID()
       const now = Date.now()
@@ -427,9 +515,11 @@ export function createProposalsService(deps: ProposalsServiceDeps): ProposalsSer
         entityType: 'estimate',
         entityId: id,
         actor: ctx.actor,
+        projectId: input.projectId,
         payload: {
           projectId: input.projectId,
           lineCount: input.lines.length,
+          previousEstimateId: input.previousEstimateId ?? null,
         },
       })
 
@@ -473,7 +563,7 @@ export function createProposalsService(deps: ProposalsServiceDeps): ProposalsSer
           'ProposalsService.createProposal requires `projects` and `storage` deps',
         )
       }
-      const estimate = this.getEstimate(input.estimateId)
+      const estimate = service.getEstimate(input.estimateId)
       if (!estimate) {
         throw new Error(`Estimate not found: ${input.estimateId}`)
       }
@@ -537,6 +627,7 @@ export function createProposalsService(deps: ProposalsServiceDeps): ProposalsSer
         entityType: 'proposal',
         entityId: id,
         actor: ctx.actor,
+        projectId: input.projectId,
         payload: {
           projectId: input.projectId,
           estimateId: input.estimateId,
@@ -597,11 +688,28 @@ export function createProposalsService(deps: ProposalsServiceDeps): ProposalsSer
         entityType: 'proposal',
         entityId: id,
         actor: ctx.actor,
+        projectId: row.project_id,
         payload: { status, projectId: row.project_id, number: row.number },
       })
       if (status === 'issued') {
         void deps.eventBus.emit({
           type: 'proposal.issued',
+          projectId: row.project_id,
+          proposalId: id,
+          number: row.number,
+          ts: now,
+        })
+      } else if (status === 'accepted') {
+        void deps.eventBus.emit({
+          type: 'proposal.accepted',
+          projectId: row.project_id,
+          proposalId: id,
+          number: row.number,
+          ts: now,
+        })
+      } else if (status === 'rejected') {
+        void deps.eventBus.emit({
+          type: 'proposal.rejected',
           projectId: row.project_id,
           proposalId: id,
           number: row.number,
@@ -633,6 +741,7 @@ export function createProposalsService(deps: ProposalsServiceDeps): ProposalsSer
         entityType: 'estimate',
         entityId: id,
         actor: ctx.actor,
+        projectId: row.project_id,
         payload: { status, projectId: row.project_id },
       })
       const event =
@@ -643,5 +752,296 @@ export function createProposalsService(deps: ProposalsServiceDeps): ProposalsSer
             : { type: 'estimate.updated' as const, projectId: row.project_id, estimateId: id, ts: now }
       void deps.eventBus.emit(event)
     },
+
+    updateEstimate(input, ctx) {
+      const existing = service.getEstimate(input.estimateId)
+      if (!existing) throw new Error(`Estimate not found: ${input.estimateId}`)
+      const now = Date.now()
+      const changedFields: string[] = []
+
+      if (
+        input.sourceScopePath !== undefined ||
+        input.notes !== undefined ||
+        input.metadata !== undefined
+      ) {
+        const nextScope =
+          input.sourceScopePath === undefined ? existing.sourceScopePath : input.sourceScopePath
+        const nextNotes = input.notes === undefined ? existing.notes : input.notes
+        const nextMeta = input.metadata === undefined ? existing.metadata : input.metadata
+        updateEstimateMetaStmt.run(
+          nextScope,
+          nextNotes,
+          JSON.stringify(nextMeta),
+          now,
+          input.estimateId,
+        )
+        if (input.sourceScopePath !== undefined) changedFields.push('sourceScopePath')
+        if (input.notes !== undefined) changedFields.push('notes')
+        if (input.metadata !== undefined) changedFields.push('metadata')
+      }
+
+      if (input.lines !== undefined) {
+        deleteEstimateLinesStmt.run(input.estimateId)
+        input.lines.forEach((line, index) => {
+          const lineId = line.id ?? randomUUID()
+          const kind: LineKind = line.kind ?? 'fixed'
+          const qty = line.qty ?? 1
+          const unitPrice = line.unitPrice ?? 0
+          const lineTotal = qty * unitPrice
+          insertLine.run(
+            lineId,
+            input.estimateId,
+            kind,
+            line.description,
+            qty,
+            line.unit ?? null,
+            unitPrice,
+            lineTotal,
+            index,
+            JSON.stringify(line.metadata ?? {}),
+            now,
+            now,
+          )
+        })
+        changedFields.push('lines')
+      }
+
+      if (changedFields.length > 0) {
+        deps.audit.record({
+          module: 'proposals',
+          action: 'estimate.updated',
+          entityType: 'estimate',
+          entityId: input.estimateId,
+          actor: ctx.actor,
+          projectId: existing.projectId,
+          payload: {
+            projectId: existing.projectId,
+            changedFields,
+          },
+        })
+        void deps.eventBus.emit({
+          type: 'estimate.updated',
+          projectId: existing.projectId,
+          estimateId: input.estimateId,
+          ts: now,
+        })
+      }
+
+      if (input.status !== undefined && input.status !== existing.status) {
+        service.setEstimateStatus(input.estimateId, input.status, ctx)
+      }
+
+      const fresh = service.getEstimate(input.estimateId)
+      if (!fresh) throw new Error(`Estimate vanished mid-update: ${input.estimateId}`)
+      return fresh
+    },
+
+    reviseEstimate(estimateId, ctx) {
+      const old = service.getEstimate(estimateId)
+      if (!old) throw new Error(`Estimate not found: ${estimateId}`)
+      // The new estimate starts fresh in `draft` carrying the previous
+      // lines so the operator can edit from a known baseline. The old
+      // estimate's status is intentionally untouched — promote/supersede
+      // is an explicit toolbar action.
+      const revised = service.createEstimate(
+        {
+          projectId: old.projectId,
+          sourceScopePath: old.sourceScopePath,
+          notes: old.notes,
+          previousEstimateId: old.id,
+          metadata: { ...old.metadata, revisedFrom: old.id },
+          lines: old.lines.map((l) => ({
+            kind: l.kind,
+            description: l.description,
+            qty: l.qty,
+            unit: l.unit,
+            unitPrice: l.unitPrice,
+            metadata: l.metadata,
+          })),
+        },
+        ctx,
+      )
+      deps.audit.record({
+        module: 'proposals',
+        action: 'estimate.revised',
+        entityType: 'estimate',
+        entityId: revised.id,
+        actor: ctx.actor,
+        projectId: old.projectId,
+        payload: {
+          projectId: old.projectId,
+          previousEstimateId: old.id,
+        },
+      })
+      return revised
+    },
+
+    supersedeProposal(id, supersededByProposalId, ctx) {
+      const row = getProposalProjectStmt.get(id) as
+        | { project_id: string; number: string }
+        | undefined
+      if (!row) throw new Error(`Proposal not found: ${id}`)
+      const now = Date.now()
+      supersedeProposalStmt.run(supersededByProposalId, now, id)
+      deps.audit.record({
+        module: 'proposals',
+        action: 'proposal.superseded',
+        entityType: 'proposal',
+        entityId: id,
+        actor: ctx.actor,
+        projectId: row.project_id,
+        payload: {
+          projectId: row.project_id,
+          number: row.number,
+          supersededByProposalId,
+        },
+      })
+      void deps.eventBus.emit({
+        type: 'proposal.superseded',
+        projectId: row.project_id,
+        proposalId: id,
+        ts: now,
+      })
+    },
+
+    getProposalDetail(id) {
+      // First try treating the id as a proposal id; fall back to estimate id.
+      const proposalRow = getProposalStmt.get(id) as ProposalRow | undefined
+      if (proposalRow) {
+        const proposal = rowToProposal(proposalRow)
+        const estimate = service.getEstimate(proposal.estimateId)
+        if (!estimate) return undefined
+        return {
+          estimate,
+          proposal,
+          predecessorEstimates: walkPredecessors(estimate, service),
+        }
+      }
+      const estimate = service.getEstimate(id)
+      if (!estimate) return undefined
+      const linked = findProposalByEstimateStmt.get(estimate.id) as ProposalRow | undefined
+      return {
+        estimate,
+        proposal: linked ? rowToProposal(linked) : null,
+        predecessorEstimates: walkPredecessors(estimate, service),
+      }
+    },
+
+    listArtifacts(opts) {
+      const projectFilter = opts?.projectId
+      const statusFilter = opts?.status
+      const limit = opts?.limit ?? 500
+
+      // Pull both tables and merge — at v2 scale (single user, hundreds of
+      // estimates) the cost is negligible; doing this in SQL would need a
+      // complicated UNION ALL with status case-statement. Keep it in JS.
+      const allEstimates = (
+        projectFilter
+          ? (listEstimatesByProjectStmt.all(projectFilter) as EstimateRow[])
+          : (listAllEstimatesStmt.all() as EstimateRow[])
+      ).map((r) => rowToEstimate(r, loadLines(r.id)))
+      const allProposals = (
+        projectFilter
+          ? (listProposalsByProjectStmt.all(projectFilter) as ProposalRow[])
+          : (listAllProposalsStmt.all() as ProposalRow[])
+      ).map(rowToProposal)
+      const proposalByEstimate = new Map<string, Proposal>()
+      for (const p of allProposals) {
+        // Newest proposal for the estimate wins when multiple exist (rare —
+        // would only happen across revisions, but we still want stable rows).
+        const prior = proposalByEstimate.get(p.estimateId)
+        if (!prior || p.createdAt > prior.createdAt) {
+          proposalByEstimate.set(p.estimateId, p)
+        }
+      }
+      const projectMeta = (projectId: string): { number: string; name: string } => {
+        if (deps.projects) {
+          const p = deps.projects.getProject(projectId)
+          if (p) return { number: p.number, name: p.name }
+        }
+        return { number: projectId, name: projectId }
+      }
+
+      const rows: ArtifactRow[] = []
+      for (const e of allEstimates) {
+        const proposal = proposalByEstimate.get(e.id)
+        const total = e.lines.reduce(
+          (sum, l) => sum + Math.round(l.qty * l.unitPrice * 100),
+          0,
+        )
+        const meta = projectMeta(e.projectId)
+        if (proposal) {
+          rows.push({
+            kind: 'proposal',
+            id: proposal.id,
+            number: proposal.number,
+            projectId: e.projectId,
+            projectNumber: meta.number,
+            projectName: meta.name,
+            status: proposal.status,
+            displayStatus: formatProposalStatus(proposal.status),
+            totalCents: total,
+            lastActivity: Math.max(proposal.updatedAt, e.updatedAt),
+            source: e.sourceScopePath ? 'from scope.md' : 'manual',
+            scopeFilePath: e.sourceScopePath,
+          })
+        } else {
+          rows.push({
+            kind: 'estimate',
+            id: e.id,
+            number: shortEstimateNumber(e),
+            projectId: e.projectId,
+            projectNumber: meta.number,
+            projectName: meta.name,
+            status: e.status,
+            displayStatus: formatEstimateStatus(e.status),
+            totalCents: total,
+            lastActivity: e.updatedAt,
+            source: e.sourceScopePath ? 'from scope.md' : 'manual',
+            scopeFilePath: e.sourceScopePath,
+          })
+        }
+      }
+      rows.sort((a, b) => b.lastActivity - a.lastActivity)
+
+      const filtered = statusFilter && statusFilter.length > 0
+        ? rows.filter((r) => statusFilter.includes(r.displayStatus))
+        : rows
+      return filtered.slice(0, limit)
+    },
   }
+  return service
+}
+
+function walkPredecessors(
+  estimate: Estimate,
+  service: ProposalsService,
+): Estimate[] {
+  const out: Estimate[] = []
+  let current: Estimate | undefined = estimate
+  const seen = new Set<string>()
+  while (current?.previousEstimateId) {
+    if (seen.has(current.previousEstimateId)) break
+    seen.add(current.previousEstimateId)
+    const prev = service.getEstimate(current.previousEstimateId)
+    if (!prev) break
+    out.push(prev)
+    current = prev
+  }
+  return out
+}
+
+function formatEstimateStatus(s: EstimateStatus): string {
+  return `Estimate · ${s}`
+}
+
+function formatProposalStatus(s: ProposalStatus): string {
+  return `Proposal · ${s}`
+}
+
+function shortEstimateNumber(e: Estimate): string {
+  // For estimate-only rows we don't have a human number — show the first 8
+  // chars of the id so the table has *something* to render and the row stays
+  // navigable.
+  return `E-${e.id.slice(0, 8)}`
 }

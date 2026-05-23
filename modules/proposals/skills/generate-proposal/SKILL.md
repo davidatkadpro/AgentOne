@@ -2,6 +2,15 @@
 name: generate-proposal
 description: Render a Proposal from a draft Estimate. Picks the next `<project.number>-P<n>` sequence and writes the rendered markdown to `<project>/drafts/proposals/<number>.md`.
 slash_command: generate-proposal
+label: Generate proposal
+icon: file-text
+surface: both
+tabs: []
+default_profile: default
+requires_confirmation: false
+prompt_template: |
+  Generate a proposal from an estimate on project {{contextId}}.
+  Estimate id: {{args.estimateId}}.
 tools:
   - id: list_estimates_for_project
     handler: ./tools/list-estimates-for-project.ts

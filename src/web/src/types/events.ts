@@ -152,6 +152,16 @@ export type AgentEvent =
   | { type: 'task.updated'; projectId: string; taskId: string; ts: number }
   | { type: 'task.completed'; projectId: string; taskId: string; ts: number }
   | { type: 'task.blocked'; projectId: string; taskId: string; reason: string | null; ts: number }
+  // -- contributed by modules/proposals --
+  | { type: 'estimate.created'; projectId: string; estimateId: string; ts: number }
+  | { type: 'estimate.updated'; projectId: string; estimateId: string; ts: number }
+  | { type: 'estimate.accepted'; projectId: string; estimateId: string; ts: number }
+  | { type: 'estimate.rejected'; projectId: string; estimateId: string; ts: number }
+  | { type: 'proposal.created'; projectId: string; proposalId: string; number: string; ts: number }
+  | { type: 'proposal.issued'; projectId: string; proposalId: string; number: string; ts: number }
+  | { type: 'proposal.accepted'; projectId: string; proposalId: string; number: string; ts: number }
+  | { type: 'proposal.rejected'; projectId: string; proposalId: string; number: string; ts: number }
+  | { type: 'proposal.superseded'; projectId: string; proposalId: string; ts: number }
   // -- contributed by modules/email --
   | { type: 'email.received'; emailId: string; sourceKind: string; sourceId: string; ts: number }
   | { type: 'email.read'; emailId: string; ts: number }
@@ -223,6 +233,15 @@ const KNOWN_TYPES = new Set<string>([
   'email.filed',
   'email.action_started',
   'email.action_completed',
+  'estimate.created',
+  'estimate.updated',
+  'estimate.accepted',
+  'estimate.rejected',
+  'proposal.created',
+  'proposal.issued',
+  'proposal.accepted',
+  'proposal.rejected',
+  'proposal.superseded',
 ])
 
 // Loose runtime validation: every event needs a known string `type`. Field-

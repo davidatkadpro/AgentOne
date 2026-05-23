@@ -19,6 +19,16 @@ import type {
   Email,
   EmailBody,
   EmailPollResult,
+  ArtifactRow,
+  ArtifactHistoryEntry,
+  Estimate,
+  EstimateKind,
+  EstimateStatus,
+  Proposal,
+  ProposalRenderedFile,
+  ProposalScopeFile,
+  ProposalStatus,
+  ProposalTemplate,
 } from './domain'
 
 export interface ListSessionsResponse {
@@ -273,4 +283,101 @@ export interface DispatchEmailActionRequest {
 export interface DispatchEmailActionResponse {
   sessionId: string
   action: string
+}
+
+// ── Proposals ──────────────────────────────────────────────────────────────
+
+export interface ListArtifactsQuery {
+  projectId?: string
+  status?: string | string[]
+  search?: string
+  limit?: number
+}
+export interface ListArtifactsResponse {
+  artifacts: ArtifactRow[]
+}
+
+export interface ProposalDetailResponse {
+  estimate: Estimate
+  proposal: Proposal | null
+  predecessorEstimates: Estimate[]
+}
+
+export interface CreateEstimateLineInput {
+  kind?: EstimateKind
+  description: string
+  qty?: number
+  unit?: string | null
+  unitPrice?: number
+  metadata?: Record<string, unknown>
+}
+
+export interface CreateEstimateRequest {
+  scopeFilePath?: string | null
+  sourceScopePath?: string | null
+  templateName?: string
+  notes?: string
+  lines?: CreateEstimateLineInput[]
+  metadata?: Record<string, unknown>
+}
+export interface CreateEstimateResponse {
+  estimate: Estimate
+}
+
+export interface UpdateEstimateLineInput extends CreateEstimateLineInput {
+  id?: string
+}
+
+export interface UpdateEstimateRequest {
+  status?: EstimateStatus
+  templateName?: string
+  notes?: string | null
+  sourceScopePath?: string | null
+  scopeFilePath?: string | null
+  metadata?: Record<string, unknown>
+  lines?: UpdateEstimateLineInput[]
+}
+export interface UpdateEstimateResponse {
+  estimate: Estimate
+}
+
+export interface ReviseEstimateResponse {
+  estimate: Estimate
+}
+
+export interface CreateProposalRequest {
+  estimateId: string
+  templateName?: string
+  metadata?: Record<string, unknown>
+}
+export interface CreateProposalResponse {
+  proposal: Proposal
+}
+
+export interface UpdateProposalRequest {
+  status?: ProposalStatus
+  supersededByProposalId?: string | null
+}
+export interface UpdateProposalResponse {
+  proposal: Proposal
+}
+
+export interface RenderProposalRequest {
+  formats: Array<'md' | 'pdf' | 'docx'>
+}
+export interface RenderProposalResponse {
+  files: ProposalRenderedFile[]
+  unavailable: Array<'pdf' | 'docx'>
+}
+
+export interface ListTemplatesResponse {
+  templates: ProposalTemplate[]
+}
+
+export interface ListScopeFilesResponse {
+  files: ProposalScopeFile[]
+}
+
+export interface ProposalHistoryResponse {
+  entries: ArtifactHistoryEntry[]
 }

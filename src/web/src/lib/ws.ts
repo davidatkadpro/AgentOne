@@ -95,6 +95,37 @@ export function invalidateForEvent(event: AgentEvent): void {
         })
       }
       break
+    case 'estimate.created':
+    case 'estimate.updated':
+    case 'estimate.accepted':
+    case 'estimate.rejected':
+      void queryClient.invalidateQueries({ queryKey: queryKeys.proposals.all() })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.estimates.detail(event.estimateId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.detail(event.projectId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.activity(event.projectId),
+      })
+      break
+    case 'proposal.created':
+    case 'proposal.issued':
+    case 'proposal.accepted':
+    case 'proposal.rejected':
+    case 'proposal.superseded':
+      void queryClient.invalidateQueries({ queryKey: queryKeys.proposals.all() })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.proposals.detail(event.proposalId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.detail(event.projectId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.activity(event.projectId),
+      })
+      break
   }
 }
 

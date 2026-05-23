@@ -2,6 +2,15 @@
 name: build-estimate
 description: Read a project's scope.md (written by the email scope-extractor) and turn it into a draft estimate — pricing kinds per line, calling create_estimate when the lines are ready.
 slash_command: build-estimate
+label: Build estimate from scope
+icon: file-plus
+surface: both
+tabs: []
+default_profile: default
+requires_confirmation: false
+prompt_template: |
+  Build a draft estimate for project {{contextId}} from scope file `{{args.scopeFilePath}}`.
+  Template hint: {{args.templateName}}.
 tools:
   - id: create_estimate
     handler: ./tools/create-estimate.ts

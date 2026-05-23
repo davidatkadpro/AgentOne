@@ -298,6 +298,20 @@ export type AgentEvent =
       ts: number
     }
   | {
+      type: 'proposal.accepted'
+      projectId: string
+      proposalId: string
+      number: string
+      ts: number
+    }
+  | {
+      type: 'proposal.rejected'
+      projectId: string
+      proposalId: string
+      number: string
+      ts: number
+    }
+  | {
       type: 'proposal.superseded'
       projectId: string
       proposalId: string

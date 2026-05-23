@@ -16,6 +16,7 @@ import { FilesTab } from './components/tabs/FilesTab'
 import { ActivityTab } from './components/tabs/ActivityTab'
 import { DraftsTab } from './components/tabs/DraftsTab'
 import { EmailsTab } from './components/tabs/EmailsTab'
+import { ProposalsTab } from './components/tabs/ProposalsTab'
 import { PlaceholderTab } from './components/tabs/PlaceholderTab'
 
 const TABS: Array<{ id: ProjectTab; label: string }> = [
@@ -135,7 +136,7 @@ export function ProjectDetailRoute({ projectId }: ProjectDetailRouteProps) {
         ) : link.tab === 'emails' ? (
           <EmailsTab projectId={projectId} />
         ) : link.tab === 'proposals' ? (
-          <PlaceholderTab module="proposals" phase={4} />
+          <ProposalsTab projectId={projectId} />
         ) : (
           <PlaceholderTab module="invoicing" phase={5} />
         )}

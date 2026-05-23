@@ -57,4 +57,16 @@ export const queryKeys = {
     detail: (id: string) => ['emails', 'detail', id] as const,
     body: (id: string) => ['emails', 'body', id] as const,
   },
+  proposals: {
+    all: () => ['proposals'] as const,
+    artifacts: (opts?: Record<string, unknown>) =>
+      ['proposals', 'artifacts', opts ?? {}] as const,
+    detail: (id: string) => ['proposals', 'detail', id] as const,
+    history: (id: string) => ['proposals', 'history', id] as const,
+    templates: () => ['proposals', 'templates'] as const,
+    scopeFiles: (projectId: string) => ['proposals', 'scope-files', projectId] as const,
+  },
+  estimates: {
+    detail: (id: string) => ['estimates', 'detail', id] as const,
+  },
 } as const

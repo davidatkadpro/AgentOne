@@ -254,3 +254,101 @@ export interface EmailActionChip {
 export interface EmailPollResult {
   ingested: number
 }
+
+// ── Proposals module ──────────────────────────────────────────────────────
+
+export type EstimateKind = 'fixed' | 'time_and_materials' | 'unit'
+export type EstimateStatus = 'draft' | 'ready' | 'accepted' | 'rejected' | 'superseded'
+export type ProposalStatus = 'draft' | 'issued' | 'accepted' | 'rejected' | 'superseded'
+
+export interface EstimateLine {
+  id: string
+  estimateId: string
+  kind: EstimateKind
+  description: string
+  qty: number
+  unit: string | null
+  unitPrice: number
+  lineTotal: number
+  position: number
+  metadata: Record<string, unknown>
+  createdAt: number
+  updatedAt: number
+}
+
+export interface Estimate {
+  id: string
+  projectId: string
+  version: number
+  sourceScopePath: string | null
+  status: EstimateStatus
+  notes: string | null
+  previousEstimateId: string | null
+  metadata: Record<string, unknown>
+  createdAt: number
+  updatedAt: number
+  decidedAt: number | null
+  lines: EstimateLine[]
+}
+
+export interface Proposal {
+  id: string
+  projectId: string
+  estimateId: string
+  number: string
+  status: ProposalStatus
+  templateName: string
+  renderedMarkdownPath: string | null
+  previousProposalId: string | null
+  metadata: Record<string, unknown>
+  createdAt: number
+  updatedAt: number
+  issuedAt: number | null
+  decidedAt: number | null
+}
+
+export interface ArtifactRow {
+  kind: 'estimate' | 'proposal'
+  id: string
+  number: string
+  projectId: string
+  projectNumber: string
+  projectName: string
+  status: EstimateStatus | ProposalStatus
+  /** Combined "Estimate · draft", "Proposal · issued", etc. */
+  displayStatus: string
+  totalCents: number
+  lastActivity: number
+  source: 'from scope.md' | 'manual'
+  scopeFilePath: string | null
+}
+
+export interface ProposalTemplate {
+  name: string
+  source: 'module' | 'override'
+  path: string
+  description: string | null
+}
+
+export interface ProposalScopeFile {
+  path: string
+  mtime: string
+  bytes: number
+}
+
+export interface ArtifactHistoryEntry {
+  ts: number
+  actorKind: 'agent' | 'user' | 'scheduler' | 'hook' | 'module'
+  module: string
+  action: string
+  fromStatus: string | null
+  toStatus: string | null
+  details: Record<string, unknown>
+}
+
+export interface ProposalRenderedFile {
+  path: string
+  kind: 'md' | 'pdf' | 'docx'
+  mtime: string
+  bytes: number
+}
