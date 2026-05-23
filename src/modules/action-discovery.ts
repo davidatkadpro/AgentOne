@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { SkillFrontmatterSchema } from '../skills/frontmatter.js'
 import { parseFrontmatter } from '../memory/wiki/frontmatter.js'
+import type { EventBus } from '../core/events.js'
 
 /**
  * Module-action discovery + endpoint mounting (ADR-0007 / v2-business-flow.md
@@ -101,6 +102,10 @@ export interface RegisterDiscoveryDeps {
   module: string
   /** Absolute path to `modules/<name>/skills/`. */
   skillsDir: string
+  /** Optional. When present, a `module.reloaded` event fires whenever the
+   *  cache miss path runs (i.e. skills/ mtime changed). The React UI uses
+   *  it to refresh `useModuleActions(module)` without a page reload (P2P12). */
+  eventBus?: EventBus
 }
 
 interface CachedDiscovery {
@@ -130,8 +135,16 @@ export function registerModuleActionsDiscovery(
     if (cache && cache.mtimeMs === mtimeMs) {
       return cache.result
     }
+    const isReload = cache !== null
     const result = await discoverActions({ skillsDir: deps.skillsDir })
     cache = { mtimeMs, result }
+    if (isReload && deps.eventBus) {
+      void deps.eventBus.emit({
+        type: 'module.reloaded',
+        module: deps.module,
+        ts: Date.now(),
+      })
+    }
     return result
   })
 }

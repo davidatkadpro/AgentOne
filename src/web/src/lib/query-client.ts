@@ -39,4 +39,16 @@ export const queryKeys = {
   moduleActions: {
     list: (module: string) => ['module-actions', module] as const,
   },
+  projects: {
+    all: () => ['projects'] as const,
+    list: (status?: string[] | null) =>
+      ['projects', 'list', status ?? null] as const,
+    detail: (id: string) => ['projects', 'detail', id] as const,
+    budget: (id: string) => ['projects', 'budget', id] as const,
+    scope: (id: string) => ['projects', 'scope', id] as const,
+    files: (id: string) => ['projects', 'files', id] as const,
+    activity: (id: string, offset?: number) =>
+      ['projects', 'activity', id, offset ?? 0] as const,
+    nextNumber: () => ['projects', 'next-number'] as const,
+  },
 } as const

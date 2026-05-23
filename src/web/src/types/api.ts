@@ -8,6 +8,14 @@ import type {
   CommandDescriptor,
   ModuleAction,
   ModuleActionsError,
+  Project,
+  Phase,
+  Task,
+  TaskDependency,
+  EntityStatus,
+  ProjectBudget,
+  ActivityEntry,
+  ProjectFilesEntry,
 } from './domain'
 
 export interface ListSessionsResponse {
@@ -122,4 +130,106 @@ export interface ApiErrorBody {
   error: string
   message?: string
   details?: unknown
+}
+
+// ── Projects ───────────────────────────────────────────────────────────────
+
+export interface ListProjectsResponse {
+  projects: Project[]
+}
+
+export interface CreateProjectRequest {
+  number: string
+  name: string
+  client?: string
+  description?: string
+  folderPath?: string
+  metadata?: Record<string, unknown>
+}
+export interface CreateProjectResponse {
+  project: Project
+}
+
+export interface ProjectDetailResponse {
+  project: Project
+  phases: Phase[]
+  tasks: Task[]
+  dependencies: TaskDependency[]
+}
+
+export interface UpdateProjectStatusRequest {
+  status: EntityStatus
+}
+export interface UpdateProjectStatusResponse {
+  project: Project
+}
+
+export interface AddPhaseRequest {
+  name: string
+  metadata?: Record<string, unknown>
+}
+export interface AddPhaseResponse {
+  phase: Phase
+}
+
+export interface UpdatePhaseRequest {
+  name?: string
+  status?: EntityStatus
+  position?: number
+}
+export interface UpdatePhaseResponse {
+  phase: Phase
+}
+
+export interface AddTaskRequest {
+  phaseId: string
+  title: string
+  description?: string
+  parentTaskId?: string
+  assigneeProfile?: string
+  metadata?: Record<string, unknown>
+}
+export interface AddTaskResponse {
+  task: Task
+}
+
+export interface UpdateTaskRequest {
+  title?: string
+  description?: string | null
+  status?: EntityStatus
+  assigneeProfile?: string | null
+  parentTaskId?: string | null
+  reason?: string | null
+}
+export interface UpdateTaskResponse {
+  task: Task
+}
+
+export interface AddDependencyRequest {
+  dependsOnTaskId: string
+}
+export interface AddDependencyResponse {
+  dependency: TaskDependency
+}
+
+export interface ProjectActivityResponse {
+  entries: ActivityEntry[]
+  hasMore: boolean
+}
+
+export interface ProjectScopeResponse {
+  path: string | null
+  markdown: string | null
+  generatedAt: string | null
+}
+
+export interface ProjectFilesResponse {
+  rootPath: string
+  entries: ProjectFilesEntry[]
+}
+
+export type ProjectBudgetResponse = ProjectBudget
+
+export interface NextProjectNumberResponse {
+  number: string
 }

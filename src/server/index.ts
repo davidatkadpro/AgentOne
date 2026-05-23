@@ -123,6 +123,9 @@ export interface AppDeps {
   /** Notification store — surfaces in /api/notifications routes for the
    *  React notification tray (see ADR-0006). */
   notifications: ReturnType<typeof createNotifications>
+  /** Shared audit log handle. Surfaced so Module routes can read by
+   *  project_id without re-opening the DB. */
+  audit: ReturnType<typeof createAuditLog>
 }
 
 const CommandRequestBody = z.object({
@@ -670,7 +673,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     const projectsService = projectsHandle.service as Parameters<
       typeof registerProjectsRoutes
     >[1]['service']
-    await registerProjectsRoutes(app, { service: projectsService })
+    await registerProjectsRoutes(app, {
+      service: projectsService,
+      audit: deps.audit,
+      storageRoot: deps.config.storageRoot,
+    })
   }
 
   const proposalsHandle = deps.modules.get('proposals')
@@ -718,6 +725,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     registerModuleActionsDiscovery(app, {
       module: moduleName,
       skillsDir: join(handle.rootPath, 'skills'),
+      eventBus: deps.bus,
     })
   }
 
@@ -1169,6 +1177,7 @@ export async function bootstrap(): Promise<void> {
     db,
     modules,
     notifications,
+    audit,
   })
 
   await wiki.whenReady()

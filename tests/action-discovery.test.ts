@@ -7,6 +7,7 @@ import {
   discoverActions,
   registerModuleActionsDiscovery,
 } from '@/modules/action-discovery.js'
+import { EventBus } from '@/core/events.js'
 
 let dir: string
 
@@ -153,6 +154,30 @@ describe('registerModuleActionsDiscovery', () => {
     await plantSkill('second', { name: 'second', description: 'b' })
     const b = await app.inject({ method: 'GET', url: '/api/email/actions' })
     expect(b.json().actions).toHaveLength(2)
+  })
+
+  it('emits module.reloaded on cache miss after the first warm fetch (P2P12)', async () => {
+    await plantSkill('first', { name: 'first', description: 'a' })
+    const bus = new EventBus()
+    const events: Array<{ module: string }> = []
+    bus.on('module.reloaded', (e) => {
+      events.push({ module: e.module })
+    })
+    registerModuleActionsDiscovery(app, {
+      module: 'projects',
+      skillsDir: dir,
+      eventBus: bus,
+    })
+    await app.ready()
+    // First call warms the cache — no reload event.
+    await app.inject({ method: 'GET', url: '/api/projects/actions' })
+    expect(events).toHaveLength(0)
+    // Mutate skills dir → next call invalidates → module.reloaded fires.
+    await plantSkill('second', { name: 'second', description: 'b' })
+    await app.inject({ method: 'GET', url: '/api/projects/actions' })
+    // Bus emit is async; flush microtasks.
+    await new Promise((r) => setImmediate(r))
+    expect(events).toEqual([{ module: 'projects' }])
   })
 
   it('mounts independent caches per module', async () => {

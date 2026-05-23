@@ -111,6 +111,30 @@ export interface ListProjectsOptions {
   limit?: number
 }
 
+export interface UpdateTaskInput {
+  taskId: string
+  title?: string
+  description?: string | null
+  status?: EntityStatus
+  assigneeProfile?: string | null
+  parentTaskId?: string | null
+}
+
+export interface UpdatePhaseInput {
+  phaseId: string
+  name?: string
+  status?: EntityStatus
+  position?: number
+}
+
+export interface ProjectBudget {
+  projectId: string
+  budgetCents: number | null
+  invoicedCents: number
+  paidCents: number
+  draftCents: number
+}
+
 export interface ProjectsService {
   createProject(input: CreateProjectInput, ctx: ActorContext): Project
   getProject(id: string): Project | undefined
@@ -119,12 +143,19 @@ export interface ProjectsService {
   listPhases(projectId: string): Phase[]
   addTask(input: AddTaskInput, ctx: ActorContext): Task
   listTasks(projectId: string): Task[]
+  getTask(taskId: string): Task | undefined
+  getPhase(phaseId: string): Phase | undefined
+  updateTask(input: UpdateTaskInput, ctx: BlockedActorContext): Task
+  updatePhase(input: UpdatePhaseInput, ctx: ActorContext): Phase
   setProjectStatus(id: string, status: EntityStatus, ctx: ActorContext): void
   setPhaseStatus(id: string, status: EntityStatus, ctx: ActorContext): void
   setTaskStatus(id: string, status: EntityStatus, ctx: BlockedActorContext): void
   setDependency(input: TaskDependencyInput, ctx: ActorContext): void
   removeDependency(input: TaskDependencyInput, ctx: ActorContext): void
   getBlockers(taskId: string): Task[]
+  listAllDependencies(projectId: string): TaskDependencyInput[]
+  suggestNextNumber(year?: number): string
+  getProjectBudget(projectId: string): ProjectBudget
 }
 
 export interface TaskDependencyInput {
@@ -350,8 +381,36 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
      )
      SELECT 1 AS hit FROM reach WHERE id = ? LIMIT 1`,
   )
+  const getTaskStmt = deps.db.prepare('SELECT * FROM task WHERE id = ?')
+  const updateTaskFieldsStmt = deps.db.prepare(
+    `UPDATE task SET
+       title = COALESCE(?, title),
+       description = CASE WHEN ? THEN ? ELSE description END,
+       assignee_profile = CASE WHEN ? THEN ? ELSE assignee_profile END,
+       parent_task_id = CASE WHEN ? THEN ? ELSE parent_task_id END,
+       updated_at = ?
+     WHERE id = ?`,
+  )
+  const updatePhaseFieldsStmt = deps.db.prepare(
+    `UPDATE phase SET
+       name = COALESCE(?, name),
+       position = COALESCE(?, position),
+       updated_at = ?
+     WHERE id = ?`,
+  )
+  const listProjectDepsStmt = deps.db.prepare(
+    `SELECT d.task_id, d.depends_on_task_id
+       FROM task_dependency d
+       JOIN task t ON t.id = d.task_id
+      WHERE t.project_id = ?`,
+  )
+  const projectNumberPrefixStmt = deps.db.prepare(
+    `SELECT number FROM project
+      WHERE number LIKE ? || '%'
+      ORDER BY number DESC`,
+  )
 
-  return {
+  const service: ProjectsService = {
     createProject(input, ctx) {
       const id = randomUUID()
       const now = Date.now()
@@ -415,6 +474,7 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
         entityId: id,
         actor: ctx.actor,
         payload: { number: input.number, name: input.name },
+        projectId: id,
       })
 
       void deps.eventBus.emit({
@@ -466,6 +526,7 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
         entityId: id,
         actor: ctx.actor,
         payload: { projectId: input.projectId, name: input.name, position },
+        projectId: input.projectId,
       })
 
       void deps.eventBus.emit({
@@ -541,6 +602,7 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
           title: input.title,
           parentTaskId,
         },
+        projectId: input.projectId,
       })
 
       void deps.eventBus.emit({
@@ -586,6 +648,7 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
         entityId: id,
         actor: ctx.actor,
         payload: { status },
+        projectId: id,
       })
       void deps.eventBus.emit(
         status === 'completed'
@@ -608,6 +671,7 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
         entityId: id,
         actor: ctx.actor,
         payload: { status, projectId: phaseRow.project_id },
+        projectId: phaseRow.project_id,
       })
       if (status === 'completed') {
         void deps.eventBus.emit({
@@ -634,6 +698,9 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
         throw new TaskDependencyCycleError(input.taskId, input.dependsOnTaskId)
       }
       insertDependencyStmt.run(input.taskId, input.dependsOnTaskId)
+      const projectIdRow = getTaskProjectIdStmt.get(input.taskId) as
+        | { project_id: string }
+        | undefined
       deps.audit.record({
         module: 'projects',
         action: 'task.dependency_added',
@@ -641,10 +708,14 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
         entityId: input.taskId,
         actor: ctx.actor,
         payload: { dependsOnTaskId: input.dependsOnTaskId },
+        projectId: projectIdRow?.project_id ?? null,
       })
     },
 
     removeDependency(input, ctx) {
+      const projectIdRow = getTaskProjectIdStmt.get(input.taskId) as
+        | { project_id: string }
+        | undefined
       const info = deleteDependencyStmt.run(input.taskId, input.dependsOnTaskId)
       if (info.changes === 0) return
       deps.audit.record({
@@ -654,6 +725,7 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
         entityId: input.taskId,
         actor: ctx.actor,
         payload: { dependsOnTaskId: input.dependsOnTaskId },
+        projectId: projectIdRow?.project_id ?? null,
       })
     },
 
@@ -682,6 +754,7 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
         entityId: id,
         actor: ctx.actor,
         payload: { status, projectId: row.project_id, reason },
+        projectId: row.project_id,
       })
       if (status === 'completed') {
         void deps.eventBus.emit({
@@ -707,5 +780,165 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
         })
       }
     },
+
+    getTask(taskId) {
+      const row = getTaskStmt.get(taskId) as TaskRow | undefined
+      return row ? rowToTask(row) : undefined
+    },
+
+    getPhase(phaseId) {
+      const row = getPhaseStmt.get(phaseId) as PhaseRow | undefined
+      return row ? rowToPhase(row) : undefined
+    },
+
+    updateTask(input, ctx) {
+      const existing = getTaskStmt.get(input.taskId) as TaskRow | undefined
+      if (!existing) {
+        throw new Error(`Task not found: ${input.taskId}`)
+      }
+      const now = Date.now()
+      const descTouched = 'description' in input
+      const assigneeTouched = 'assigneeProfile' in input
+      const parentTouched = 'parentTaskId' in input
+
+      updateTaskFieldsStmt.run(
+        input.title ?? null,
+        descTouched ? 1 : 0,
+        descTouched ? input.description ?? null : null,
+        assigneeTouched ? 1 : 0,
+        assigneeTouched ? input.assigneeProfile ?? null : null,
+        parentTouched ? 1 : 0,
+        parentTouched ? input.parentTaskId ?? null : null,
+        now,
+        input.taskId,
+      )
+
+      const changedFields: string[] = []
+      if (input.title !== undefined) changedFields.push('title')
+      if (descTouched) changedFields.push('description')
+      if (assigneeTouched) changedFields.push('assigneeProfile')
+      if (parentTouched) changedFields.push('parentTaskId')
+
+      if (changedFields.length > 0) {
+        deps.audit.record({
+          module: 'projects',
+          action: 'task.updated',
+          entityType: 'task',
+          entityId: input.taskId,
+          actor: ctx.actor,
+          payload: { projectId: existing.project_id, fields: changedFields },
+          projectId: existing.project_id,
+        })
+        void deps.eventBus.emit({
+          type: 'task.updated',
+          projectId: existing.project_id,
+          taskId: input.taskId,
+          ts: now,
+        })
+      }
+      if (input.status !== undefined && input.status !== parseStatus(existing.status)) {
+        const statusCtx: BlockedActorContext = { actor: ctx.actor }
+        if (ctx.reason !== undefined) statusCtx.reason = ctx.reason
+        service.setTaskStatus(input.taskId, input.status, statusCtx)
+      }
+
+      const after = getTaskStmt.get(input.taskId) as TaskRow
+      return rowToTask(after)
+    },
+
+    updatePhase(input, ctx) {
+      const existing = getPhaseStmt.get(input.phaseId) as PhaseRow | undefined
+      if (!existing) {
+        throw new Error(`Phase not found: ${input.phaseId}`)
+      }
+      const now = Date.now()
+
+      updatePhaseFieldsStmt.run(
+        input.name ?? null,
+        input.position !== undefined ? input.position : null,
+        now,
+        input.phaseId,
+      )
+
+      const changed: string[] = []
+      if (input.name !== undefined) changed.push('name')
+      if (input.position !== undefined) changed.push('position')
+
+      if (changed.length > 0) {
+        deps.audit.record({
+          module: 'projects',
+          action: 'phase.updated',
+          entityType: 'phase',
+          entityId: input.phaseId,
+          actor: ctx.actor,
+          payload: { projectId: existing.project_id, fields: changed },
+          projectId: existing.project_id,
+        })
+      }
+      if (input.status !== undefined && input.status !== parseStatus(existing.status)) {
+        service.setPhaseStatus(input.phaseId, input.status, ctx)
+      }
+
+      const after = getPhaseStmt.get(input.phaseId) as PhaseRow
+      return rowToPhase(after)
+    },
+
+    listAllDependencies(projectId) {
+      const rows = listProjectDepsStmt.all(projectId) as Array<{
+        task_id: string
+        depends_on_task_id: string
+      }>
+      return rows.map((r) => ({
+        taskId: r.task_id,
+        dependsOnTaskId: r.depends_on_task_id,
+      }))
+    },
+
+    suggestNextNumber(year) {
+      const yy = (year ?? new Date().getFullYear()) % 100
+      const prefix = String(yy).padStart(2, '0')
+      const rows = projectNumberPrefixStmt.all(prefix) as Array<{ number: string }>
+      let maxIdx = 0
+      for (const r of rows) {
+        const m = /^(\d{2})(\d{3})$/.exec(r.number)
+        if (!m) continue
+        const n = Number(m[2])
+        if (n > maxIdx) maxIdx = n
+      }
+      const next = String(maxIdx + 1).padStart(3, '0')
+      return `${prefix}${next}`
+    },
+
+    getProjectBudget(projectId) {
+      // Phase 5 wires the project_budget view properly; Phase 2 only needs to
+      // not crash when no invoices exist. We probe for the view and fall back
+      // to zeros if it isn't present yet.
+      try {
+        const row = deps.db
+          .prepare(
+            `SELECT project_id AS projectId,
+                    budget_cents AS budgetCents,
+                    invoiced_cents AS invoicedCents,
+                    paid_cents AS paidCents,
+                    draft_cents AS draftCents
+               FROM project_budget WHERE project_id = ?`,
+          )
+          .get(projectId) as ProjectBudget | undefined
+        if (row) return row
+      } catch {
+        // view doesn't exist yet
+      }
+      const project = service.getProject(projectId)
+      const budgetCents =
+        (project?.metadata as { budgetCents?: number } | undefined)?.budgetCents ?? null
+      return {
+        projectId,
+        budgetCents,
+        invoicedCents: 0,
+        paidCents: 0,
+        draftCents: 0,
+      }
+    },
   }
+  return service
 }

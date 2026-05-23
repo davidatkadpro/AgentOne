@@ -9,7 +9,7 @@ import { queryClient, queryKeys } from './query-client'
 let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-function invalidateForEvent(event: AgentEvent): void {
+export function invalidateForEvent(event: AgentEvent): void {
   switch (event.type) {
     case 'session.created':
     case 'session.spawned':
@@ -34,6 +34,42 @@ function invalidateForEvent(event: AgentEvent): void {
     case 'skill.loaded':
     case 'skill.load_failed':
       void queryClient.invalidateQueries({ queryKey: queryKeys.skills.list() })
+      break
+    case 'module.reloaded':
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.moduleActions.list(event.module),
+      })
+      break
+    case 'project.created':
+    case 'project.updated':
+    case 'project.completed':
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.list() })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.detail(event.projectId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.activity(event.projectId),
+      })
+      break
+    case 'phase.created':
+    case 'phase.completed':
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.detail(event.projectId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.activity(event.projectId),
+      })
+      break
+    case 'task.created':
+    case 'task.updated':
+    case 'task.completed':
+    case 'task.blocked':
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.detail(event.projectId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.activity(event.projectId),
+      })
       break
   }
 }

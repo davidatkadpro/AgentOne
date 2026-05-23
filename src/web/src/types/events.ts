@@ -141,6 +141,17 @@ export type AgentEvent =
     }
   | { type: 'notification.updated'; notificationId: number; ts: number }
   | { type: 'notification.resolved'; notificationId: number; ts: number }
+  | { type: 'module.reloaded'; module: string; ts: number }
+  // -- contributed by modules/projects --
+  | { type: 'project.created'; projectId: string; number: string; ts: number }
+  | { type: 'project.updated'; projectId: string; ts: number }
+  | { type: 'project.completed'; projectId: string; ts: number }
+  | { type: 'phase.created'; projectId: string; phaseId: string; ts: number }
+  | { type: 'phase.completed'; projectId: string; phaseId: string; ts: number }
+  | { type: 'task.created'; projectId: string; phaseId: string; taskId: string; ts: number }
+  | { type: 'task.updated'; projectId: string; taskId: string; ts: number }
+  | { type: 'task.completed'; projectId: string; taskId: string; ts: number }
+  | { type: 'task.blocked'; projectId: string; taskId: string; reason: string | null; ts: number }
 
 export type EventType = AgentEvent['type']
 export type EventByType<T extends EventType> = Extract<AgentEvent, { type: T }>
@@ -178,6 +189,16 @@ const KNOWN_TYPES = new Set<string>([
   'notification.created',
   'notification.updated',
   'notification.resolved',
+  'module.reloaded',
+  'project.created',
+  'project.updated',
+  'project.completed',
+  'phase.created',
+  'phase.completed',
+  'task.created',
+  'task.updated',
+  'task.completed',
+  'task.blocked',
 ])
 
 // Loose runtime validation: every event needs a known string `type`. Field-

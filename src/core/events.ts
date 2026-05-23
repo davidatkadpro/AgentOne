@@ -229,6 +229,14 @@ export type AgentEvent =
     }
   | { type: 'notification.updated'; notificationId: number; ts: number }
   | { type: 'notification.resolved'; notificationId: number; ts: number }
+  | {
+      // Emitted whenever a Module's `skills/` directory mtime changes.
+      // Lets the React `<AskAgentMenu>` refresh `useModuleActions(name)`
+      // without a server restart.
+      type: 'module.reloaded'
+      module: string
+      ts: number
+    }
   // -- contributed by modules/projects --
   | { type: 'project.created'; projectId: string; number: string; ts: number }
   | { type: 'project.updated'; projectId: string; ts: number }

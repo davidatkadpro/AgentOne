@@ -128,3 +128,81 @@ export interface ModuleActionsError {
 export function isAttentionPayload(p: NotificationPayload | null | undefined): p is AttentionNeededPayload {
   return !!p && typeof (p as AttentionNeededPayload).question === 'string'
 }
+
+// ── Projects module domain ────────────────────────────────────────────────
+
+export type EntityStatus = 'pending' | 'active' | 'blocked' | 'completed' | 'cancelled'
+
+export interface Project {
+  id: string
+  number: string
+  name: string
+  client: string | null
+  description: string | null
+  status: EntityStatus
+  folderPath: string | null
+  metadata: Record<string, unknown>
+  createdAt: number
+  updatedAt: number
+  completedAt: number | null
+}
+
+export interface Phase {
+  id: string
+  projectId: string
+  name: string
+  position: number
+  status: EntityStatus
+  metadata: Record<string, unknown>
+  createdAt: number
+  updatedAt: number
+  completedAt: number | null
+}
+
+export interface Task {
+  id: string
+  projectId: string
+  phaseId: string
+  parentTaskId: string | null
+  title: string
+  description: string | null
+  status: EntityStatus
+  assigneeProfile: string | null
+  position: number
+  metadata: Record<string, unknown>
+  createdAt: number
+  updatedAt: number
+  completedAt: number | null
+}
+
+export interface TaskDependency {
+  taskId: string
+  dependsOnTaskId: string
+}
+
+export interface ProjectBudget {
+  projectId: string
+  budgetCents: number | null
+  invoicedCents: number
+  paidCents: number
+  draftCents: number
+}
+
+export interface ActivityEntry {
+  id: number
+  ts: number
+  actorKind: 'agent' | 'user' | 'scheduler' | 'hook' | 'module'
+  actorId: string | null
+  module: string
+  action: string
+  targetId: string | null
+  details: Record<string, unknown>
+}
+
+export interface ProjectFilesEntry {
+  relativePath: string
+  name: string
+  kind: 'file' | 'directory'
+  bytes: number
+  mtime: string
+}
