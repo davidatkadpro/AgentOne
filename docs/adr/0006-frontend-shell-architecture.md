@@ -72,7 +72,7 @@ The frontend uses **Vite + React 19 + React Router 6 + TanStack Query (REST) + Z
 
 ### Phasing alignment
 
-This ADR describes the *target* shell. Build phasing follows [`../planning/v2-business-flow.md`](../planning/v2-business-flow.md), and the Phase 1.5 work is broken into trackable items in [`../planning/phase-1.5-react-punchlist.md`](../planning/phase-1.5-react-punchlist.md):
+This ADR describes the *target* shell. Build phasing follows [`../planning/v2-business-flow.md`](../planning/v2-business-flow.md); Phase 1.5 work items live in [`../planning/phase-1.5-react-punchlist.md`](../planning/phase-1.5-react-punchlist.md); the implementation-level scaffolding (folder layout, TS types, TanStack Query keys, Zustand store shape, component prop signatures) lives in [`../planning/phase-1.5-frontend-impl-spec.md`](../planning/phase-1.5-frontend-impl-spec.md).
 - **Phase 1.5** (React parity rewrite): the shell, Chat route at full fidelity, Sessions list with all per-row indicators, notification tray (functional but mostly empty until modules emit notifications), Drafts route, Settings → Profiles editor, Skills catalog read-only.
 - **Phases 2–5**: each module phase builds its `/<module>` route inside the shared `<ModulePanel>` shell. No more shell changes after Phase 1.5.
 

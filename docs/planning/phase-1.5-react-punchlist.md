@@ -4,7 +4,7 @@ Trackable breakdown of the React rewrite called for in [ADR-0006](../adr/0006-fr
 
 Last reviewed: 2026-05-23.
 
-The reference for *what* each surface contains is [`../FRONTEND-HANDOFF.md`](../FRONTEND-HANDOFF.md), [ADR-0006](../adr/0006-frontend-shell-architecture.md), and [ADR-0007](../adr/0007-module-panel-conventions.md) — this doc tracks the *work*, not the spec.
+The reference for *what* each surface contains is [`../FRONTEND-HANDOFF.md`](../FRONTEND-HANDOFF.md), [ADR-0006](../adr/0006-frontend-shell-architecture.md), and [ADR-0007](../adr/0007-module-panel-conventions.md). The reference for *how* it's wired — folder layout, TS types, TanStack Query cache keys, Zustand store shape, component prop signatures — is [`./phase-1.5-frontend-impl-spec.md`](./phase-1.5-frontend-impl-spec.md). This doc tracks the *work*, not the spec.
 
 ---
 

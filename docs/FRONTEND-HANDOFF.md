@@ -630,7 +630,7 @@ The orchestrator's `notification.created` events for `request_user_input` must p
 
 ### Phase 1.5 punch list
 
-The full Phase 1.5 build — every shell surface, the Chat parity rewrite, the Settings → Profiles editor, the Skills catalog, the notification tray, and the five shared module components — is broken into trackable items in [`./planning/phase-1.5-react-punchlist.md`](./planning/phase-1.5-react-punchlist.md). Start there for the work breakdown; this doc remains the API/contract reference.
+The full Phase 1.5 build — every shell surface, the Chat parity rewrite, the Settings → Profiles editor, the Skills catalog, the notification tray, and the five shared module components — is broken into trackable items in [`./planning/phase-1.5-react-punchlist.md`](./planning/phase-1.5-react-punchlist.md). The implementation-level scaffolding (folder layout under `src/web/`, TypeScript types, TanStack Query cache keys, Zustand store shape, WS-event reducer wiring, component prop signatures) is specced in [`./planning/phase-1.5-frontend-impl-spec.md`](./planning/phase-1.5-frontend-impl-spec.md). Start with the punch list for the work breakdown and the impl spec for code-level scaffolding; this doc remains the API/contract reference.
 
 ---
 
