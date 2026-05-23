@@ -128,9 +128,18 @@ CREATE TABLE audit_log (
   module TEXT NOT NULL,
   action TEXT NOT NULL,        -- e.g. 'project.create', 'invoice.push'
   target_id TEXT,              -- the affected entity id
+  project_id TEXT,             -- denormalised for the project Activity tab (nullable)
   details_json TEXT
 );
+
+CREATE INDEX audit_log_ts_idx ON audit_log (ts DESC);
+CREATE INDEX audit_log_project_idx ON audit_log (project_id, ts DESC) WHERE project_id IS NOT NULL;
+CREATE INDEX audit_log_module_action_idx ON audit_log (module, action, ts DESC);
 ```
+
+**`project_id` is an explicit nullable column**, not a generated column over `details_json`. Reasoning: the project-detail Activity tab is the primary consumer of this index, the column is cheap (~36 bytes when populated), and an explicit field forces module authors to make the project association deliberate at the point of writing the audit row rather than relying on a JSON-key convention. The partial index keeps non-project-scoped audits (settings edits, profile changes, agent-only operations) out of the index entirely. The Audit service exposes `audit.write({ module, action, actor, targetId, projectId?, details? })`; modules whose entities carry `project_id` MUST pass it through. For audits triggered indirectly (e.g. an invoice push that affects an invoice whose proposal references a project), the calling service resolves the project id from the entity chain and passes it explicitly — no automatic JSON extraction.
+
+Activity-tab query shape: `SELECT id, ts, actor_kind, actor_id, module, action, target_id, details_json FROM audit_log WHERE project_id = ? ORDER BY ts DESC LIMIT 50 OFFSET ?`. The Activity tab in v2 renders audit rows only; bus events (the observational event log) are not folded into this view in v2 — adding them would require a parallel `events.project_id` denormalisation, deferred until the audit-only view proves insufficient.
 
 ### Scheduled Trigger
 
@@ -144,6 +153,85 @@ scheduler.register('invoicing.pollQbo', { intervalMs: 15 * 60 * 1000 }, async ()
 
 Extracted from the existing `AutoDistillScheduler` pattern; nothing user-facing
 changes.
+
+### Action discovery & dispatch
+
+The convention from [ADR-0007](../adr/0007-module-panel-conventions.md) — drop a Skill folder, get a UI surface — needs a uniform server contract every module honours. Pinned here so each module's section can refer back to it instead of restating the shape.
+
+**SKILL.md frontmatter additions (optional, opt-in per Skill):**
+
+```yaml
+---
+name: file-to-project                 # existing — kebab-case skill id
+description: File this email into ... # existing — surfaced as button tooltip
+label: File to project                # NEW — short button label; defaults to title-cased name
+icon: folder-input                    # NEW — lucide icon name; optional
+default_profile: ops                  # NEW — agent profile to spawn the session under
+prompt_template: |                    # NEW — Mustache seed for spawnSession (renders with action args)
+  File this email into the right project.
+  Email: {{email.id}} — "{{email.subject}}"
+requires_confirmation: false          # NEW — UI shows an AlertDialog before dispatch when true
+surface: action                       # NEW — 'action' | 'ask_agent' | 'both'; default 'ask_agent' for module-scoped Skills
+tabs: [emails, scope]                 # NEW — for 'ask_agent' surface, which detail-page tabs this applies to
+---
+```
+
+The existing fields (`tools`, `allowed-tools`, `slash_command`, `docs`, `version`) keep their current semantics. The seven new fields extend [`SkillFrontmatterSchema`](../../src/skills/frontmatter.ts) with all-optional Zod fields so legacy Skills continue to load unchanged.
+
+**`GET /api/<module>/actions`** — discovery endpoint, served by a shared loader registered once per module:
+
+```ts
+// Response shape
+{
+  actions: Array<{
+    name: string                      // Skill's `name` (kebab-case, unique within module)
+    label: string                     // resolved (`label` ?? title-cased `name`)
+    description: string               // Skill's `description`
+    icon: string | null               // `icon` if present
+    defaultProfile: string | null     // `default_profile` if present
+    requiresConfirmation: boolean     // `requires_confirmation` ?? false
+    surface: 'action' | 'ask_agent' | 'both'  // default 'ask_agent'
+    tabs: string[]                    // `tabs` ?? []
+  }>,
+  errors: Array<{
+    skill: string                     // folder name relative to modules/<module>/skills/
+    error: string                     // human-readable parse/validation error
+  }>
+}
+```
+
+Broken Skills (invalid frontmatter, missing handler) surface in `errors[]` and **do not** appear in `actions[]`, matching the existing `GET /api/profiles` `ok: false` pattern. The frontend's `<ActionToolbar>` renders disabled entries from `errors[]` with the error in a tooltip so the operator sees something is wrong without crashing the panel.
+
+**`POST /api/<module>/actions`** — dispatch endpoint, one per module, generic over the module's action vocabulary:
+
+```ts
+// Request
+{
+  action: string                       // must match a `name` from the discovery response
+  contextId: string                    // module-defined: emailId for /email, projectId for /projects, etc.
+  args?: Record<string, unknown>       // optional; passed to the Mustache template + ToolContext
+}
+
+// Response (success)
+{
+  sessionId: string                    // spawned session id; client subscribes immediately
+  action: string                       // echoed for client correlation
+}
+
+// Response (failure)
+// 404 — unknown action name
+// 422 — args failed action's optional Zod schema (if Skill declared one)
+// 409 — module-specific guard tripped (e.g. email already filed, project locked)
+```
+
+The dispatch handler is implemented once per module (it knows the `contextId` shape and the module-specific seed-context to inject) and shares a small helper that renders `prompt_template` against `{ ...args, contextId, contextEntity }` and calls `Orchestrator.spawnSession({ profile: defaultProfile, seed, allowedSkills: [<action>] })`. Modules without a contextual surface (event-only modules) omit `POST /api/<module>/actions` entirely.
+
+**Default values and back-compat:**
+- A Skill with no new frontmatter fields gets `label: titleCase(name)`, `surface: 'ask_agent'`, `requiresConfirmation: false`, `tabs: []`, and everything else `null`. Module authors only override what differs from the defaults.
+- Skills under `skills/` (top-level, not module-scoped) are unaffected — `/api/<module>/actions` only scans `modules/<module>/skills/`. Top-level Skills remain the agent-loaded vocabulary, not module action surfaces.
+- The frontend treats `surface: 'ask_agent'` as the "context-menu only" default — those Skills appear in `<AskAgentMenu>` filtered by `tabs`, not in `<ActionToolbar>`. `surface: 'action'` makes a Skill visible in `<ActionToolbar>`. `surface: 'both'` puts it in both.
+
+**Caching:** the discovery loader caches per-module results until a file mtime under `modules/<module>/skills/` changes (or until process restart, if mtime tracking proves flaky). The cache is invalidated when the Module emits a `module.reloaded` event (Phase 1 plumbing) so a freshly-dropped Skill folder shows up without a restart.
 
 ---
 
@@ -569,15 +657,155 @@ and inherits its uniform master/detail shell):
   the same invoice list filtered to that project, with the budget
   rollup pulled forward into the tab's KPI strip (Budget · Invoiced ·
   Paid · Outstanding).
-- **New API endpoints required**: `POST /api/invoicing/invoices/:id/push`
-  (manual push), `POST /api/invoicing/invoices/:id/pull` (manual pull),
-  `POST /api/invoicing/invoices/:id/reconcile` (UI-driven drift
-  resolution; body `{ strategy: 'keep_local' | 'accept_qbo' | 'merge',
-  merged?: ... }`), `GET /api/invoicing/qbo/status` (connection
-  state for the banner), and the standard QBO OAuth callback routes
-  (`GET /api/integrations/qbo/connect`, `GET
-  /api/integrations/qbo/callback`, `POST
-  /api/integrations/qbo/disconnect`).
+- **New API endpoints required**: see the **QBO endpoint contract**
+  subsection below for full request/response shapes.
+
+#### QBO endpoint contract
+
+Seven new endpoints under two namespaces: per-invoice sync operations under `/api/invoicing/invoices/:id/`, and the OAuth + connection lifecycle under `/api/integrations/qbo/`. All return JSON; the OAuth `/connect` and `/callback` routes are the only ones that issue HTTP redirects.
+
+**`POST /api/invoicing/invoices/:id/push`** — push the local invoice to QBO.
+
+```jsonc
+// Request: no body required; optional { force: true } to overwrite QBO regardless of drift
+// Response 200
+{
+  "qboId": "12345",                       // QBO doc id; persisted to invoice.qbo_id
+  "syncStatus": "synced",
+  "lastSyncedAt": "2026-05-23T14:22:01Z",
+  "qboDocNumber": "INV-1018"              // QBO's own number (informational)
+}
+
+// Errors
+// 409 NOT_CONNECTED — qbo_connection missing or tokens expired; UI shows the banner
+// 409 DRIFT — sync_status='drift'; client should route to the reconcile flow or set force:true
+// 409 INVOICE_NOT_ISSUED — local invoice is still in Draft; QBO push requires issued state
+// 502 QBO_ERROR — upstream QBO call failed; response details: { qboStatus, qboMessage }
+```
+
+The push is **idempotent over the local invoice id** — re-pushing an already-synced invoice updates the existing QBO doc in place via `qbo_id`. Emits `qbo.invoice_pushed` on success, `qbo.sync_failed` on the 502 path.
+
+**`POST /api/invoicing/invoices/:id/pull`** — pull the canonical QBO invoice and merge into the local row.
+
+```jsonc
+// Request: no body
+// Response 200
+{
+  "syncStatus": "synced" | "drift",
+  "lastSyncedAt": "2026-05-23T14:22:01Z",
+  "driftFields": ["customerEmail", "lineItems[2].amount"]  // present when syncStatus='drift'
+}
+
+// Errors
+// 404 NOT_PUSHED — local invoice has no qbo_id; nothing to pull
+// 409 NOT_CONNECTED
+// 502 QBO_ERROR
+```
+
+The pull never overwrites local fields automatically when divergence is detected — it sets `sync_status='drift'`, records the diverging field paths, and emits `qbo.drift_detected`. The operator resolves via `/reconcile`. Successful no-drift pulls emit `qbo.invoice_pulled`.
+
+**`POST /api/invoicing/invoices/:id/reconcile`** — UI-driven drift resolution.
+
+```jsonc
+// Request
+{
+  "strategy": "keep_local" | "accept_qbo" | "merge",
+  "merged"?: {                             // required when strategy='merge'
+    "customerEmail": "new@example.com",   // partial: only fields the operator overrode
+    "lineItems": [ /* full replacement array */ ]
+  }
+}
+
+// Response 200
+{
+  "syncStatus": "synced",
+  "lastSyncedAt": "2026-05-23T14:23:14Z",
+  "resolution": "keep_local" | "accept_qbo" | "merge"
+}
+
+// Errors
+// 409 NOT_IN_DRIFT — current sync_status is not 'drift'; UI should refresh
+// 409 NOT_CONNECTED
+// 422 INVALID_MERGE — strategy='merge' but `merged` is missing or fails the invoice Zod schema
+// 502 QBO_ERROR — when strategy='keep_local' or 'merge' triggers an outbound QBO update
+```
+
+`keep_local` pushes the local row to QBO (overwrite). `accept_qbo` writes the pulled-canonical values back into the local row. `merge` applies `merged` to the local row, then pushes. The route is the single authoritative drift-resolver — the `reconcile-drift` Skill (agent-mediated escape) calls this same endpoint after collecting the operator's choice via `request_user_input`.
+
+**`GET /api/invoicing/qbo/status`** — connection state + last sync. Drives the `/invoicing` banner and the Settings → Integrations → QuickBooks Online panel.
+
+```jsonc
+// Response 200
+{
+  "connected": true,
+  "realmId": "9341454031...",
+  "companyName": "Knowles Industry Design Pty Ltd",
+  "connectedAt": "2026-04-12T03:11:00Z",
+  "tokenExpiresAt": "2026-08-12T03:11:00Z",
+  "lastPushAt": "2026-05-23T14:22:01Z",
+  "lastPullAt": "2026-05-23T13:00:00Z",
+  "lastError": null                        // { code, message, at } on the last failed sync
+}
+
+// Response 200 (disconnected)
+{ "connected": false }
+```
+
+The route always returns 200 — `connected: false` is the disconnected case, not an error. Token expiry is computed from the persisted `expires_at` (refresh tokens are auto-refreshed on the next call; the UI shows expiry as a heads-up, not an action item).
+
+**`GET /api/integrations/qbo/connect`** — start the OAuth2 PKCE flow.
+
+```
+GET /api/integrations/qbo/connect
+→ 302 Location: https://appcenter.intuit.com/connect/oauth2?...
+```
+
+The server generates a state token (one-time, 5-minute TTL, stored in-memory), constructs the QBO authorization URL with `scope=com.intuit.quickbooks.accounting`, and redirects. The frontend's `Connect` button is an `<a href="/api/integrations/qbo/connect">` — no fetch needed.
+
+**`GET /api/integrations/qbo/callback`** — OAuth2 redirect target.
+
+```
+GET /api/integrations/qbo/callback?code=AB11...&realmId=934...&state=xyz
+→ 302 Location: /settings?tab=integrations&qbo=connected   (success)
+→ 302 Location: /settings?tab=integrations&qbo=error&reason=<code>  (failure)
+```
+
+Exchanges `code` for tokens, encrypts them (DPAPI on Windows; `.env` key fallback elsewhere), inserts/updates the single `qbo_connection` row, and redirects back into the SPA with a query-string status the Integrations panel reads to show a toast. On `state` mismatch or token-exchange failure, redirects with `qbo=error&reason=...`. The frontend NEVER calls this endpoint directly — it is only invoked by the QBO redirect.
+
+**`POST /api/integrations/qbo/disconnect`** — revoke and clear tokens.
+
+```jsonc
+// Request: no body
+// Response 200 — { ok: true }
+// Errors: 404 NOT_CONNECTED
+```
+
+Calls QBO's revocation endpoint (best-effort — local clear happens regardless), deletes the `qbo_connection` row, emits `qbo.disconnected`. Any in-flight push/pull operations fail with `NOT_CONNECTED` on their next QBO call.
+
+#### Token storage
+
+`qbo_connection` is a single-row table (single-company in v2):
+
+```sql
+CREATE TABLE qbo_connection (
+  id INTEGER PRIMARY KEY CHECK (id = 1),     -- enforce single row
+  realm_id TEXT NOT NULL,
+  company_name TEXT,
+  access_token_encrypted BLOB NOT NULL,
+  refresh_token_encrypted BLOB NOT NULL,
+  expires_at INTEGER NOT NULL,                -- access-token expiry (ms epoch)
+  connected_at INTEGER NOT NULL,
+  last_push_at INTEGER,
+  last_pull_at INTEGER,
+  last_error_json TEXT
+);
+```
+
+Encryption helper lives in `src/storage/secret-vault.ts` — DPAPI via Win32 `CryptProtectData` when `process.platform === 'win32'`, AES-GCM with key from `QBO_TOKEN_KEY` env var otherwise. Tokens never appear in logs, audit entries, or events — only `realmId` and `companyName` are surfaceable.
+
+#### Audit + events
+
+Every sync mutation writes an `audit_log` row with `module='invoicing'`, action in `{ 'invoice.push', 'invoice.pull', 'invoice.reconcile', 'qbo.connect', 'qbo.disconnect' }`, `target_id=invoice.id` (or `null` for connect/disconnect), and `project_id` resolved from the invoice's proposal → project chain. Events emitted: `qbo.invoice_pushed`, `qbo.invoice_pulled`, `qbo.drift_detected`, `qbo.sync_failed`, `qbo.connected`, `qbo.disconnected`.
 
 ---
 

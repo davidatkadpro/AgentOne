@@ -37,7 +37,7 @@ To support `GET /api/<module>/actions` and `<AskAgentMenu>`, the Skill frontmatt
 - `surface?: 'action' | 'ask_agent' | 'both'` — controls whether the Skill appears in the action toolbar, the per-tab Ask-agent menu, or both. Default `'ask_agent'` for module-scoped Skills.
 - `tabs?: string[]` — for `'ask_agent'` surface, which detail-page tabs this Skill applies to (e.g. `['tasks', 'scope']` on a Projects-scoped Skill).
 
-Frontmatter validation is server-side; broken Skills surface in `GET /api/<module>/actions` with `ok: false` and an error, matching the existing pattern at `GET /api/profiles`.
+Frontmatter validation is server-side; broken Skills surface in `GET /api/<module>/actions` with `ok: false` and an error, matching the existing pattern at `GET /api/profiles`. The full schema, response shape, dispatch endpoint, and back-compat behaviour are specced in [`../planning/v2-business-flow.md`](../planning/v2-business-flow.md#action-discovery--dispatch).
 
 ### Server-side convention
 
@@ -58,7 +58,7 @@ The Module's `MODULE.md` does not need to declare this surface — the runtime d
 
 A module's project-scoped tab inside `/projects/:id` (Emails, Proposals, Invoices) does **not** ship a second UI — it renders the same module-list component with a `projectId` filter prop. KPI strips inside project-scoped views recompute the count pills against the filtered set. This is what makes the project-detail-as-hub pattern from ADR-0006 cheap: each module already has the list panel; the project tab is a thin wrapper.
 
-For this to work cleanly, **every module entity with a project relationship carries an indexed `project_id` column**. The 2026-05-23 grill flagged that the `audit_log` table (from [ADR-0004](./0004-modules-as-second-extensibility-primitive.md)) needs the same indexing for the project-detail **Activity** tab; either an explicit `project_id` column on `audit_log` or a consistent `details_json.project_id` key with a generated-column index. The schema change is out of scope for this ADR but called out as the dependency.
+For this to work cleanly, **every module entity with a project relationship carries an indexed `project_id` column**. The 2026-05-23 grill flagged that the `audit_log` table (from [ADR-0004](./0004-modules-as-second-extensibility-primitive.md)) needs the same indexing for the project-detail **Activity** tab; the resolution — an explicit nullable `project_id` column with a partial index `WHERE project_id IS NOT NULL` — is specced in [`../planning/v2-business-flow.md`](../planning/v2-business-flow.md#audit-log) alongside the table definition.
 
 ### The agent is reachable on every screen, never modal
 

@@ -184,6 +184,89 @@ orchestrator would actually use. Broken profiles are surfaced with
 default selection. Switching profiles requires a server restart with
 `AGENT_PROFILE` set; the UI can't change it on the fly today.
 
+### `POST /api/profiles`
+
+Create a new agent profile. Body is the YAML-equivalent JSON shape
+parsed by [`AgentProfileSchema`](../src/profiles/agent-profile.ts);
+`id` lives in the body (not the URL) for create.
+
+```jsonc
+// Request
+{
+  "id": "ops",                          // required; /^[a-z0-9_-]+$/, must be unique
+  "description": "Operational tasks",   // optional
+  "extends": "_base",                   // optional; must reference an existing profile
+  "default_model": "local-fast",        // required unless inherited via extends
+  "default_skills": ["system/filesystem"],
+  "permissions": {                      // optional; defaults applied per schema
+    "skills": { "allow": [], "deny": [] },
+    "experts": { "allow": ["openrouter/sonnet"], "budget_per_call_usd": 0.50 }
+  },
+  "deny_tools": [],
+  "passive_recall": { "enabled": false },
+  "auto_distill":  { "enabled": false }
+}
+
+// Response 201 — the freshly resolved profile (same row shape as GET /api/profiles)
+{
+  "id": "ops",
+  "description": "Operational tasks",
+  "defaultModel": "local-fast",
+  "defaultSkills": ["system/filesystem"],
+  "ok": true
+}
+```
+
+**Errors:**
+- `400` — body fails `AgentProfileSchema` validation. Response: `{ error: 'INVALID', details: Array<{ path: string[], message: string }> }`. The frontend maps `path` directly to `react-hook-form` field names (joined with `.`).
+- `409` — a profile with this `id` already exists, OR the chosen `extends` target doesn't exist.
+
+Server writes the validated body to `profiles/agents/<id>.yaml`. Comments and key ordering are not preserved across edits — the YAML is now a UI-managed artifact, not a hand-edited file.
+
+### `PATCH /api/profiles/:id`
+
+Edit an existing profile in place. Body is a partial update: any keys present overwrite; omitted keys keep their stored value. `id` cannot be changed (rename = delete + create).
+
+```jsonc
+// Request (partial)
+{
+  "description": "Updated description",
+  "permissions": {
+    "experts": { "budget_per_session_usd": 5.00 }
+  }
+}
+
+// Response 200 — the freshly resolved profile after edit
+```
+
+**Errors:**
+- `400` — merged result fails validation. Same `details` shape as POST.
+- `404` — no profile with this id.
+
+Editing the **active boot profile** succeeds and writes the YAML, but the running orchestrator continues to use the in-memory resolved copy from boot. The frontend's Profiles tab shows a persistent "Changes apply on next restart" banner for the active profile per ADR-0006.
+
+### `DELETE /api/profiles/:id`
+
+Delete a profile.
+
+```jsonc
+// Response 200 — { ok: true } on successful delete
+// Response 409 — profile is the active boot profile
+{ "error": "ACTIVE_BOOT_PROFILE", "details": { "id": "researcher" } }
+
+// Response 409 — non-archived sessions reference this profile
+{ "error": "PROFILE_IN_USE", "details": { "id": "ops", "affectedSessions": 3 } }
+
+// Response 409 — profile is `_base` (reserved)
+{ "error": "RESERVED_PROFILE", "details": { "id": "_base" } }
+
+// Response 404 — no profile with this id
+```
+
+The server lists "affected sessions" by counting rows in `sessions` where `agentProfile = :id AND archived = false`. Archived sessions don't block delete — they're read-only and the `PROFILE_MISMATCH 409` guard already prevents reopening them under the wrong profile after restart.
+
+Deleting a profile that other profiles `extends` does **not** auto-cascade — the dependent profiles will start failing to resolve on next read, and `GET /api/profiles` will surface them with `ok: false`. The frontend surfaces this with an `extends` field warning, but the server does not refuse the delete (operator may be intentionally removing the chain).
+
 ### `GET /api/drafts`
 
 Lists every distilled-notes draft under `wiki/drafts/`. Sorted

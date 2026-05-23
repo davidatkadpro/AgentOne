@@ -212,6 +212,7 @@ The reference for *what* each surface contains is [`../FRONTEND-HANDOFF.md`](../
 
 ### P1S1. `POST /api/profiles` — create
 **Status**: ☐ · **Depends on**: —
+- Full contract in [`../FRONTEND-HANDOFF.md#post-apiprofiles`](../FRONTEND-HANDOFF.md).
 - Body validated against the server's Zod profile schema.
 - Writes `profiles/agents/<id>.yaml`; 409 if id already exists.
 - Returns the freshly resolved profile (same shape as `GET /api/profiles` rows).
@@ -219,15 +220,17 @@ The reference for *what* each surface contains is [`../FRONTEND-HANDOFF.md`](../
 
 ### P1S2. `PATCH /api/profiles/:id` — edit
 **Status**: ☐ · **Depends on**: P1S1
-- Partial update; rewrites the YAML preserving comments where possible (or accept full-file rewrite).
-- 404 if not found; 400 with field-level details on schema failure.
+- Full contract in [`../FRONTEND-HANDOFF.md#patch-apiprofilesid`](../FRONTEND-HANDOFF.md).
+- Partial update; full YAML rewrite (comments are not preserved — accepted trade-off, profiles are UI-managed now).
+- 404 if not found; 400 with field-level `details[]` on merged-result validation failure.
 - **Acceptance**: integration test edits a profile and `GET /api/profiles/:id` reflects the change.
 
 ### P1S3. `DELETE /api/profiles/:id` — delete
 **Status**: ☐ · **Depends on**: P1S1
-- 409 if the profile is the active boot profile *or* any non-archived session is bound to it (response carries `affectedSessions: number`).
-- 200 + deletes the YAML otherwise.
-- **Acceptance**: integration test asserts both 409 paths and the success path.
+- Full contract in [`../FRONTEND-HANDOFF.md#delete-apiprofilesid`](../FRONTEND-HANDOFF.md).
+- 409 with distinct `error` codes: `ACTIVE_BOOT_PROFILE`, `PROFILE_IN_USE` (carries `affectedSessions`), `RESERVED_PROFILE` (for `_base`).
+- 200 + deletes the YAML otherwise. Profiles that other profiles `extends` are not auto-cascaded — dependents start failing on next read.
+- **Acceptance**: integration test asserts all three 409 codes and the success path.
 
 ### P1S4. `GET /api/health` gains `capabilities.pandoc`
 **Status**: ☐ · **Depends on**: —
