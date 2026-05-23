@@ -88,7 +88,7 @@ The reference for *what* each surface contains is [`../FRONTEND-HANDOFF.md`](../
 - **Acceptance**: visual parity with the legacy session list plus the two indicators above.
 
 ### S4. Notification tray
-**Status**: ☐ · **Depends on**: F3, F4, S1
+**Status**: ☐ · **Depends on**: F3, F4, S1, P1S5
 - shadcn `Sheet` anchored right; ~400px wide; manually opened by the bell.
 - Renders each notification: title, body, then (if `kind === 'attention_needed'` and `payload_json.options` is an array of `{ label, value }`) the options as buttons.
 - Clicking an option POSTs the answer to the session and marks the notification resolved server-side; non-options fall back to an `Open in chat` link.
@@ -112,7 +112,8 @@ The reference for *what* each surface contains is [`../FRONTEND-HANDOFF.md`](../
 - Centred max-width column (~760px); no avatars; user messages right-aligned with a subtle background; assistant messages plain prose.
 - Markdown via `react-markdown` + `remark-gfm` + `rehype-highlight`.
 - Auto-scroll to bottom on new content if the user is already near the bottom; otherwise show a `Jump to latest` pill.
-- **Acceptance**: streamed assistant deltas render incrementally; code blocks highlight; long messages don't break the layout.
+- **Extracted as `<MessageList sessionId embedded?>`** so M2 (`<InlineSessionStream>`) reuses the exact renderer. `embedded` switches scroll target from viewport to embedded container and hides the in-flight cancel UI.
+- **Acceptance**: streamed assistant deltas render incrementally; code blocks highlight; long messages don't break the layout; `<MessageList>` is importable from outside the chat route with the props above.
 
 ### C2. Tool call chips
 **Status**: ☐ · **Depends on**: C1
@@ -238,11 +239,20 @@ The reference for *what* each surface contains is [`../FRONTEND-HANDOFF.md`](../
 - Add to the existing `GET /api/health` response under `capabilities: { pandoc: boolean }`.
 - **Acceptance**: response includes the field on a machine with and without pandoc installed.
 
+### P1S5. Notifications HTTP routes
+**Status**: ☐ · **Depends on**: —
+- New routes against the existing `Notifications` service in [`src/modules/notifications.ts`](../../src/modules/notifications.ts) — backing service is already in place; only the HTTP surface is missing.
+  - `GET /api/notifications?includeResolved=<bool>` — list (default excludes `status='resolved'|'dismissed'`).
+  - `PATCH /api/notifications/:id` — body `{ status: 'read'|'resolved'|'dismissed' }`; returns the updated notification. Emits `notification.updated` / `notification.resolved` so other open clients reconcile.
+  - `POST /api/sessions/:id/notifications/:notifId/answer` — body `{ value: string }`. Server resolves the notification (status → 'resolved') AND posts the value as a user message on the session in one transaction. Single round-trip exists so the tray's option-click feels instant; without it the tray would chain two mutations.
+- Full contract in [`./phase-1.5-frontend-impl-spec.md#22-rest-api-types`](./phase-1.5-frontend-impl-spec.md).
+- **Acceptance**: integration tests for all three routes; S4 (Notification tray) can answer an attention-needed notification end-to-end with one click.
+
 ---
 
 ## P2 — Shared module components (built in 1.5, consumed in 2+)
 
-Each lives under `src/web/components/module/` and is pure render + callbacks; state stays in TanStack Query (REST) and Zustand (WS). All five ship with a Storybook entry (or a dev route at `/__dev/components` if Storybook isn't justified for one workspace).
+Each lives under `src/web/components/module/` and is pure render + callbacks; state stays in TanStack Query (REST) and Zustand (WS). All five ship with an entry on the dev-only `/__dev/components` route (pinned in the impl spec §8 — no Storybook for Phase 1.5).
 
 ### M1. `<ActionToolbar module contextId actions />`
 **Status**: ☐ · **Depends on**: F3, P2S1

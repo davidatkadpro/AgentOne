@@ -146,11 +146,13 @@ export interface Turn {
 export interface ToolCallRecord {
   id: string                      // server's storage id
   toolCallId: string              // LLM-side id (used to correlate with WS events)
+  turnId: string                  // owning turn — used to bucket by-turn in the store
   tool: string
   argsJson?: string               // populated on /api/sessions/:id detail responses
   resultJson?: string
   ok?: boolean
   durationMs?: number
+  createdAt: number               // server always sends this on session-detail rows
 }
 
 /** Live tool-call state in the Zustand store. Differs from ToolCallRecord
@@ -180,13 +182,13 @@ export interface NotificationOption {
 }
 
 export interface Notification {
-  id: string
+  id: number                              // server PK is INTEGER AUTOINCREMENT
   kind: 'info' | 'attention_needed' | 'error'
   title: string
-  body: string | null
+  body: string                            // server schema marks NOT NULL
   sessionId: string | null
   module: string | null
-  payload: NotificationPayload | null    // parsed payload_json
+  payload: NotificationPayload            // parsed payload_json; server stores `{}` when absent
   status: 'unread' | 'read' | 'resolved' | 'dismissed'
   createdAt: number
   resolvedAt: number | null
@@ -322,23 +324,35 @@ export type DeleteProfileError =
 export interface ListDraftsResponse { drafts: DraftEntry[] }
 
 // GET /api/commands
-export interface ListCommandsResponse { commands: Array<{ name: string; description: string; args?: unknown }> }
+export interface CommandDescriptor {
+  name: string
+  description: string
+  usage: string                          // e.g. "/clear" or "/skill <name> [text]"
+  requiresSession: boolean                // when true, the slash overlay disables the entry on global routes
+  source: 'system' | 'skill'              // system = built-in command; skill = Skill slash_command
+  skill?: string                          // qualified Skill name (e.g. "experts/consult") — only when source === 'skill'
+}
+export interface ListCommandsResponse { commands: CommandDescriptor[] }
 
 // POST /api/sessions/:id/command
 export interface RunCommandRequest { name: string; args?: Record<string, unknown>; text?: string }
 export interface RunCommandResponse { result: CommandResult }   // CommandResult mirrors src/server/commands/types.ts
 
-// GET /api/notifications
+// GET /api/notifications  — added by punch list P1S5
+export interface ListNotificationsRequest { includeResolved?: boolean }
 export interface ListNotificationsResponse { notifications: Notification[] }
 
-// PATCH /api/notifications/:id
+// PATCH /api/notifications/:id  — added by punch list P1S5
 export interface UpdateNotificationRequest { status: 'read' | 'resolved' | 'dismissed' }
 export interface UpdateNotificationResponse { notification: Notification }
 
-// POST /api/sessions/:id/notifications/:notifId/answer
-//   — convenience route for the tray's option-button click. Server resolves the
-//     notification AND posts the value as a user message in one shot. Spec'd
-//     here so the tray doesn't have to chain two requests.
+// POST /api/sessions/:id/notifications/:notifId/answer  — added by punch list P1S5
+//   Convenience route for the tray's option-button click. Server resolves the
+//   notification AND posts the value as a user message in one shot, so the
+//   tray's "click option → answer agent" feels instant (single round-trip).
+//   Without this route the tray would chain PATCH /api/notifications/:id then
+//   POST /api/sessions/:id/messages — workable but doubles latency on the
+//   most-used tray action.
 export interface AnswerNotificationRequest { value: string }
 export interface AnswerNotificationResponse { ok: true }
 
@@ -367,7 +381,7 @@ export interface ApiErrorBody {
 }
 ```
 
-> Note: `POST /api/sessions/:id/notifications/:notifId/answer` is new. The tray needs a single round-trip (answer + resolve) so option clicks feel instant. Treat this as a **planned addition to the v1 contract** — if the server team prefers a two-call flow instead, the tray code is the only client that changes.
+> **Server work required.** The three notifications routes above (`GET /api/notifications`, `PATCH /api/notifications/:id`, `POST /api/sessions/:id/notifications/:notifId/answer`) do not exist yet — tracked as **P1S5** in the punch list. S4 (Notification tray) blocks on them. The single-shot answer route is an explicit choice over two-step chaining; if dropped, the tray's option-click path becomes two sequential mutations.
 
 ### 2.3 WebSocket event types (`src/web/types/events.ts`)
 
@@ -467,7 +481,7 @@ export const queryKeys = {
 | Mutation | Invalidates |
 |---|---|
 | `useCreateSession` | `sessions.list()` (then router navigates to `/chat/<id>` which mounts `sessions.detail`) |
-| `useSendMessage` | nothing — assistant deltas arrive via WS, server returns `{ ok: true }` immediately |
+| `useSendMessage` | nothing in TanStack cache. **Optimistically appends** a placeholder user turn to `session-stream.turns` (id: `optimistic-<uuid>`) so the composer feels instant. `message.user.received` (WS) reconciles by replacing the placeholder; on mutation failure the placeholder is removed and the error surfaces as a toast |
 | `useCancelTurn` | nothing — `turn.cancelled` event closes the loop |
 | `useRenameSession` | `sessions.list()`, `sessions.detail(id)` |
 | `useCreateProfile` | `profiles.list()` |
@@ -488,6 +502,7 @@ export const queryKeys = {
 | `drafts.pruned` | `drafts.list()` |
 | `skill.loaded`, `skill.load_failed` | `skills.list()` |
 | `embedding.indexed`, `embedding.failed` | nothing — surface in console only |
+| **WS reconnect** (status: `reconnecting → open`) | `sessions.detail(<every-subscribed-id>)` *and* call `session-stream.hydrateFromDetail()` on refetch — closes the resync gap for events missed during the disconnect |
 
 Everything else (message deltas, tool chips, recall, context compression, expert spend) is **Zustand-only** — TanStack Query never knows about per-turn state. Reasoning: turn-time deltas would thrash any cache they touched, and the cache isn't the right consumer anyway (the consumer is `<MessageList>`, which subscribes to the store directly).
 
@@ -620,7 +635,8 @@ interface WsState {
   status: 'connecting' | 'open' | 'closed' | 'reconnecting'
   reconnectAttempts: number
   /** Sessions the client is currently subscribed to (`?sessionId=` on the WS or
-   *  follow-up subscribe messages). */
+   *  follow-up subscribe messages). Reference-counted internally so two
+   *  components subscribing to the same session don't unsubscribe each other. */
   subscribedSessions: Set<string>
   /** Imperative entry point — call once at app root. */
   connect(): void
@@ -629,7 +645,11 @@ interface WsState {
 }
 ```
 
+**The only consumer-facing API is the `useSessionSubscription(sessionId)` hook**, defined in `lib/ws.ts`. It subscribes on mount, unsubscribes on unmount, and ref-counts so `<ChatRoute>` and `<InlineSessionStream>` can both subscribe to the same session without stepping on each other. Components must NOT call `ws.subscribe/unsubscribe` directly — the hook is the single source of truth for who's listening to what. The Chat route and the spawned `<InlineSessionStream>` are the only callers in Phase 1.5.
+
 The WS module (`lib/ws.ts`) dispatches every parsed event to **all three** stores: `session-stream`, `notifications`, and (via §3's WS→cache invalidation table) the `QueryClient`. The dispatch fanout is one function — easy to test, easy to add another consumer.
+
+**Reconnect resync.** When the WS transitions `reconnecting → open`, the client cannot trust its local session-stream state because individual deltas may have been missed during the gap. The `connect()` handler invalidates `sessions.detail(<id>)` for every currently-subscribed session and calls `session-stream.hydrateFromDetail()` on the refetched payload — this rebuilds turns + tool-calls from the authoritative server snapshot and resumes live deltas from there. Notifications use the same pattern (handled by `useNotifications()` refetch in §4.2).
 
 ```ts
 // lib/ws.ts (sketch)
@@ -920,14 +940,29 @@ createRoot(document.getElementById('root')!).render(
 
 ## 8. Build + dev wiring
 
-- **Dev**: `pnpm web:dev` runs `vite dev` on port `5174` and Fastify on `3000`. Vite is configured with `server.proxy = { '/api': 'http://localhost:3000', '/ws': { target: 'ws://localhost:3000', ws: true } }` so the React app talks to the dev Fastify without CORS plumbing.
+- **Dev**: `pnpm web:dev` runs `vite dev` on port `5174` and Fastify on `3737` (the server's default — see `PORT` in [`src/server/config.ts`](../../src/server/config.ts)). Vite is configured with `server.proxy = { '/api': 'http://localhost:3737', '/ws': { target: 'ws://localhost:3737', ws: true } }` so the React app talks to the dev Fastify without CORS plumbing.
 - **Build**: `pnpm web:build` emits to `src/web/dist/`. Fastify, when started with `FRONTEND_DIR=./src/web/dist`, serves this as static. SPA fallback: the static handler is configured to serve `index.html` for any unknown path that doesn't start with `/api` or `/ws`.
 - **Test**: `pnpm web:test` runs Vitest in jsdom mode. Shared logic in `lib/` is tested without React (faster, no DOM); component tests use `@testing-library/react`. Suites live under `src/web/tests/` or co-located `*.test.tsx`.
 - **Lint**: `pnpm web:lint` — ESLint with `@typescript-eslint`, `eslint-plugin-react`, `eslint-plugin-react-hooks`. Tailwind class sorting via `prettier-plugin-tailwindcss`.
+- **Component dev surface**: a route at `/__dev/components` (only mounted when `import.meta.env.DEV`) renders the five module components (M1–M5) + `<ModulePanel>` + `<EmptyState>` against mock data. No Storybook in Phase 1.5 — the surface area doesn't justify the dependency. Revisit if it grows past ~20 components.
 
 ---
 
-## 9. What this spec does NOT pin
+## 9. Loading + error UI conventions
+
+Pinned so every route doesn't reinvent its skeleton.
+
+- **Loading**: every route wraps its primary content in `<RouteSkeleton>` (lives in `components/shared/`). Variants: `chat` (centred prose-width pulse blocks matching the message column), `master-detail` (two-column shimmer for module routes), `list` (rows for sessions / drafts / skills / commands). The skeleton renders while ANY `useQuery` the route depends on is in its `pending` initial state. Background refetches do NOT re-show the skeleton — TanStack Query's `isFetching && !isLoading` is the trigger to dim, not to replace.
+- **Errors**: every route is wrapped in `<RouteErrorBoundary>` (a thin wrapper over React's `<ErrorBoundary>` + `react-error-boundary`). It renders a centred card with the error message, a "Retry" button (calls `queryClient.invalidateQueries()` for the route's keys), and an "Open in console" button (logs the full error). Mount this in the router config, NOT per-route, so deeply-nested throws bubble up cleanly.
+- **WS disconnected**: the top bar shows a small amber dot next to the model chip when `ws.status !== 'open'`. Tooltip carries the reconnect attempt count. The chat composer stays enabled (the server still accepts messages over HTTP) but a meta-row appears in `<MessageList>` for the duration: *"Live updates disconnected — reconnecting…"* — cleared on `reconnecting → open`.
+- **Mutation errors**: surfaced via toast (sonner), NOT the route's error boundary. The boundary is for unrecoverable query/render failures; a failed POST is a transient state the caller handles in-component.
+- **Empty states**: every list route has an `<EmptyState icon title body action?>` variant when its query returns `[]`. Distinct from loading and error.
+
+The four states (loading / loaded-empty / loaded-populated / errored) are mutually exclusive at the route level; the punch list items don't itemise them individually because this section is the convention.
+
+---
+
+## 10. What this spec does NOT pin
 
 - **Module-specific content** (Email list rendering, Projects detail tabs, Proposals split view, Invoicing drift block). Those land in Phases 2–5; the spec defines only the shared shell + the props those routes consume.
 - **Internal markup of shadcn primitives.** Use shadcn directly (Button, Sheet, Dialog, AlertDialog, Command, DropdownMenu, Tabs, Tooltip, Toaster); the design system is the shadcn defaults plus Tailwind tweaks.
@@ -936,7 +971,7 @@ createRoot(document.getElementById('root')!).render(
 
 ---
 
-## 10. Cross-references
+## 11. Cross-references
 
 - Punch list (work items, statuses): [`./phase-1.5-react-punchlist.md`](./phase-1.5-react-punchlist.md)
 - Shell ADR (layout, notification pattern): [`../adr/0006-frontend-shell-architecture.md`](../adr/0006-frontend-shell-architecture.md)
