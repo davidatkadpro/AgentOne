@@ -879,12 +879,25 @@ Query + Zustand + shadcn/Tailwind + react-hook-form + zod + react-markdown.
 - Proposals panel: list, detail view, "generate proposal" button.
 - Pandoc renderer as optional polish.
 
+> Frontend impl spec + tracked work breakdown:
+> [`./phase-4-proposals-impl-spec.md`](./phase-4-proposals-impl-spec.md) (folder
+> layout, types, split-view layout, status state machine, backend route gaps)
+> and [`./phase-4-proposals-punchlist.md`](./phase-4-proposals-punchlist.md)
+> (34 tracked items). Realistic estimate: **7-10 days**.
+
 ### Phase 5 — Invoicing + QBO (~2–3 weeks, heaviest)
 - Local-only first: schema, `create-invoice`, `record-payment`,
   `budget-summary` skills, Invoicing panel.
 - QBO OAuth flow + push (most useful direction first).
 - QBO pull poller + drift detection + `reconcile-drift` skill.
 - Multi-company stays deferred.
+
+> Frontend impl spec + tracked work breakdown:
+> [`./phase-5-invoicing-impl-spec.md`](./phase-5-invoicing-impl-spec.md) (folder
+> layout, types, QBO endpoint client wiring, drift reconcile UI, secret-vault
+> + token storage, OAuth flow) and
+> [`./phase-5-invoicing-punchlist.md`](./phase-5-invoicing-punchlist.md) (42
+> tracked items — the heaviest punch list). Realistic estimate: **10-14 days**.
 
 ---
 
