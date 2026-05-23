@@ -181,4 +181,46 @@ slash_command: dive`,
     const idx = await loadSkillIndex({ root })
     expect(idx.bySlashCommand.get('dive')?.qualifiedName).toBe('research/deep-dive')
   })
+
+  it('discovers Module-scoped skills via moduleSkillRoots and namespaces them by module', async () => {
+    const moduleSkillsDir = join(root, '_mod', 'projects', 'skills')
+    await mkdir(join(moduleSkillsDir, 'create-project'), { recursive: true })
+    await writeFile(
+      join(moduleSkillsDir, 'create-project', 'SKILL.md'),
+      `---\nname: create-project\ndescription: Create a new project.\n---\n\n# create-project\n`,
+    )
+
+    const idx = await loadSkillIndex({
+      root,
+      moduleSkillRoots: [{ module: 'projects', root: moduleSkillsDir }],
+    })
+
+    const manifest = idx.skills.get('projects/create-project')
+    expect(manifest).toBeDefined()
+    expect(manifest?.category).toBe('projects')
+    expect(manifest?.name).toBe('create-project')
+  })
+
+  it('rejects qualifiedName collisions between top-level and Module skills', async () => {
+    await makeCategory('projects', 'Top-level conflict')
+    await makeSkill({
+      category: 'projects',
+      name: 'create-project',
+      frontmatter: 'name: create-project\ndescription: top-level dup',
+    })
+
+    const moduleSkillsDir = join(root, '_mod', 'projects', 'skills')
+    await mkdir(join(moduleSkillsDir, 'create-project'), { recursive: true })
+    await writeFile(
+      join(moduleSkillsDir, 'create-project', 'SKILL.md'),
+      `---\nname: create-project\ndescription: module dup\n---\n\n# x\n`,
+    )
+
+    await expect(
+      loadSkillIndex({
+        root,
+        moduleSkillRoots: [{ module: 'projects', root: moduleSkillsDir }],
+      }),
+    ).rejects.toBeInstanceOf(SkillLoadError)
+  })
 })

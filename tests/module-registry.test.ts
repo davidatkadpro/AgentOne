@@ -4,6 +4,9 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createDatabase, type Db } from '@/storage/db.js'
 import { bootModules, type ModuleRegistry } from '@/modules/registry.js'
+import { EventBus } from '@/core/events.js'
+import { createAuditLog } from '@/modules/audit-log.js'
+import type { StorageAdapter } from '@/storage/adapter.js'
 
 interface Harness {
   db: Db
@@ -290,5 +293,69 @@ describe('bootModules — manifest validation', () => {
     const registry = await bootModules({ db: h.db, rootDir: h.rootDir })
     expect(registry.get('just-a-folder')).toBeUndefined()
     expect(registry.get('real')?.status).toBe('active')
+  })
+})
+
+describe('bootModules — service factories', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = newHarness()
+  })
+  afterEach(() => {
+    disposeHarness(h)
+  })
+
+  const stubStorage = {} as unknown as StorageAdapter
+
+  it('runs the factory after a successful migration and attaches the service to the handle', async () => {
+    writeModule(h.rootDir, 'demo', {
+      migrations: [
+        { filename: '001_init.sql', sql: 'CREATE TABLE demo_t (id TEXT PRIMARY KEY);' },
+      ],
+    })
+
+    interface DemoService {
+      ping(): string
+    }
+    const factory = (): DemoService => ({ ping: () => 'pong' })
+
+    const registry = await bootModules({
+      db: h.db,
+      rootDir: h.rootDir,
+      factories: { demo: factory },
+      eventBus: new EventBus(),
+      audit: createAuditLog(h.db),
+      storage: stubStorage,
+    })
+
+    const handle = registry.get('demo')
+    expect(handle?.status).toBe('active')
+    expect((handle?.service as DemoService).ping()).toBe('pong')
+  })
+
+  it('marks the module degraded if its factory throws', async () => {
+    writeModule(h.rootDir, 'demo', {
+      migrations: [
+        { filename: '001_init.sql', sql: 'CREATE TABLE demo_t (id TEXT PRIMARY KEY);' },
+      ],
+    })
+
+    const registry = await bootModules({
+      db: h.db,
+      rootDir: h.rootDir,
+      factories: {
+        demo: () => {
+          throw new Error('boom from factory')
+        },
+      },
+      eventBus: new EventBus(),
+      audit: createAuditLog(h.db),
+      storage: stubStorage,
+    })
+
+    const handle = registry.get('demo')
+    expect(handle?.status).toBe('degraded')
+    expect(handle?.degradedReason).toMatch(/boom from factory/)
+    expect(handle?.service).toBeUndefined()
   })
 })

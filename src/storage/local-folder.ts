@@ -43,6 +43,15 @@ export class LocalFolderAdapter implements StorageAdapter {
     return { size: s.size, mtime: s.mtime }
   }
 
+  async ensureDir(path: string): Promise<void> {
+    const abs = this.resolve(path)
+    try {
+      await mkdir(abs, { recursive: true })
+    } catch (err) {
+      throw new StorageError(`ensureDir failed: ${path}`, 'IO', err)
+    }
+  }
+
   async exists(path: string): Promise<boolean> {
     const abs = this.resolve(path)
     try {

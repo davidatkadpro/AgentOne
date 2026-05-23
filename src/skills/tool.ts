@@ -10,6 +10,7 @@ import type { EventBus } from '../core/events.js'
 import type { PermissionGate } from '../profiles/permission-gate.js'
 import type { ExpertSpendTracker } from './expert-spend.js'
 import type { Notifications } from '../modules/notifications.js'
+import type { ModuleRegistry } from '../modules/registry.js'
 
 /**
  * Stable error codes the agent can reason about. Tools should always return
@@ -59,6 +60,9 @@ export interface ToolServices {
   /** User-facing notification tray. Written by request_user_input,
    *  hooks, and modules; read by the UI via REST/WebSocket. */
   notifications: Notifications
+  /** Per-module service handles. Skills reach typed module services via
+   *  e.g. `(ctx.services.modules.get('projects')?.service as ProjectsService)`. */
+  modules: ModuleRegistry
 }
 
 export interface ToolContext {

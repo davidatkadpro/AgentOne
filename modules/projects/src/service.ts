@@ -2,11 +2,24 @@ import { randomUUID } from 'node:crypto'
 import type { Db } from '../../../src/storage/db.js'
 import type { EventBus } from '../../../src/core/events.js'
 import type { AuditActor, AuditLog } from '../../../src/modules/audit-log.js'
+import type { StorageAdapter } from '../../../src/storage/adapter.js'
 
 export class DuplicateProjectNumberError extends Error {
   constructor(public readonly number: string) {
     super(`Project number "${number}" is already in use`)
     this.name = 'DuplicateProjectNumberError'
+  }
+}
+
+export class TaskDependencyCycleError extends Error {
+  constructor(
+    public readonly taskId: string,
+    public readonly dependsOnTaskId: string,
+  ) {
+    super(
+      `Adding dependency ${taskId} → ${dependsOnTaskId} would create a cycle`,
+    )
+    this.name = 'TaskDependencyCycleError'
   }
 }
 
@@ -88,6 +101,11 @@ export interface ActorContext {
   actor: AuditActor
 }
 
+export interface BlockedActorContext extends ActorContext {
+  /** Optional explanation surfaced on `task.blocked` events. */
+  reason?: string | null
+}
+
 export interface ListProjectsOptions {
   status?: EntityStatus[]
   limit?: number
@@ -101,12 +119,27 @@ export interface ProjectsService {
   listPhases(projectId: string): Phase[]
   addTask(input: AddTaskInput, ctx: ActorContext): Task
   listTasks(projectId: string): Task[]
+  setProjectStatus(id: string, status: EntityStatus, ctx: ActorContext): void
+  setPhaseStatus(id: string, status: EntityStatus, ctx: ActorContext): void
+  setTaskStatus(id: string, status: EntityStatus, ctx: BlockedActorContext): void
+  setDependency(input: TaskDependencyInput, ctx: ActorContext): void
+  removeDependency(input: TaskDependencyInput, ctx: ActorContext): void
+  getBlockers(taskId: string): Task[]
+}
+
+export interface TaskDependencyInput {
+  taskId: string
+  dependsOnTaskId: string
 }
 
 export interface ProjectsServiceDeps {
   db: Db
   eventBus: EventBus
   audit: AuditLog
+  /** Optional — when present, createProject eagerly creates the project's
+   *  folder tree (`<folderPath>`, `<folderPath>/in`, `<folderPath>/drafts`).
+   *  Tests that don't care about the filesystem can omit it. */
+  storage?: StorageAdapter
 }
 
 interface ProjectRow {
@@ -212,6 +245,18 @@ function rowToProject(row: ProjectRow): Project {
   }
 }
 
+// Filesystem-illegal characters across Windows / macOS / Linux. Collapsed
+// whitespace runs to single spaces and trim. Folder structure for a project
+// becomes `<number> - <slug>` so an empty slug shouldn't happen in practice;
+// fall back to '_' if the caller passed an entirely-illegal name.
+function sanitizeSlug(name: string): string {
+  const cleaned = name
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return cleaned.length > 0 ? cleaned : '_'
+}
+
 function isUniqueViolation(err: unknown, column: string): boolean {
   if (!(err instanceof Error)) return false
   const code = (err as { code?: string }).code
@@ -262,12 +307,57 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
   const listTasksStmt = deps.db.prepare(
     'SELECT * FROM task WHERE project_id = ? ORDER BY rowid ASC',
   )
+  const updateProjectStatusStmt = deps.db.prepare(
+    `UPDATE project SET status = ?, updated_at = ?,
+       completed_at = CASE WHEN ? = 'completed' THEN ? ELSE completed_at END
+     WHERE id = ?`,
+  )
+  const updatePhaseStatusStmt = deps.db.prepare(
+    `UPDATE phase SET status = ?, updated_at = ?,
+       completed_at = CASE WHEN ? = 'completed' THEN ? ELSE completed_at END
+     WHERE id = ?`,
+  )
+  const updateTaskStatusStmt = deps.db.prepare(
+    `UPDATE task SET status = ?, updated_at = ?,
+       completed_at = CASE WHEN ? = 'completed' THEN ? ELSE completed_at END
+     WHERE id = ?`,
+  )
+  const getTaskProjectIdStmt = deps.db.prepare(
+    'SELECT project_id FROM task WHERE id = ?',
+  )
+  const getPhaseProjectIdStmt = deps.db.prepare(
+    'SELECT project_id FROM phase WHERE id = ?',
+  )
+  const insertDependencyStmt = deps.db.prepare(
+    'INSERT INTO task_dependency (task_id, depends_on_task_id) VALUES (?, ?)',
+  )
+  const deleteDependencyStmt = deps.db.prepare(
+    'DELETE FROM task_dependency WHERE task_id = ? AND depends_on_task_id = ?',
+  )
+  const listDependenciesStmt = deps.db.prepare(
+    `SELECT t.* FROM task t
+     JOIN task_dependency d ON d.depends_on_task_id = t.id
+     WHERE d.task_id = ?
+     ORDER BY t.rowid ASC`,
+  )
+  // Walk dependsOn edges starting from `from`; if we ever reach `target`, a cycle
+  // would be created by inserting (target → from).
+  const reachableStmt = deps.db.prepare(
+    `WITH RECURSIVE reach(id) AS (
+       SELECT depends_on_task_id FROM task_dependency WHERE task_id = ?
+       UNION
+       SELECT d.depends_on_task_id FROM task_dependency d JOIN reach r ON r.id = d.task_id
+     )
+     SELECT 1 AS hit FROM reach WHERE id = ? LIMIT 1`,
+  )
 
   return {
     createProject(input, ctx) {
       const id = randomUUID()
       const now = Date.now()
       const metadata = input.metadata ?? {}
+      const folderPath =
+        input.folderPath ?? `projects/${input.number} - ${sanitizeSlug(input.name)}`
       try {
         insertProject.run(
           id,
@@ -275,7 +365,7 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
           input.name,
           input.client ?? null,
           input.description ?? null,
-          input.folderPath ?? null,
+          folderPath,
           JSON.stringify(metadata),
           now,
           now,
@@ -295,11 +385,27 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
         client: input.client ?? null,
         description: input.description ?? null,
         status: 'pending',
-        folderPath: input.folderPath ?? null,
+        folderPath,
         metadata,
         createdAt: now,
         updatedAt: now,
         completedAt: null,
+      }
+
+      if (deps.storage) {
+        const storage = deps.storage
+        // Best-effort eager folder creation. Errors don't roll back the row —
+        // the project record is authoritative; folder absence shows up later
+        // as a UI signal (or the operator manually creates it).
+        void (async () => {
+          try {
+            await storage.ensureDir(folderPath)
+            await storage.ensureDir(`${folderPath}/in`)
+            await storage.ensureDir(`${folderPath}/drafts`)
+          } catch {
+            // Swallow — see comment above.
+          }
+        })()
       }
 
       deps.audit.record({
@@ -465,6 +571,141 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
     listTasks(projectId) {
       const rows = listTasksStmt.all(projectId) as TaskRow[]
       return rows.map(rowToTask)
+    },
+
+    setProjectStatus(id, status, ctx) {
+      const now = Date.now()
+      const info = updateProjectStatusStmt.run(status, now, status, now, id)
+      if (info.changes === 0) {
+        throw new Error(`Project not found: ${id}`)
+      }
+      deps.audit.record({
+        module: 'projects',
+        action: status === 'completed' ? 'project.completed' : 'project.updated',
+        entityType: 'project',
+        entityId: id,
+        actor: ctx.actor,
+        payload: { status },
+      })
+      void deps.eventBus.emit(
+        status === 'completed'
+          ? { type: 'project.completed', projectId: id, ts: now }
+          : { type: 'project.updated', projectId: id, ts: now },
+      )
+    },
+
+    setPhaseStatus(id, status, ctx) {
+      const phaseRow = getPhaseProjectIdStmt.get(id) as { project_id: string } | undefined
+      if (!phaseRow) {
+        throw new Error(`Phase not found: ${id}`)
+      }
+      const now = Date.now()
+      updatePhaseStatusStmt.run(status, now, status, now, id)
+      deps.audit.record({
+        module: 'projects',
+        action: status === 'completed' ? 'phase.completed' : 'phase.updated',
+        entityType: 'phase',
+        entityId: id,
+        actor: ctx.actor,
+        payload: { status, projectId: phaseRow.project_id },
+      })
+      if (status === 'completed') {
+        void deps.eventBus.emit({
+          type: 'phase.completed',
+          projectId: phaseRow.project_id,
+          phaseId: id,
+          ts: now,
+        })
+      }
+    },
+
+    setDependency(input, ctx) {
+      if (input.taskId === input.dependsOnTaskId) {
+        // The DB CHECK would catch this too; surface the same intent earlier
+        // so the SqliteError message doesn't leak through.
+        throw new Error('A task cannot depend on itself')
+      }
+      // Walking from dependsOnTaskId — if we can reach input.taskId by
+      // following existing dependsOn edges, adding the new edge creates a cycle.
+      const hit = reachableStmt.get(input.dependsOnTaskId, input.taskId) as
+        | { hit: number }
+        | undefined
+      if (hit) {
+        throw new TaskDependencyCycleError(input.taskId, input.dependsOnTaskId)
+      }
+      insertDependencyStmt.run(input.taskId, input.dependsOnTaskId)
+      deps.audit.record({
+        module: 'projects',
+        action: 'task.dependency_added',
+        entityType: 'task',
+        entityId: input.taskId,
+        actor: ctx.actor,
+        payload: { dependsOnTaskId: input.dependsOnTaskId },
+      })
+    },
+
+    removeDependency(input, ctx) {
+      const info = deleteDependencyStmt.run(input.taskId, input.dependsOnTaskId)
+      if (info.changes === 0) return
+      deps.audit.record({
+        module: 'projects',
+        action: 'task.dependency_removed',
+        entityType: 'task',
+        entityId: input.taskId,
+        actor: ctx.actor,
+        payload: { dependsOnTaskId: input.dependsOnTaskId },
+      })
+    },
+
+    getBlockers(taskId) {
+      const rows = listDependenciesStmt.all(taskId) as TaskRow[]
+      return rows.map(rowToTask)
+    },
+
+    setTaskStatus(id, status, ctx) {
+      const row = getTaskProjectIdStmt.get(id) as { project_id: string } | undefined
+      if (!row) {
+        throw new Error(`Task not found: ${id}`)
+      }
+      const now = Date.now()
+      updateTaskStatusStmt.run(status, now, status, now, id)
+      const reason = ctx.reason ?? null
+      deps.audit.record({
+        module: 'projects',
+        action:
+          status === 'completed'
+            ? 'task.completed'
+            : status === 'blocked'
+              ? 'task.blocked'
+              : 'task.updated',
+        entityType: 'task',
+        entityId: id,
+        actor: ctx.actor,
+        payload: { status, projectId: row.project_id, reason },
+      })
+      if (status === 'completed') {
+        void deps.eventBus.emit({
+          type: 'task.completed',
+          projectId: row.project_id,
+          taskId: id,
+          ts: now,
+        })
+      } else if (status === 'blocked') {
+        void deps.eventBus.emit({
+          type: 'task.blocked',
+          projectId: row.project_id,
+          taskId: id,
+          reason,
+          ts: now,
+        })
+      } else {
+        void deps.eventBus.emit({
+          type: 'task.updated',
+          projectId: row.project_id,
+          taskId: id,
+          ts: now,
+        })
+      }
     },
   }
 }

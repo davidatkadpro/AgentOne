@@ -11,6 +11,7 @@ import type { HybridRecall } from '../src/search/hybrid.js'
 import type { PermissionGate } from '../src/profiles/permission-gate.js'
 import type { ToolContext, ToolServices } from '../src/skills/tool.js'
 import type { Notifications } from '../src/modules/notifications.js'
+import type { ModuleRegistry } from '../src/modules/registry.js'
 
 export interface FakeProviderOptions {
   id?: string
@@ -91,6 +92,7 @@ export function fakeServices(overrides: Partial<ToolServices> = {}): ToolService
     modelProfiles: new Map<string, ModelProfile>(),
     eventBus: new EventBus(),
     notifications: {} as unknown as Notifications,
+    modules: { get: () => undefined, list: () => [] } as ModuleRegistry,
     ...overrides,
   }
 }

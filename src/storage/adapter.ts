@@ -31,6 +31,10 @@ export interface StorageAdapter {
   read(path: string): Promise<StorageReadResult>
   readText(path: string): Promise<string>
   write(path: string, content: Buffer | string): Promise<StorageWriteResult>
+  /** Idempotently create a directory (and its parents). Used by Modules
+   *  that lay out folder hierarchies — e.g. projects creates the
+   *  per-project tree at creation time. */
+  ensureDir(path: string): Promise<void>
   exists(path: string): Promise<boolean>
   delete(path: string): Promise<void>
   list(prefix?: string): AsyncIterable<StorageListEntry>

@@ -1,8 +1,11 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Db } from '../storage/db.js'
+import type { EventBus } from '../core/events.js'
+import type { StorageAdapter } from '../storage/adapter.js'
 import { parseFrontmatter } from '../memory/wiki/frontmatter.js'
 import { applyModuleMigrations, type Migration } from './migrations.js'
+import type { AuditLog } from './audit-log.js'
 
 export interface ModuleManifest {
   name: string
@@ -19,6 +22,10 @@ export interface ModuleHandle {
   rootPath: string
   status: 'active' | 'degraded'
   degradedReason?: string
+  /** Module-specific service instance (`unknown` here because each Module
+   *  has its own typed surface; consumers cast). Present only when status
+   *  is 'active' AND a factory was registered for this Module. */
+  service?: unknown
 }
 
 export interface ModuleRegistry {
@@ -26,10 +33,34 @@ export interface ModuleRegistry {
   list(): ModuleHandle[]
 }
 
+export interface ModuleServiceContext {
+  db: Db
+  eventBus: EventBus
+  audit: AuditLog
+  storage: StorageAdapter
+  /** Snapshot of modules booted so far — keyed by name. A factory may read
+   *  from this to wire cross-module references (e.g. `email` reading the
+   *  `projects` service). Modules later in topo order see modules earlier in
+   *  the order; the registry is built up incrementally. */
+  modules: ModuleRegistry
+}
+
+export type ModuleServiceFactory = (ctx: ModuleServiceContext) => unknown
+
 export interface BootModulesOptions {
   db: Db
   /** Directory containing one folder per Module. */
   rootDir: string
+  /** Optional service factories keyed by Module name. The factory runs only
+   *  after migrations succeed; its return value becomes ModuleHandle.service.
+   *  Modules without a factory still boot (manifest + migrations) but expose
+   *  no service. */
+  factories?: Record<string, ModuleServiceFactory>
+  /** Required when any factory will be called — passed through to factories.
+   *  Optional in tests that only exercise discovery/migration. */
+  eventBus?: EventBus
+  audit?: AuditLog
+  storage?: StorageAdapter
 }
 
 export async function bootModules(opts: BootModulesOptions): Promise<ModuleRegistry> {
@@ -37,6 +68,13 @@ export async function bootModules(opts: BootModulesOptions): Promise<ModuleRegis
   const dependencyIssues = findDependencyIssues(discovered)
   const ordered = topoSort(discovered)
   const handles = new Map<string, ModuleHandle>()
+
+  // Mutable view that factories can read during boot — see each module that
+  // came before it in topo order.
+  const registryView: ModuleRegistry = {
+    get: (name) => handles.get(name),
+    list: () => Array.from(handles.values()),
+  }
 
   for (const d of ordered) {
     const manifestIssue = validateManifest(d.manifest)
@@ -73,18 +111,39 @@ export async function bootModules(opts: BootModulesOptions): Promise<ModuleRegis
       })
       continue
     }
-    handles.set(d.manifest.name, {
+
+    const handle: ModuleHandle = {
       name: d.manifest.name,
       manifest: d.manifest,
       rootPath: d.rootPath,
       status: 'active',
-    })
+    }
+
+    const factory = opts.factories?.[d.manifest.name]
+    if (factory) {
+      if (!opts.eventBus || !opts.audit || !opts.storage) {
+        handle.status = 'degraded'
+        handle.degradedReason = 'service factory present but service deps (eventBus/audit/storage) missing in bootModules call'
+      } else {
+        try {
+          handle.service = factory({
+            db: opts.db,
+            eventBus: opts.eventBus,
+            audit: opts.audit,
+            storage: opts.storage,
+            modules: registryView,
+          })
+        } catch (err) {
+          handle.status = 'degraded'
+          handle.degradedReason = `service factory threw: ${err instanceof Error ? err.message : String(err)}`
+        }
+      }
+    }
+
+    handles.set(d.manifest.name, handle)
   }
 
-  return {
-    get: (name) => handles.get(name),
-    list: () => Array.from(handles.values()),
-  }
+  return registryView
 }
 
 function validateManifest(manifest: ModuleManifest): string | null {

@@ -58,6 +58,10 @@ export class SkillLoadError extends Error {
 export interface LoadSkillsOptions {
   /** Absolute path to the skills directory. */
   root: string
+  /** Additional Module-scoped skill roots. Each entry's subdirs are scanned
+   *  one level deep for SKILL.md and registered with qualifiedName
+   *  `<module>/<skill-name>` ([[adr-0004]] modules-as-second-primitive). */
+  moduleSkillRoots?: Array<{ module: string; root: string }>
 }
 
 /**
@@ -85,41 +89,54 @@ export async function loadSkillIndex(opts: LoadSkillsOptions): Promise<SkillInde
     const categoryFolder = join(opts.root, catEnt.name)
     const category = await readCategory(categoryFolder, catEnt.name)
     if (category) categories.set(category.name, category)
+    await loadSkillsFromDir(categoryFolder, catEnt.name, skills, bySlashCommand)
+  }
 
-    const skillEntries = await readdir(categoryFolder, { withFileTypes: true })
-    for (const skillEnt of skillEntries) {
-      if (!skillEnt.isDirectory()) continue
-      const skillFolder = join(categoryFolder, skillEnt.name)
-      const skillMdPath = join(skillFolder, 'SKILL.md')
-      if (!(await pathExists(skillMdPath))) continue
-      const manifest = await readSkill(skillMdPath, catEnt.name, skillFolder)
-      if (skills.has(manifest.qualifiedName)) {
-        throw new SkillLoadError(
-          `Duplicate skill name: ${manifest.qualifiedName}`,
-          'DUPLICATE_SKILL',
-        )
-      }
-      if (manifest.slashCommand) {
-        if (RESERVED_SLASH_COMMANDS.has(manifest.slashCommand)) {
-          throw new SkillLoadError(
-            `Skill ${manifest.qualifiedName} uses reserved slash_command "${manifest.slashCommand}"`,
-            'SLASH_COLLISION',
-          )
-        }
-        const existing = bySlashCommand.get(manifest.slashCommand)
-        if (existing) {
-          throw new SkillLoadError(
-            `slash_command "${manifest.slashCommand}" claimed by ${existing.qualifiedName} and ${manifest.qualifiedName}`,
-            'SLASH_COLLISION',
-          )
-        }
-        bySlashCommand.set(manifest.slashCommand, manifest)
-      }
-      skills.set(manifest.qualifiedName, manifest)
-    }
+  for (const modRoot of opts.moduleSkillRoots ?? []) {
+    if (!(await pathExists(modRoot.root))) continue
+    await loadSkillsFromDir(modRoot.root, modRoot.module, skills, bySlashCommand)
   }
 
   return { skills, categories, bySlashCommand }
+}
+
+async function loadSkillsFromDir(
+  parentFolder: string,
+  qualifier: string,
+  skills: Map<string, SkillManifest>,
+  bySlashCommand: Map<string, SkillManifest>,
+): Promise<void> {
+  const skillEntries = await readdir(parentFolder, { withFileTypes: true })
+  for (const skillEnt of skillEntries) {
+    if (!skillEnt.isDirectory()) continue
+    const skillFolder = join(parentFolder, skillEnt.name)
+    const skillMdPath = join(skillFolder, 'SKILL.md')
+    if (!(await pathExists(skillMdPath))) continue
+    const manifest = await readSkill(skillMdPath, qualifier, skillFolder)
+    if (skills.has(manifest.qualifiedName)) {
+      throw new SkillLoadError(
+        `Duplicate skill name: ${manifest.qualifiedName}`,
+        'DUPLICATE_SKILL',
+      )
+    }
+    if (manifest.slashCommand) {
+      if (RESERVED_SLASH_COMMANDS.has(manifest.slashCommand)) {
+        throw new SkillLoadError(
+          `Skill ${manifest.qualifiedName} uses reserved slash_command "${manifest.slashCommand}"`,
+          'SLASH_COLLISION',
+        )
+      }
+      const existing = bySlashCommand.get(manifest.slashCommand)
+      if (existing) {
+        throw new SkillLoadError(
+          `slash_command "${manifest.slashCommand}" claimed by ${existing.qualifiedName} and ${manifest.qualifiedName}`,
+          'SLASH_COLLISION',
+        )
+      }
+      bySlashCommand.set(manifest.slashCommand, manifest)
+    }
+    skills.set(manifest.qualifiedName, manifest)
+  }
 }
 
 async function readCategory(

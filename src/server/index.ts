@@ -1,10 +1,10 @@
 import Fastify, { type FastifyInstance } from 'fastify'
 import fastifyWebsocket from '@fastify/websocket'
 import fastifyStatic from '@fastify/static'
-import { resolve, dirname } from 'node:path'
+import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { z } from 'zod'
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir, stat } from 'node:fs/promises'
 
 import { loadConfigFromEnv, type ServerConfig } from './config.js'
 import { EventBus } from '../core/events.js'
@@ -27,6 +27,10 @@ import { buildAuditLogHook } from '../skills/audit-log-hook.js'
 import { createDatabase, type Db } from '../storage/db.js'
 import { createConversationStore, type ConversationStore } from '../storage/sqlite.js'
 import { createNotifications } from '../modules/notifications.js'
+import { createAuditLog } from '../modules/audit-log.js'
+import { bootModules, type ModuleRegistry } from '../modules/registry.js'
+import { createProjectsService } from '../../modules/projects/src/service.js'
+import { registerProjectsRoutes } from '../../modules/projects/src/routes.js'
 import { LocalFolderAdapter } from '../storage/local-folder.js'
 import { WikiEngine } from '../memory/wiki/engine.js'
 import { Orchestrator } from '../orchestrator/turn.js'
@@ -78,6 +82,9 @@ export interface AppDeps {
   compressorModel: string
   /** Raw SQLite handle. Used by /backup to drive the online-backup API. */
   db: Db
+  /** Registry of v2 Modules booted from `modules/`. Routes that operate on
+   *  Module-owned state look up their service via this. */
+  modules: ModuleRegistry
 }
 
 const CommandRequestBody = z.object({
@@ -339,7 +346,55 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     })
   })
 
+  // Module-owned routes. Each Module that wants HTTP exposure registers under
+  // /api/v1/<module>/...; routes look up their service via the registry.
+  const projectsHandle = deps.modules.get('projects')
+  if (projectsHandle?.status === 'active' && projectsHandle.service) {
+    const projectsService = projectsHandle.service as Parameters<
+      typeof registerProjectsRoutes
+    >[1]['service']
+    await registerProjectsRoutes(app, { service: projectsService })
+  }
+
   return app
+}
+
+/**
+ * Lightweight scan of `modules/` to collect skill roots. Doesn't validate
+ * MODULE.md beyond existence — the bootModules pass later does the full
+ * manifest check. Returns the list of `{ module, root }` entries to hand
+ * to loadSkillIndex; modules without a `skills/` subdir are skipped.
+ */
+async function discoverModuleSkillRoots(
+  modulesRoot: string,
+): Promise<Array<{ module: string; root: string }>> {
+  const out: Array<{ module: string; root: string }> = []
+  let entries
+  try {
+    entries = await readdir(modulesRoot, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue
+    const moduleDir = join(modulesRoot, ent.name)
+    const manifestPath = join(moduleDir, 'MODULE.md')
+    const skillsDir = join(moduleDir, 'skills')
+    try {
+      await stat(manifestPath)
+    } catch {
+      continue
+    }
+    try {
+      const s = await stat(skillsDir)
+      if (s.isDirectory()) {
+        out.push({ module: ent.name, root: skillsDir })
+      }
+    } catch {
+      // No skills dir — module exists but contributes no Skills.
+    }
+  }
+  return out
 }
 
 async function drain(stream: AsyncIterable<string>): Promise<void> {
@@ -434,6 +489,7 @@ export async function bootstrap(): Promise<void> {
   const db = createDatabase({ path: config.dbPath })
   const store = createConversationStore(db)
   const notifications = createNotifications(db)
+  const audit = createAuditLog(db)
   const storage = new LocalFolderAdapter({ root: config.storageRoot })
   const wiki = new WikiEngine({ storage, db, prefix: config.wikiPrefix })
   const documents = new DocumentIndex({
@@ -460,11 +516,19 @@ export async function bootstrap(): Promise<void> {
     })
   })
 
+  // Discover Module-scoped Skills alongside the top-level `skills/` tree.
+  // We just need the *paths* here — actual Module service instantiation
+  // happens later via bootModules. Scanning modules/<name>/skills/ keeps
+  // skill discovery cheap and parallel to the existing categories scan.
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+  const modulesRoot = join(repoRoot, 'modules')
+  const moduleSkillRoots = await discoverModuleSkillRoots(modulesRoot)
+
   const [basePrompt, modelProfiles, agentProfile, skillIndex] = await Promise.all([
     loadBasePrompt(config.basePromptPath),
     loadModelProfiles(config.modelProfilesDir),
     loadAgentProfile(config.agentProfilesDir, config.agentProfile),
-    loadSkillIndex({ root: config.skillsDir }),
+    loadSkillIndex({ root: config.skillsDir, moduleSkillRoots }),
   ])
 
   const conversationModelId =
@@ -564,6 +628,34 @@ export async function bootstrap(): Promise<void> {
     console.log(`  Tool audit log: ${config.auditLogPath}`)
   }
 
+  // Boot v2 Modules from `modules/` at the repo root. Each Module's
+  // `MODULE.md` declares deps + version; `schema/*.sql` files are run via the
+  // shared migration runner; the matching factory below produces the service
+  // instance the ModuleRegistry exposes. Modules without an entry in the
+  // factories map are discovered but ship no service (manifest + tables only).
+  const modules = await bootModules({
+    db,
+    rootDir: modulesRoot,
+    eventBus: bus,
+    audit,
+    storage,
+    factories: {
+      projects: (ctx) =>
+        createProjectsService({
+          db: ctx.db,
+          eventBus: ctx.eventBus,
+          audit: ctx.audit,
+          storage: ctx.storage,
+        }),
+    },
+  })
+  for (const handle of modules.list()) {
+    if (handle.status === 'degraded') {
+      // eslint-disable-next-line no-console
+      console.warn(`[modules] ${handle.name} degraded: ${handle.degradedReason}`)
+    }
+  }
+
   const orchestrator = new Orchestrator({
     store,
     contextManager,
@@ -585,6 +677,7 @@ export async function bootstrap(): Promise<void> {
       modelProfiles,
       eventBus: bus,
       notifications,
+      modules,
     },
   })
 
@@ -659,6 +752,7 @@ export async function bootstrap(): Promise<void> {
     compressorProvider,
     compressorModel: compressorModel.model,
     db,
+    modules,
   })
 
   await wiki.whenReady()
