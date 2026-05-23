@@ -206,6 +206,16 @@ export type AgentEvent =
       question: string
       ts: number
     }
+  // -- contributed by modules/projects --
+  | { type: 'project.created'; projectId: string; number: string; ts: number }
+  | { type: 'project.updated'; projectId: string; ts: number }
+  | { type: 'project.completed'; projectId: string; ts: number }
+  | { type: 'phase.created'; projectId: string; phaseId: string; ts: number }
+  | { type: 'phase.completed'; projectId: string; phaseId: string; ts: number }
+  | { type: 'task.created'; projectId: string; phaseId: string; taskId: string; ts: number }
+  | { type: 'task.updated'; projectId: string; taskId: string; ts: number }
+  | { type: 'task.completed'; projectId: string; taskId: string; ts: number }
+  | { type: 'task.blocked'; projectId: string; taskId: string; reason: string | null; ts: number }
 
 export type EventType = AgentEvent['type']
 export type EventByType<T extends EventType> = Extract<AgentEvent, { type: T }>
