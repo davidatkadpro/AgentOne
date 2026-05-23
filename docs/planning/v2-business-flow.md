@@ -383,6 +383,68 @@ installed, the markdown-only path still works; PDF/docx skills return
 `estimate.rejected`, `proposal.created`, `proposal.issued`,
 `proposal.superseded`.
 
+**Frontend panel** (decided in the 2026-05-23 grill; complements
+[`../adr/0006-frontend-shell-architecture.md`](../adr/0006-frontend-shell-architecture.md)
+and inherits its uniform master/detail shell):
+
+- **List `/proposals` is a mixed rolling-artifact stream.** The schema
+  keeps `estimate` and `proposal` separate, but the UI flattens them
+  into one row-per-artifact with a status that reads as one continuous
+  workflow: `Estimate · draft` → `Estimate · ready` → `Proposal ·
+  issued` → `Proposal · accepted | rejected | superseded`. A row with
+  no linked proposal renders as the estimate; the same row shifts
+  identity to "proposal" when issued. Filter pills above the list
+  match the status enum. Row columns: artifact reference (estimate id
+  or proposal number), project (`24001 Riverside reno`), status badge,
+  total $, last activity, source (`from scope.md` / `manual`). KPI strip:
+  Drafts (N) · Issued awaiting response (N) · Accepted this month (N).
+- **Detail `/proposals/:id` is a 50/50 split view.** Left pane is the
+  **estimate editor**: header strip (project link, version, source
+  scope link if any) + line-items table (columns: kind dropdown
+  [fixed/T&M/unit], description, qty, unit, unit price, line total),
+  inline-edit everything, `+ Line` button at the bottom, totals row.
+  Right pane is the **rendered preview** — markdown via the existing
+  `react-markdown` stack, live-updates on estimate save or on a
+  `Regenerate` toolbar button (Mustache re-fill against the chosen
+  template). Top toolbar: a **contextual primary action button** that
+  reads the current status (`Mark ready` → `Issue proposal` → `Mark
+  accepted` / `Mark rejected`), then an overflow `▾ More` menu with
+  `Revise`, `Supersede`, `Download ▾` (markdown always; PDF / docx
+  visible only when `GET /api/health` reports Pandoc available).
+- **Generation flow — `+ New proposal`**: shadcn `Dialog` with a
+  **template dropdown at the top** (lists templates from both
+  `modules/proposals/templates/` and `drafts/_templates/proposals/`,
+  each tagged `module` or `override`; override wins when names collide)
+  and **two tabs below**: **Build from scope** (default) lets the
+  operator pick a project, choose one of its `scope.md` documents, and
+  hit Generate — spawns a `build-estimate` session via the existing
+  spawn-session machinery, which streams inline on the resulting
+  `/proposals/:id` page (same pattern as the Email module's inline
+  session block). **Start blank** picks a project, creates an empty
+  estimate row, and routes to `/proposals/:id` for manual line-item
+  entry. `request_user_input` calls during the agent flow surface in
+  the notification tray per ADR-0006.
+- **Revisions never auto-supersede.** `Revise` creates a new draft
+  estimate that points back to the original (`previous_estimate_id`).
+  The original estimate and any linked proposal stay in whatever state
+  they were in until the operator explicitly hits `Supersede` on the
+  old proposal (typically after issuing the revised one). This avoids
+  surprise state changes; the trade-off is one extra click per
+  revise-then-issue cycle.
+- **Status history**: not a separate tab in the split view. A `History`
+  link in the overflow menu opens a popover with the chronological
+  audit of estimate / proposal events for the artifact chain
+  (including superseded predecessors). Pulled from `audit_log` and the
+  `proposal.*` / `estimate.*` event log.
+- **Agent integration** (per-tab pattern adopted from the Projects
+  panel): `Ask agent ▾` menu on the detail toolbar with skills like
+  `Revise to total of $X`, `Draft cover letter`, `Re-extract from
+  scope`. Each spawns a session with the artifact + scope as seed
+  context.
+- **Project-scoped view**: the project detail's **Proposals** tab is
+  the same mixed list, filtered to that project. `+ New` from inside
+  the tab pre-selects the project in the generation modal.
+
 ### `modules/invoicing/`
 
 Local invoices/payments + QBO sync + budget tracking. The heaviest module
@@ -432,6 +494,90 @@ in a follow-up.
 **Events**: `invoice.created`, `invoice.issued`, `payment.recorded`,
 `qbo.invoice_pushed`, `qbo.invoice_pulled`, `qbo.drift_detected`,
 `qbo.sync_failed`.
+
+**Frontend panel** (decided in the 2026-05-23 grill; complements
+[`../adr/0006-frontend-shell-architecture.md`](../adr/0006-frontend-shell-architecture.md)
+and inherits its uniform master/detail shell):
+
+- **List `/invoicing`** is **invoices-only**. Rows: invoice number
+  (`<project-number>-<seq>`), project (`24001 Riverside reno` —
+  clickable to `/projects/24001`), local status badge
+  (Draft / Issued / Partially paid / Paid / Void), QBO sync badge
+  (synced / pending / drift / failed), total, balance, last activity.
+  Status filter pills above the list. **KPI strip** with clickable
+  count pills: `Outstanding $` · `Overdue $` · `Drift (N)` ·
+  `Sync-failed (N)` — each pill applies the corresponding filter.
+  Payments are sub-objects of invoices (no `/payments` route); budgets
+  live on the project detail's **Invoices** tab and as rollups in the
+  project header.
+- **QBO connection status banner** appears at the top of `/invoicing`
+  whenever `qbo_connection` is missing or its tokens are expired. The
+  banner deep-links to **Settings → Integrations → QuickBooks Online**,
+  which is the canonical home for OAuth setup. Disconnected state
+  doesn't block local invoicing; it only gates push/pull and surfaces
+  warnings when those are attempted.
+- **Invoice detail `/invoicing/:id`** is a **single-pane sectioned
+  layout** (not split-view — QBO is the customer-facing render, so a
+  live markdown preview earns less of its keep than for proposals):
+  1. **Header strip** — number, project link, local status badge,
+     sync badge, totals (subtotal, tax, total, balance), contextual
+     primary action button (`Issue` → `Mark paid` etc.), and an
+     overflow `▾ More` menu carrying `Download ▾`, `History`,
+     `Supersede`, `Void`.
+  2. **Line items** — editable table identical in shape to proposals
+     (kind / description / qty / unit / unit price / line total),
+     inline edit, `+ Line` button.
+  3. **Payments applied** — list of `payment` rows. `+ Record
+     payment` opens a `Dialog` collecting amount, date, method,
+     reference, notes; saving emits `payment.recorded`.
+  4. **Sync section** — synced timestamp, `qbo_id` (if any), manual
+     `Push to QBO` button (single explicit action per ADR-0006's
+     non-polling spirit), `Pull from QBO` button. When `sync_status =
+     'drift'`, this section expands into a **drift block** (see next).
+  5. *(Optional rows)* warnings (e.g. "Pushed to QBO but recipient
+     email not set"), notes.
+- **Drift reconciliation** is **UI-first, agent-as-escape**. The
+  drift block renders a side-by-side diff: local fields on the left,
+  QBO fields on the right, with field-level highlights for divergent
+  values. Primary buttons: `Keep local (push)` (overwrites QBO),
+  `Accept QBO (pull)` (overwrites local), `Custom merge` (opens a
+  per-field selector). A `Use agent ▸` link spawns the
+  `reconcile-drift` Skill for cases where the operator wants the
+  agent's reasoning — same inline-stream pattern as the Email panel,
+  with `request_user_input` surfacing in the notification tray.
+- **Create flow `+ New invoice`** is a modal with two tabs:
+  - **From proposal** (default when the chosen project has accepted
+    proposals): pick project → pick accepted proposal → draft
+    pre-populated from the proposal's estimate line items. Server
+    auto-suggests the next invoice number (`<project-number>-<seq>`).
+  - **Blank**: pick project → empty draft.
+  Milestone billing (AEC fixed-fee + phase-based billing) is **not** a
+  v2 modal tab — it depends on phase data the schema doesn't ship yet;
+  handle later via a dedicated `from-milestone` Skill that adds to the
+  modal via the same dynamic-discovery pattern as email actions.
+- **Push trigger is manual per-invoice** in v2. Auto-push-on-issue is
+  intentionally deferred — it introduces a "issued locally but push
+  failed, what state are we in?" failure mode that complicates the
+  issue button's contract. The single explicit `Push to QBO` keeps
+  semantics clear; the scheduled pull poller is the only automatic
+  sync direction.
+- **Agent integration** (per-tab pattern from Projects/Proposals):
+  `Ask agent ▾` menu on the detail toolbar with skills like
+  `Reconcile this drift`, `Draft payment reminder`, `Explain the QBO
+  push failure`. Each spawns a session with invoice context as seed.
+- **Project-scoped view**: the project detail's **Invoices** tab is
+  the same invoice list filtered to that project, with the budget
+  rollup pulled forward into the tab's KPI strip (Budget · Invoiced ·
+  Paid · Outstanding).
+- **New API endpoints required**: `POST /api/invoicing/invoices/:id/push`
+  (manual push), `POST /api/invoicing/invoices/:id/pull` (manual pull),
+  `POST /api/invoicing/invoices/:id/reconcile` (UI-driven drift
+  resolution; body `{ strategy: 'keep_local' | 'accept_qbo' | 'merge',
+  merged?: ... }`), `GET /api/invoicing/qbo/status` (connection
+  state for the banner), and the standard QBO OAuth callback routes
+  (`GET /api/integrations/qbo/connect`, `GET
+  /api/integrations/qbo/callback`, `POST
+  /api/integrations/qbo/disconnect`).
 
 ---
 

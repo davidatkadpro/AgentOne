@@ -52,6 +52,7 @@ First-cut content (v2):
 - **Profiles** tab — full editor (create / edit / delete agent profiles, including expert budgets and `deny_tools` inline with the profile). Active boot profile shows a persistent "Changes apply on next restart" banner; deletion of the active boot profile is blocked. New-chat dialog has a "Manage profiles…" link that deep-links here.
 - **Theme** — light / dark / system toggle (mirrors the top-bar toggle for discoverability; persisted to `localStorage`).
 - **Hooks** — read-only listing of hooks configured in `settings.json` (event filter + handler). Editing remains in the JSON file in v2.
+- **Integrations** (added during the 2026-05-23 Invoicing grill) — connection panels for external services. v2 has one: **QuickBooks Online** with `Connect` / `Disconnect` buttons, OAuth2 PKCE flow handled via `/api/integrations/qbo/connect` and `/api/integrations/qbo/callback`, `Last synced` timestamp, token expiry. Disconnected/expired state surfaces as a banner on `/invoicing` that deep-links here. The Integrations section is the canonical home for any future third-party connector (additional accounting systems, mail providers beyond the existing EmailSource picker, etc.).
 
 Explicitly omitted from the first cut: a separate "Health & storage info" panel. The diagnostic data from `GET /api/health` lives in the top bar (e.g. model name in a small chip) or in the Profiles tab next to the active profile, not as a standalone Settings section.
 
