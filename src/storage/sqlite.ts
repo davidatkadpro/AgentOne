@@ -1,14 +1,19 @@
 import { randomUUID } from 'node:crypto'
-import type { Session, Turn, Role, Message } from '../core/types.js'
+import type { Session, SessionState, Turn, Role, Message } from '../core/types.js'
 import { countTokens } from '../core/tokenizer.js'
 import type { AgentEvent } from '../core/events.js'
 import type { Db } from './db.js'
 
 export interface ConversationStore {
-  createSession(input: { agentProfile: string; title?: string | null }): Session
+  createSession(input: {
+    agentProfile: string
+    title?: string | null
+    spawnedBy?: string | null
+  }): Session
   getSession(id: string): Session | undefined
   listSessions(limit?: number): Session[]
   setSessionTitle(id: string, title: string): void
+  setSessionState(id: string, state: SessionState): void
 
   appendTurn(input: {
     sessionId: string
@@ -156,7 +161,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   title TEXT,
   agent_profile TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'active'
+    CHECK (state IN ('active', 'awaiting_input', 'archived')),
+  spawned_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS turns (
@@ -210,6 +218,19 @@ interface SessionRow {
   title: string | null
   agent_profile: string
   created_at: number
+  state: string
+  spawned_by: string | null
+}
+
+const VALID_SESSION_STATES: ReadonlySet<SessionState> = new Set([
+  'active',
+  'awaiting_input',
+  'archived',
+])
+
+function parseSessionState(raw: string): SessionState {
+  if (VALID_SESSION_STATES.has(raw as SessionState)) return raw as SessionState
+  throw new Error(`Invalid session state in store: ${raw}`)
 }
 
 interface TurnRow {
@@ -241,6 +262,8 @@ function rowToSession(row: SessionRow): Session {
     title: row.title,
     agentProfile: row.agent_profile,
     createdAt: row.created_at,
+    state: parseSessionState(row.state),
+    spawnedBy: row.spawned_by,
   }
 }
 
@@ -291,13 +314,32 @@ function rowToToolCall(row: ToolCallRow): StoredToolCall {
  */
 function migrate(db: Db): void {
   const version = (db.pragma('user_version', { simple: true }) as number) ?? 0
-  if (version >= 6) return
+  if (version >= 7) return
 
   if (version < 2) runV2Migration(db)
   if (version < 3) runV3Migration(db)
   if (version < 4) runV4Migration(db)
   if (version < 5) runV5Migration(db)
   if (version < 6) runV6Migration(db)
+  if (version < 7) runV7Migration(db)
+}
+
+function runV7Migration(db: Db): void {
+  const tx = db.transaction(() => {
+    const cols = db.pragma('table_info(sessions)') as Array<{ name: string }>
+    const colNames = new Set(cols.map((c) => c.name))
+    if (!colNames.has('state')) {
+      db.exec(
+        `ALTER TABLE sessions ADD COLUMN state TEXT NOT NULL DEFAULT 'active'
+           CHECK (state IN ('active', 'awaiting_input', 'archived'));`,
+      )
+    }
+    if (!colNames.has('spawned_by')) {
+      db.exec('ALTER TABLE sessions ADD COLUMN spawned_by TEXT;')
+    }
+    db.pragma('user_version = 7')
+  })
+  tx()
 }
 
 function runV2Migration(db: Db): void {
@@ -534,13 +576,14 @@ export function createConversationStore(db: Db): ConversationStore {
   migrate(db)
 
   const insertSession = db.prepare(
-    'INSERT INTO sessions (id, title, agent_profile, created_at) VALUES (?, ?, ?, ?)',
+    'INSERT INTO sessions (id, title, agent_profile, created_at, spawned_by) VALUES (?, ?, ?, ?, ?)',
   )
   const selectSession = db.prepare('SELECT * FROM sessions WHERE id = ?')
   const listSessionsStmt = db.prepare(
     'SELECT * FROM sessions ORDER BY created_at DESC LIMIT ?',
   )
   const updateTitle = db.prepare('UPDATE sessions SET title = ? WHERE id = ?')
+  const updateState = db.prepare('UPDATE sessions SET state = ? WHERE id = ?')
 
   const insertTurn = db.prepare(
     'INSERT INTO turns (id, session_id, role, content, token_count, created_at, tool_call_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -686,14 +729,22 @@ export function createConversationStore(db: Db): ConversationStore {
   `)
 
   return {
-    createSession({ agentProfile, title = null }) {
+    createSession({ agentProfile, title = null, spawnedBy = null }) {
       const session: Session = {
         id: randomUUID(),
         title,
         agentProfile,
         createdAt: Date.now(),
+        state: 'active',
+        spawnedBy,
       }
-      insertSession.run(session.id, session.title, session.agentProfile, session.createdAt)
+      insertSession.run(
+        session.id,
+        session.title,
+        session.agentProfile,
+        session.createdAt,
+        session.spawnedBy,
+      )
       return session
     },
 
@@ -709,6 +760,10 @@ export function createConversationStore(db: Db): ConversationStore {
 
     setSessionTitle(id, title) {
       updateTitle.run(title, id)
+    },
+
+    setSessionState(id, state) {
+      updateState.run(state, id)
     },
 
     appendTurn({ sessionId, role, content, toolCallId = null }) {

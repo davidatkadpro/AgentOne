@@ -28,7 +28,7 @@ describe('ConversationStore migration', () => {
 
   it('installs turns_fts and reaches the current schema version on a fresh db', () => {
     const version = h.db.pragma('user_version', { simple: true })
-    expect(version).toBe(6)
+    expect(version).toBe(7)
     const fts = h.db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='turns_fts'")
       .get()

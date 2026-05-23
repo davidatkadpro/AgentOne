@@ -28,11 +28,17 @@ export interface Turn {
   toolCallId?: string | null
 }
 
+export type SessionState = 'active' | 'awaiting_input' | 'archived'
+
 export interface Session {
   id: string
   title: string | null
   agentProfile: string
   createdAt: number
+  state: SessionState
+  /** Module path (e.g. 'modules/email') that programmatically spawned this
+   *  session, or null for human-created sessions. */
+  spawnedBy: string | null
 }
 
 export interface ModelProfile {
