@@ -847,6 +847,14 @@ Query + Zustand + shadcn/Tailwind + react-hook-form + zod + react-markdown.
 - Projects panel: list, detail view (phases/tasks tree), create-project form.
 - "Select a project" UI used by later modules' `request_user_input` flow.
 
+> Frontend impl spec + tracked work breakdown:
+> [`./phase-2-projects-impl-spec.md`](./phase-2-projects-impl-spec.md) (folder
+> layout, types, cache keys, prop signatures, backend route gaps) and
+> [`./phase-2-projects-punchlist.md`](./phase-2-projects-punchlist.md) (35
+> tracked items). Realistic estimate is closer to **6-9 days** once the
+> `audit_log.project_id` migration, the 8 tab routes, and the
+> dependency/edit routes are priced in.
+
 ### Phase 3 — Email + file-to-project (~1–2 weeks)
 - `modules/email/` with `MaildirEmailSource` first (defer Graph OAuth).
 - Email view: inbox listing, message preview, action buttons.
