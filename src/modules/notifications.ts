@@ -1,4 +1,5 @@
 import type { Db } from '../storage/db.js'
+import type { EventBus } from '../core/events.js'
 
 export type NotificationKind = 'info' | 'attention_needed' | 'error'
 export type NotificationStatus = 'unread' | 'read' | 'resolved' | 'dismissed'
@@ -107,7 +108,14 @@ function rowToNotification(row: NotificationRow): Notification {
   }
 }
 
-export function createNotifications(db: Db): Notifications {
+export interface CreateNotificationsDeps {
+  /** Optional event bus. When provided, every mutation emits a
+   *  `notification.{created,updated,resolved}` event so the UI (and any
+   *  other bus subscriber) can react. */
+  bus?: EventBus
+}
+
+export function createNotifications(db: Db, deps: CreateNotificationsDeps = {}): Notifications {
   ensureNotificationsTable(db)
 
   const insertStmt = db.prepare(
@@ -132,6 +140,11 @@ export function createNotifications(db: Db): Notifications {
     "UPDATE notifications SET status = 'dismissed' WHERE id = ?",
   )
 
+  function emit(event: { type: 'notification.created' | 'notification.updated' | 'notification.resolved'; notificationId: number; kind?: NotificationKind; title?: string; body?: string; sessionId?: string | null; module?: string | null }): void {
+    if (!deps.bus) return
+    void deps.bus.emit({ ...event, ts: Date.now() } as never)
+  }
+
   return {
     create(input) {
       const createdAt = Date.now()
@@ -145,8 +158,18 @@ export function createNotifications(db: Db): Notifications {
         JSON.stringify(payload),
         createdAt,
       )
+      const id = Number(info.lastInsertRowid)
+      emit({
+        type: 'notification.created',
+        notificationId: id,
+        kind: input.kind,
+        title: input.title,
+        body: input.body,
+        sessionId: input.sessionId ?? null,
+        module: input.module ?? null,
+      })
       return {
-        id: Number(info.lastInsertRowid),
+        id,
         kind: input.kind,
         title: input.title,
         body: input.body,
@@ -176,14 +199,17 @@ export function createNotifications(db: Db): Notifications {
 
     markRead(id) {
       markReadStmt.run(id)
+      emit({ type: 'notification.updated', notificationId: id })
     },
 
     resolve(id) {
       resolveStmt.run(Date.now(), id)
+      emit({ type: 'notification.resolved', notificationId: id })
     },
 
     dismiss(id) {
       dismissStmt.run(id)
+      emit({ type: 'notification.updated', notificationId: id })
     },
   }
 }

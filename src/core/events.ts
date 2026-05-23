@@ -216,6 +216,19 @@ export type AgentEvent =
       question: string
       ts: number
     }
+  // -- notifications (emitted by createNotifications) --
+  | {
+      type: 'notification.created'
+      notificationId: number
+      kind: 'info' | 'attention_needed' | 'error'
+      title: string
+      body: string
+      sessionId: string | null
+      module: string | null
+      ts: number
+    }
+  | { type: 'notification.updated'; notificationId: number; ts: number }
+  | { type: 'notification.resolved'; notificationId: number; ts: number }
   // -- contributed by modules/projects --
   | { type: 'project.created'; projectId: string; number: string; ts: number }
   | { type: 'project.updated'; projectId: string; ts: number }

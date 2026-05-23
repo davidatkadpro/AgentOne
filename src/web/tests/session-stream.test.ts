@@ -1,0 +1,141 @@
+import { describe, it, expect, beforeEach } from 'vitest'
+import { useSessionStreamStore } from '@/stores/session-stream'
+
+const SID = '11111111-1111-1111-1111-111111111111'
+
+describe('session-stream store', () => {
+  beforeEach(() => {
+    // Reset all sessions between tests.
+    const all = Object.keys(useSessionStreamStore.getState().byId)
+    for (const id of all) useSessionStreamStore.getState().drop(id)
+    useSessionStreamStore.getState().ensure(SID)
+  })
+
+  it('handles streaming delta → completed lifecycle', () => {
+    const store = useSessionStreamStore.getState()
+    store.applyEvent({ type: 'message.assistant.started', sessionId: SID, turnId: 't1', ts: 1 } as never)
+    store.applyEvent({ type: 'message.assistant.delta', sessionId: SID, turnId: 't1', delta: 'Hello ' } as never)
+    store.applyEvent({ type: 'message.assistant.delta', sessionId: SID, turnId: 't1', delta: 'world' } as never)
+    expect(useSessionStreamStore.getState().byId[SID]?.activeAssistant?.text).toBe('Hello world')
+
+    store.applyEvent({
+      type: 'message.assistant.completed',
+      sessionId: SID,
+      turnId: 't1',
+      inputTokens: 5,
+      outputTokens: 2,
+      ts: 2,
+    } as never)
+    const after = useSessionStreamStore.getState().byId[SID]
+    expect(after?.activeAssistant).toBeNull()
+    expect(after?.turns).toHaveLength(1)
+    expect(after?.turns[0]?.content).toBe('Hello world')
+  })
+
+  it('tracks tool chips through pending → done', () => {
+    const store = useSessionStreamStore.getState()
+    store.applyEvent({ type: 'message.assistant.started', sessionId: SID, turnId: 't1', ts: 1 } as never)
+    store.applyEvent({
+      type: 'tool.called',
+      sessionId: SID,
+      turnId: 't1',
+      toolCallId: 'tc1',
+      tool: 'fs.read',
+      args: {},
+      ts: 2,
+    } as never)
+    expect(useSessionStreamStore.getState().byId[SID]?.activeAssistant?.toolChips['tc1']?.status).toBe('pending')
+
+    store.applyEvent({
+      type: 'tool.completed',
+      sessionId: SID,
+      turnId: 't1',
+      toolCallId: 'tc1',
+      tool: 'fs.read',
+      ok: true,
+      durationMs: 123,
+      ts: 3,
+    } as never)
+    expect(useSessionStreamStore.getState().byId[SID]?.activeAssistant?.toolChips['tc1']).toEqual({
+      toolCallId: 'tc1',
+      tool: 'fs.read',
+      status: 'done',
+      durationMs: 123,
+    })
+  })
+
+  it('tracks failed tools and pushes a meta row', () => {
+    const store = useSessionStreamStore.getState()
+    store.applyEvent({ type: 'message.assistant.started', sessionId: SID, turnId: 't1', ts: 1 } as never)
+    store.applyEvent({
+      type: 'tool.called',
+      sessionId: SID,
+      turnId: 't1',
+      toolCallId: 'tc1',
+      tool: 'fs.read',
+      args: {},
+      ts: 2,
+    } as never)
+    store.applyEvent({
+      type: 'tool.failed',
+      sessionId: SID,
+      turnId: 't1',
+      toolCallId: 'tc1',
+      tool: 'fs.read',
+      code: 'EACCES',
+      message: 'permission denied',
+      ts: 3,
+    } as never)
+    const s = useSessionStreamStore.getState().byId[SID]
+    expect(s?.activeAssistant?.toolChips['tc1']?.status).toBe('failed')
+    expect(s?.metaRows.some((m) => m.kind === 'error')).toBe(true)
+  })
+
+  it('marks awaiting_input on session.awaiting_input', () => {
+    const store = useSessionStreamStore.getState()
+    store.applyEvent({
+      type: 'session.awaiting_input',
+      sessionId: SID,
+      notificationId: 7,
+      question: 'Yes or no?',
+      ts: 1,
+    } as never)
+    expect(useSessionStreamStore.getState().byId[SID]?.awaitingInput).toEqual({
+      notificationId: 7,
+      question: 'Yes or no?',
+    })
+  })
+
+  it('moves activeAssistant text into a turn on cancellation', () => {
+    const store = useSessionStreamStore.getState()
+    store.applyEvent({ type: 'message.assistant.started', sessionId: SID, turnId: 't1', ts: 1 } as never)
+    store.applyEvent({ type: 'message.assistant.delta', sessionId: SID, turnId: 't1', delta: 'partial' } as never)
+    store.applyEvent({ type: 'turn.cancel_requested', sessionId: SID, ts: 2 } as never)
+    store.applyEvent({ type: 'turn.cancelled', sessionId: SID, kind: 'soft', ts: 3 } as never)
+    const after = useSessionStreamStore.getState().byId[SID]
+    expect(after?.activeAssistant).toBeNull()
+    expect(after?.cancelRequested).toBe(false)
+    expect(after?.turns[0]?.content).toBe('partial')
+  })
+
+  it('optimistically appends a user turn then removes on error', () => {
+    const store = useSessionStreamStore.getState()
+    store.optimisticAppendUser(SID, 'hi there', 'optimistic-x')
+    expect(useSessionStreamStore.getState().byId[SID]?.turns).toHaveLength(1)
+    store.removeOptimistic(SID, 'optimistic-x')
+    expect(useSessionStreamStore.getState().byId[SID]?.turns).toHaveLength(0)
+  })
+
+  it('replaces an optimistic turn id when message.user.received fires', () => {
+    const store = useSessionStreamStore.getState()
+    store.optimisticAppendUser(SID, 'hi', 'optimistic-a')
+    store.applyEvent({
+      type: 'message.user.received',
+      sessionId: SID,
+      turnId: 'server-turn-1',
+      ts: 1,
+    } as never)
+    const turns = useSessionStreamStore.getState().byId[SID]?.turns
+    expect(turns?.[0]?.id).toBe('server-turn-1')
+  })
+})

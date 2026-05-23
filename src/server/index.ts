@@ -4,7 +4,23 @@ import fastifyStatic from '@fastify/static'
 import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { z } from 'zod'
-import { readFile, readdir, stat } from 'node:fs/promises'
+import { readFile, readdir, stat, writeFile, unlink, access } from 'node:fs/promises'
+import yaml from 'js-yaml'
+import { constants as fsConstants } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
+
+async function detectPandoc(): Promise<boolean> {
+  // Cross-platform: `pandoc --version` exits 0 if on PATH, non-zero otherwise.
+  try {
+    await execFileAsync('pandoc', ['--version'], { timeout: 2000 })
+    return true
+  } catch {
+    return false
+  }
+}
 
 import { loadConfigFromEnv, type ServerConfig } from './config.js'
 import { EventBus } from '../core/events.js'
@@ -103,6 +119,9 @@ export interface AppDeps {
   /** Registry of v2 Modules booted from `modules/`. Routes that operate on
    *  Module-owned state look up their service via this. */
   modules: ModuleRegistry
+  /** Notification store — surfaces in /api/notifications routes for the
+   *  React notification tray (see ADR-0006). */
+  notifications: ReturnType<typeof createNotifications>
 }
 
 const CommandRequestBody = z.object({
@@ -124,6 +143,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     prefix: '/',
   })
 
+  // Detect pandoc once at boot (P1S4). `which`/`where` cross-platform via PATH
+  //  resolution from execFile; cache result.
+  const pandocAvailable = await detectPandoc()
+
   app.get('/api/health', async () => {
     await deps.wiki.whenReady()
     return {
@@ -133,6 +156,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       storageRoot: deps.config.storageRoot,
       wikiPrefix: deps.config.wikiPrefix,
       agentProfile: deps.config.agentProfile,
+      capabilities: {
+        pandoc: pandocAvailable,
+      },
     }
   })
 
@@ -143,6 +169,160 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.get('/api/profiles', async () => {
     const profiles = await listAvailableProfiles(deps.config.agentProfilesDir)
     return { profiles, current: deps.config.agentProfile }
+  })
+
+  // --- Profile CRUD (P1S1-S3) ---
+  // The raw YAML schema lives in profiles/agent-profile.ts; we re-define a
+  // permissive body schema here that aligns with the file shape but tolerates
+  // partial bodies (PATCH) and the create-vs-edit asymmetry.
+  const ProfileCreateBody = z.object({
+    id: z.string().regex(/^[a-z0-9_-]+$/),
+    description: z.string().optional(),
+    extends: z.string().optional(),
+    system_prompt_file: z.string().optional(),
+    default_model: z.string().optional(),
+    compressor_model: z.string().optional(),
+    default_skills: z.array(z.string()).optional(),
+    permissions: z.unknown().optional(),
+    passive_recall: z.unknown().optional(),
+    auto_distill: z.unknown().optional(),
+    deny_tools: z.array(z.string()).optional(),
+  })
+  const ProfilePatchBody = ProfileCreateBody.partial().omit({ id: true })
+  const RESERVED_PROFILE_IDS = new Set(['_base'])
+
+  function profilePath(id: string): string {
+    return resolve(deps.config.agentProfilesDir, `${id}.yaml`)
+  }
+
+  async function fileExists(p: string): Promise<boolean> {
+    try {
+      await access(p, fsConstants.F_OK)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  function countActiveSessionsForProfile(id: string): number {
+    // The store has no helper for this — query the DB directly.
+    const row = deps.db
+      .prepare(
+        "SELECT COUNT(*) as n FROM sessions WHERE agent_profile = ? AND state != 'archived'",
+      )
+      .get(id) as { n: number } | undefined
+    return row?.n ?? 0
+  }
+
+  app.post('/api/profiles', async (req, reply) => {
+    const parsed = ProfileCreateBody.safeParse(req.body ?? {})
+    if (!parsed.success) {
+      reply.code(400)
+      return {
+        error: 'INVALID',
+        details: parsed.error.errors.map((e) => ({ path: e.path, message: e.message })),
+      }
+    }
+    const id = parsed.data.id
+    const target = profilePath(id)
+    if (await fileExists(target)) {
+      reply.code(409)
+      return { error: 'ALREADY_EXISTS', details: { id } }
+    }
+    if (parsed.data.extends) {
+      const basePath = profilePath(parsed.data.extends)
+      if (!(await fileExists(basePath))) {
+        reply.code(409)
+        return { error: 'EXTENDS_NOT_FOUND', details: { id, extends: parsed.data.extends } }
+      }
+    }
+    const yamlText = yaml.dump(parsed.data, { lineWidth: 100, noRefs: true })
+    await writeFile(target, yamlText, 'utf-8')
+    // Re-resolve through the real loader so the response shape matches
+    // GET /api/profiles entries (with `ok` flag + resolved defaults).
+    const profiles = await listAvailableProfiles(deps.config.agentProfilesDir)
+    const entry = profiles.find((p) => p.id === id)
+    if (!entry) {
+      reply.code(500)
+      return { error: 'INTERNAL', message: 'Profile created but not found in re-scan' }
+    }
+    reply.code(201)
+    return entry
+  })
+
+  app.patch('/api/profiles/:id', async (req, reply) => {
+    const params = z.object({ id: z.string().regex(/^[a-z0-9_-]+$/) }).safeParse(req.params)
+    if (!params.success) {
+      reply.code(400)
+      return { error: 'Invalid profile id' }
+    }
+    const id = params.data.id
+    const target = profilePath(id)
+    if (!(await fileExists(target))) {
+      reply.code(404)
+      return { error: 'NOT_FOUND', details: { id } }
+    }
+    const body = ProfilePatchBody.safeParse(req.body ?? {})
+    if (!body.success) {
+      reply.code(400)
+      return {
+        error: 'INVALID',
+        details: body.error.errors.map((e) => ({ path: e.path, message: e.message })),
+      }
+    }
+    const existingText = await readFile(target, 'utf-8')
+    const existing = (yaml.load(existingText) ?? {}) as Record<string, unknown>
+    const merged: Record<string, unknown> = { ...existing, ...body.data, id }
+    // Validate the merged result against the full schema by writing it and
+    // re-loading via listAvailableProfiles — that's the same code path the
+    // GET endpoint and the orchestrator use, so a passing PATCH means the
+    // file is loadable. Write a temp copy first so we can roll back on error.
+    const mergedYaml = yaml.dump(merged, { lineWidth: 100, noRefs: true })
+    await writeFile(target, mergedYaml, 'utf-8')
+    const profiles = await listAvailableProfiles(deps.config.agentProfilesDir)
+    const entry = profiles.find((p) => p.id === id)
+    if (!entry) {
+      // Should never happen — we just wrote it. Surface a 500 with context.
+      reply.code(500)
+      return { error: 'INTERNAL', message: 'Profile re-scan dropped the row' }
+    }
+    if (!entry.ok) {
+      // Roll back: restore the pre-edit YAML so a bad PATCH doesn't break the
+      // boot profile or leave the file in a broken state.
+      await writeFile(target, existingText, 'utf-8')
+      reply.code(400)
+      return { error: 'INVALID', details: [{ path: [], message: entry.error ?? 'unknown' }] }
+    }
+    return entry
+  })
+
+  app.delete('/api/profiles/:id', async (req, reply) => {
+    const params = z.object({ id: z.string().regex(/^[a-z0-9_-]+$/) }).safeParse(req.params)
+    if (!params.success) {
+      reply.code(400)
+      return { error: 'Invalid profile id' }
+    }
+    const id = params.data.id
+    if (RESERVED_PROFILE_IDS.has(id)) {
+      reply.code(409)
+      return { error: 'RESERVED_PROFILE', details: { id } }
+    }
+    if (id === deps.config.agentProfile) {
+      reply.code(409)
+      return { error: 'ACTIVE_BOOT_PROFILE', details: { id } }
+    }
+    const affected = countActiveSessionsForProfile(id)
+    if (affected > 0) {
+      reply.code(409)
+      return { error: 'PROFILE_IN_USE', details: { id, affectedSessions: affected } }
+    }
+    const target = profilePath(id)
+    if (!(await fileExists(target))) {
+      reply.code(404)
+      return { error: 'NOT_FOUND', details: { id } }
+    }
+    await unlink(target)
+    return { ok: true }
   })
 
   app.get('/api/drafts', async () => {
@@ -278,6 +458,111 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       ts: Date.now(),
     })
     return { session: { ...session, title: body.data.title } }
+  })
+
+  // --- Notifications HTTP routes (P1S5) ---
+  app.get('/api/notifications', async (req) => {
+    const query = z
+      .object({
+        includeResolved: z.union([z.literal('true'), z.literal('false')]).optional(),
+        limit: z.coerce.number().int().positive().max(500).optional(),
+      })
+      .safeParse(req.query ?? {})
+    const includeResolved = query.success && query.data.includeResolved === 'true'
+    const limit = query.success ? query.data.limit ?? 100 : 100
+    const all = deps.notifications.list({ limit })
+    const filtered = includeResolved
+      ? all
+      : all.filter((n) => n.status === 'unread' || n.status === 'read')
+    return { notifications: filtered }
+  })
+
+  const NotificationIdParams = z.object({ id: z.coerce.number().int().positive() })
+  const UpdateNotificationBody = z.object({
+    status: z.enum(['read', 'resolved', 'dismissed']),
+  })
+
+  app.patch('/api/notifications/:id', async (req, reply) => {
+    const params = NotificationIdParams.safeParse(req.params)
+    if (!params.success) {
+      reply.code(400)
+      return { error: 'Invalid notification id' }
+    }
+    const body = UpdateNotificationBody.safeParse(req.body ?? {})
+    if (!body.success) {
+      reply.code(400)
+      return { error: 'Invalid body', details: body.error.flatten() }
+    }
+    const existing = deps.notifications.get(params.data.id)
+    if (!existing) {
+      reply.code(404)
+      return { error: 'Not found' }
+    }
+    if (body.data.status === 'read') deps.notifications.markRead(params.data.id)
+    else if (body.data.status === 'resolved') deps.notifications.resolve(params.data.id)
+    else deps.notifications.dismiss(params.data.id)
+    const updated = deps.notifications.get(params.data.id)
+    return { notification: updated }
+  })
+
+  const AnswerNotificationBody = z.object({ value: z.string().min(1) })
+
+  app.post(
+    '/api/sessions/:id/notifications/:notifId/answer',
+    async (req, reply) => {
+      const params = z
+        .object({
+          id: z.string().uuid(),
+          notifId: z.coerce.number().int().positive(),
+        })
+        .safeParse(req.params)
+      if (!params.success) {
+        reply.code(400)
+        return { error: 'Invalid params' }
+      }
+      const body = AnswerNotificationBody.safeParse(req.body ?? {})
+      if (!body.success) {
+        reply.code(400)
+        return { error: 'Invalid body', details: body.error.flatten() }
+      }
+      const session = deps.store.getSession(params.data.id)
+      if (!session) {
+        reply.code(404)
+        return { error: 'Session not found' }
+      }
+      const notif = deps.notifications.get(params.data.notifId)
+      if (!notif) {
+        reply.code(404)
+        return { error: 'Notification not found' }
+      }
+      const mismatch = profileMismatchResponse(session, deps.config.agentProfile)
+      if (mismatch) {
+        reply.code(409)
+        return mismatch
+      }
+      // 1. Post the value as a user message on the session.
+      const handle = await deps.orchestrator.handleUserMessage(
+        params.data.id,
+        body.data.value,
+      )
+      void drain(handle.stream)
+      // 2. Resolve the notification.
+      deps.notifications.resolve(params.data.notifId)
+      return { ok: true }
+    },
+  )
+
+  app.get('/api/skills', async () => {
+    const skills = [...deps.skillIndex.skills.values()].map((s) => ({
+      qualifiedName: s.qualifiedName,
+      name: s.name,
+      category: s.category,
+      description: s.description,
+      slashCommand: s.slashCommand,
+      allowedTools: (s.frontmatter as { 'allowed-tools'?: string[] })['allowed-tools'] ?? [],
+      body: s.body,
+    }))
+    return { skills: skills.sort((a, b) => a.qualifiedName.localeCompare(b.qualifiedName)) }
   })
 
   app.get('/api/commands', async () => {
@@ -555,7 +840,7 @@ export async function bootstrap(): Promise<void> {
 
   const db = createDatabase({ path: config.dbPath })
   const store = createConversationStore(db)
-  const notifications = createNotifications(db)
+  const notifications = createNotifications(db, { bus })
   const audit = createAuditLog(db)
   const storage = new LocalFolderAdapter({ root: config.storageRoot })
   const wiki = new WikiEngine({ storage, db, prefix: config.wikiPrefix })
@@ -870,6 +1155,7 @@ export async function bootstrap(): Promise<void> {
     compressorModel: compressorModel.model,
     db,
     modules,
+    notifications,
   })
 
   await wiki.whenReady()

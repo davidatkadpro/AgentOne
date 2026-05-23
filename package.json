@@ -9,7 +9,11 @@
     "start": "node --env-file-if-exists=.env --import tsx src/server/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "web:install": "npm --prefix src/web install",
+    "web:dev": "npm --prefix src/web run dev",
+    "web:build": "npm --prefix src/web run build",
+    "web:test": "npm --prefix src/web run test"
   },
   "dependencies": {
     "@fastify/static": "^7.0.4",
