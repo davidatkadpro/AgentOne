@@ -35,6 +35,8 @@ import { createEmailService } from '../../modules/email/src/service.js'
 import { registerEmailRoutes } from '../../modules/email/src/routes.js'
 import { registerEmailActions } from '../../modules/email/src/actions.js'
 import { MaildirEmailSource } from '../../modules/email/src/sources/maildir.js'
+import { createProposalsService } from '../../modules/proposals/src/service.js'
+import { registerProposalsRoutes } from '../../modules/proposals/src/routes.js'
 import { LocalFolderAdapter } from '../storage/local-folder.js'
 import { WikiEngine } from '../memory/wiki/engine.js'
 import { Orchestrator } from '../orchestrator/turn.js'
@@ -383,6 +385,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     await registerProjectsRoutes(app, { service: projectsService })
   }
 
+  const proposalsHandle = deps.modules.get('proposals')
+  if (proposalsHandle?.status === 'active' && proposalsHandle.service) {
+    const proposalsService = proposalsHandle.service as Parameters<
+      typeof registerProposalsRoutes
+    >[1]['service']
+    await registerProposalsRoutes(app, { service: proposalsService })
+  }
+
   const emailHandle = deps.modules.get('email')
   if (emailHandle?.status === 'active' && emailHandle.service) {
     const emailService = emailHandle.service as Parameters<
@@ -708,6 +718,21 @@ export async function bootstrap(): Promise<void> {
         }
         if (projects) deps.projects = projects
         return createEmailService(deps)
+      },
+      proposals: (ctx) => {
+        const projectsHandle = ctx.modules.get('projects')
+        const projects =
+          projectsHandle?.status === 'active' && projectsHandle.service
+            ? (projectsHandle.service as ProjectsService)
+            : undefined
+        const deps: Parameters<typeof createProposalsService>[0] = {
+          db: ctx.db,
+          eventBus: ctx.eventBus,
+          audit: ctx.audit,
+          storage: ctx.storage,
+        }
+        if (projects) deps.projects = projects
+        return createProposalsService(deps)
       },
     },
   })

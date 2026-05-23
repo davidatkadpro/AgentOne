@@ -257,6 +257,31 @@ export type AgentEvent =
       ok: boolean
       ts: number
     }
+  // -- contributed by modules/proposals --
+  | { type: 'estimate.created'; projectId: string; estimateId: string; ts: number }
+  | { type: 'estimate.updated'; projectId: string; estimateId: string; ts: number }
+  | { type: 'estimate.accepted'; projectId: string; estimateId: string; ts: number }
+  | { type: 'estimate.rejected'; projectId: string; estimateId: string; ts: number }
+  | {
+      type: 'proposal.created'
+      projectId: string
+      proposalId: string
+      number: string
+      ts: number
+    }
+  | {
+      type: 'proposal.issued'
+      projectId: string
+      proposalId: string
+      number: string
+      ts: number
+    }
+  | {
+      type: 'proposal.superseded'
+      projectId: string
+      proposalId: string
+      ts: number
+    }
 
 export type EventType = AgentEvent['type']
 export type EventByType<T extends EventType> = Extract<AgentEvent, { type: T }>
