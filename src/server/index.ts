@@ -35,8 +35,10 @@ import { createEmailService } from '../../modules/email/src/service.js'
 import { registerEmailRoutes } from '../../modules/email/src/routes.js'
 import { registerEmailActions } from '../../modules/email/src/actions.js'
 import { MaildirEmailSource } from '../../modules/email/src/sources/maildir.js'
-import { createProposalsService } from '../../modules/proposals/src/service.js'
+import { createProposalsService, type ProposalsService } from '../../modules/proposals/src/service.js'
 import { registerProposalsRoutes } from '../../modules/proposals/src/routes.js'
+import { createInvoicingService } from '../../modules/invoicing/src/service.js'
+import { registerInvoicingRoutes } from '../../modules/invoicing/src/routes.js'
 import { LocalFolderAdapter } from '../storage/local-folder.js'
 import { WikiEngine } from '../memory/wiki/engine.js'
 import { Orchestrator } from '../orchestrator/turn.js'
@@ -393,6 +395,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     await registerProposalsRoutes(app, { service: proposalsService })
   }
 
+  const invoicingHandle = deps.modules.get('invoicing')
+  if (invoicingHandle?.status === 'active' && invoicingHandle.service) {
+    const invoicingService = invoicingHandle.service as Parameters<
+      typeof registerInvoicingRoutes
+    >[1]['service']
+    await registerInvoicingRoutes(app, { service: invoicingService })
+  }
+
   const emailHandle = deps.modules.get('email')
   if (emailHandle?.status === 'active' && emailHandle.service) {
     const emailService = emailHandle.service as Parameters<
@@ -733,6 +743,26 @@ export async function bootstrap(): Promise<void> {
         }
         if (projects) deps.projects = projects
         return createProposalsService(deps)
+      },
+      invoicing: (ctx) => {
+        const projectsHandle = ctx.modules.get('projects')
+        const projects =
+          projectsHandle?.status === 'active' && projectsHandle.service
+            ? (projectsHandle.service as ProjectsService)
+            : undefined
+        const proposalsHandle = ctx.modules.get('proposals')
+        const proposals =
+          proposalsHandle?.status === 'active' && proposalsHandle.service
+            ? (proposalsHandle.service as ProposalsService)
+            : undefined
+        const deps: Parameters<typeof createInvoicingService>[0] = {
+          db: ctx.db,
+          eventBus: ctx.eventBus,
+          audit: ctx.audit,
+        }
+        if (projects) deps.projects = projects
+        if (proposals) deps.proposals = proposals
+        return createInvoicingService(deps)
       },
     },
   })

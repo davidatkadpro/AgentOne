@@ -282,6 +282,43 @@ export type AgentEvent =
       proposalId: string
       ts: number
     }
+  // -- contributed by modules/invoicing --
+  | {
+      type: 'invoice.created'
+      projectId: string
+      invoiceId: string
+      number: string
+      ts: number
+    }
+  | {
+      type: 'invoice.issued'
+      projectId: string
+      invoiceId: string
+      number: string
+      ts: number
+    }
+  | {
+      type: 'invoice.paid'
+      projectId: string
+      invoiceId: string
+      number: string
+      ts: number
+    }
+  | {
+      type: 'invoice.voided'
+      projectId: string
+      invoiceId: string
+      number: string
+      ts: number
+    }
+  | {
+      type: 'payment.recorded'
+      projectId: string
+      invoiceId: string
+      paymentId: string
+      amount: number
+      ts: number
+    }
 
 export type EventType = AgentEvent['type']
 export type EventByType<T extends EventType> = Extract<AgentEvent, { type: T }>
