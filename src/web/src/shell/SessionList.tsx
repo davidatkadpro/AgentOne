@@ -75,8 +75,8 @@ export function SessionList() {
   }, [sessions.data, filter, showArchived])
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center gap-1 px-2 pb-2">
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex items-center gap-1 px-2 pb-2 pt-2 shrink-0">
         <div className="relative flex-1">
           <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted" />
           <input
@@ -94,7 +94,7 @@ export function SessionList() {
           <Plus size={14} />
         </button>
       </div>
-      <div className="flex-1 overflow-auto scrollbar-thin px-2 space-y-2 pb-2">
+      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-2 space-y-2 pb-2">
         {grouped.awaitingInput.length > 0 ? (
           <div>
             <div className="px-3 text-[10px] uppercase text-warn font-semibold">Awaiting input</div>

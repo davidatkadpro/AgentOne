@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import { Send } from 'lucide-react'
 import { toast } from 'sonner'
 import { Textarea } from '@/components/ui/Input'
-import { Button } from '@/components/ui/Button'
 import { useSendMessage } from '@/api/sessions'
 import { useRunCommand } from '@/api/commands'
 import { SlashOverlay } from './SlashOverlay'
 import { parseSlashInput } from '@/lib/slash-parser'
 import { ApiError } from '@/lib/api'
 import { useSessionStreamStore } from '@/stores/session-stream'
+import { useComposerDraftStore } from '@/stores/composer-draft'
+import { cn } from '@/lib/cn'
 
 export interface ComposerProps {
   sessionId: string
@@ -29,6 +30,16 @@ export function Composer({ sessionId, disabled }: ComposerProps) {
     el.style.height = 'auto'
     el.style.height = Math.min(el.scrollHeight, 200) + 'px'
   }, [text])
+
+  // Consume any draft set by the starter card (or other surfaces) for this session.
+  const draft = useComposerDraftStore((s) => s.drafts[sessionId])
+  useEffect(() => {
+    if (draft === undefined) return
+    setText(draft)
+    useComposerDraftStore.getState().consume(sessionId)
+    // Focus so the user can edit or just press Enter.
+    requestAnimationFrame(() => ref.current?.focus())
+  }, [draft, sessionId])
 
   function dispatch() {
     const value = text.trim()
@@ -80,14 +91,24 @@ export function Composer({ sessionId, disabled }: ComposerProps) {
     }
   }
 
+  const busy = send.isPending || run.isPending
+  const inputDisabled = disabled || busy
+  const sendDisabled = inputDisabled || !text.trim()
+
   return (
     <div className="px-6 pb-4 pt-2 border-t border-border relative">
       <div className="mx-auto max-w-[760px]">
-        <div className="flex items-end gap-2">
+        <div
+          className={cn(
+            'flex items-end gap-1 rounded-xl border bg-surface px-2 py-1.5 transition-colors',
+            'focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/40',
+            inputDisabled ? 'border-border opacity-80' : 'border-border',
+          )}
+        >
           <Textarea
             ref={ref}
             value={text}
-            disabled={disabled || send.isPending || run.isPending}
+            disabled={inputDisabled}
             onChange={(e) => {
               setText(e.target.value)
               if (slashOpen && !e.target.value.startsWith('/')) setSlashOpen(false)
@@ -95,15 +116,22 @@ export function Composer({ sessionId, disabled }: ComposerProps) {
             onKeyDown={onKeyDown}
             placeholder={disabled ? 'Restart server to message this session' : 'Type a message — Enter to send, Shift+Enter for newline'}
             rows={1}
-            className="flex-1"
+            className="flex-1 bg-transparent border-0 focus:ring-0 px-1 py-1"
           />
-          <Button
+          <button
+            type="button"
             onClick={dispatch}
-            disabled={disabled || !text.trim() || send.isPending || run.isPending}
+            disabled={sendDisabled}
             aria-label="Send message"
+            className={cn(
+              'inline-flex items-center justify-center w-8 h-8 rounded-md transition-colors shrink-0',
+              sendDisabled
+                ? 'bg-transparent text-muted/60 cursor-not-allowed'
+                : 'bg-accent text-white hover:bg-accent/90',
+            )}
           >
             <Send size={14} />
-          </Button>
+          </button>
         </div>
         <SlashOverlay
           open={slashOpen}

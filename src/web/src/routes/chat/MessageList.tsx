@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSessionStreamStore } from '@/stores/session-stream'
+import { useComposerDraftStore } from '@/stores/composer-draft'
 import { useSession } from '@/api/sessions'
 import { MessageItem } from './MessageItem'
+import { StarterCard } from './StarterCard'
 import { ToolChip } from './ToolChip'
 import { cn } from '@/lib/cn'
 import type { Turn } from '@/types/domain'
@@ -36,6 +38,11 @@ export function MessageList({ sessionId, embedded = false }: MessageListProps) {
     return <div className="p-6 text-sm text-muted">Loading…</div>
   }
 
+  const isFresh =
+    stream.turns.length === 0 &&
+    !stream.activeAssistant &&
+    stream.metaRows.length === 0
+
   const activeTurn: Turn | null = stream.activeAssistant
     ? {
         id: stream.activeAssistant.turnId,
@@ -59,7 +66,19 @@ export function MessageList({ sessionId, embedded = false }: MessageListProps) {
         embedded ? 'h-full px-3 py-2' : 'flex-1 px-6 py-4',
       )}
     >
-      <div className={cn(embedded ? 'space-y-3' : 'mx-auto max-w-[760px] space-y-5')}>
+      <div
+        className={cn(
+          'flex flex-col justify-end min-h-full',
+          embedded ? 'space-y-3' : 'mx-auto max-w-[760px] space-y-5',
+        )}
+      >
+        {isFresh && !embedded ? (
+          <StarterCard
+            onPick={(text) => {
+              useComposerDraftStore.getState().set(sessionId, text)
+            }}
+          />
+        ) : null}
         {stream.turns.map((turn) => (
           <MessageItem
             key={turn.id}

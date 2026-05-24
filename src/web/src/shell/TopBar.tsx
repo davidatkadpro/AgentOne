@@ -1,10 +1,15 @@
 import { Link } from 'react-router-dom'
-import { AlertTriangle, Bell, Sun, Moon, Monitor } from 'lucide-react'
+import { AlertTriangle, Bell, Sun, Moon } from 'lucide-react'
 import { useHealth } from '@/api/health'
 import { useUiStore } from '@/stores/ui'
 import { useNotificationsStore } from '@/stores/notifications'
 import { useWsStore } from '@/stores/ws'
 import { cn } from '@/lib/cn'
+
+function resolveEffective(theme: 'light' | 'dark' | 'system'): 'light' | 'dark' {
+  if (theme !== 'system') return theme
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
 
 export function TopBar() {
   const health = useHealth()
@@ -12,8 +17,10 @@ export function TopBar() {
   const badge = useNotificationsStore((s) => s.unresolvedAttentionCount)
   const wsStatus = useWsStore((s) => s.status)
 
-  const themeIcon = theme === 'dark' ? <Moon size={16} /> : theme === 'light' ? <Sun size={16} /> : <Monitor size={16} />
-  const nextTheme = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light'
+  const effective = resolveEffective(theme)
+  const themeIcon = effective === 'dark' ? <Moon size={16} /> : <Sun size={16} />
+  const nextTheme = effective === 'dark' ? 'light' : 'dark'
+  const themeTitle = `Theme: ${effective}${theme === 'system' ? ' (auto)' : ''} — click for ${nextTheme}`
 
   return (
     <header className="h-12 border-b border-border flex items-center px-4 gap-3 bg-bg">
@@ -44,7 +51,8 @@ export function TopBar() {
       ) : null}
       <button
         onClick={() => setTheme(nextTheme)}
-        aria-label="Toggle theme"
+        aria-label={`Switch to ${nextTheme} theme`}
+        title={themeTitle}
         className="p-2 rounded hover:bg-surface text-muted hover:text-fg"
       >
         {themeIcon}

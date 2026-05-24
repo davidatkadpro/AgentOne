@@ -169,6 +169,7 @@ export function ProjectsRoute() {
             body="Pick a project from the list to see its tasks, scope, files, and activity."
           />
         }
+        listIsEmpty={!baseQuery.isLoading && visible.length === 0}
       />
       <NewProjectDialog
         open={dialogOpen}

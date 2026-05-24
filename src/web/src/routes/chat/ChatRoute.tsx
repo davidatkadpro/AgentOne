@@ -6,6 +6,7 @@ import { useSessionStreamStore } from '@/stores/session-stream'
 import { MessageList } from './MessageList'
 import { Composer } from './Composer'
 import { CancelButton } from './CancelButton'
+import { ChatHeader } from './ChatHeader'
 import { ProfileMismatchBanner } from './ProfileMismatchBanner'
 import { RouteSkeleton } from '@/components/shared/RouteSkeleton'
 import { EmptyState } from '@/components/shared/EmptyState'
@@ -50,6 +51,7 @@ export function ChatRoute() {
       {stream?.profileMismatch ? (
         <ProfileMismatchBanner requiredProfile={stream.profileMismatch.requiredProfile} />
       ) : null}
+      <ChatHeader sessionId={sessionId} />
       <MessageList sessionId={sessionId} />
       <div className="flex items-center justify-end px-6 py-1">
         <CancelButton sessionId={sessionId} visible={turnInFlight} />

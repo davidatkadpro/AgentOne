@@ -28,7 +28,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, React.TextareaHTMLAttrib
         ref={ref}
         className={cn(
           'w-full rounded-md border border-border bg-bg p-2 text-sm text-fg',
-          'placeholder:text-muted resize-none',
+          'placeholder:text-muted resize-none overflow-y-auto scrollbar-thin',
           'focus:outline-none focus:ring-2 focus:ring-accent',
           className,
         )}
