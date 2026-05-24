@@ -6,7 +6,9 @@
   "description": "Local, event-driven agent runtime with persistent memory",
   "scripts": {
     "dev": "node --env-file-if-exists=.env --watch --import tsx src/server/index.ts",
+    "dev:full": "npm --prefix src/web run build && npm run dev",
     "start": "node --env-file-if-exists=.env --import tsx src/server/index.ts",
+    "start:full": "npm --prefix src/web run build && npm run start",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

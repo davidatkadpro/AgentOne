@@ -14,7 +14,6 @@ import type {
   ListProjectsResponse,
   NextProjectNumberResponse,
   ProjectActivityResponse,
-  ProjectBudgetResponse,
   ProjectDetailResponse,
   ProjectFilesResponse,
   ProjectScopeResponse,
@@ -43,15 +42,10 @@ export function useProject(id: string | null | undefined) {
   })
 }
 
-export function useProjectBudget(id: string | null | undefined) {
-  return useQuery({
-    queryKey: queryKeys.projects.budget(id ?? ''),
-    queryFn: () =>
-      api.get<ProjectBudgetResponse>(`/projects/${id}/budget`).then((r) => r.budget),
-    enabled: !!id,
-    staleTime: 60_000,
-  })
-}
+// useProjectBudget moved to @/api/invoicing — Phase 5 unified the budget
+// shape on the invoicing module's endpoint. Re-export so existing imports
+// keep working.
+export { useProjectBudget } from './invoicing'
 
 export function useProjectScope(id: string | null | undefined) {
   return useQuery({

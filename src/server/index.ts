@@ -161,10 +161,37 @@ const GlobalCommandBody = CommandRequestBody.extend({
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({ logger: false })
   await app.register(fastifyWebsocket)
-  await app.register(fastifyStatic, {
-    root: resolve(__dirname, '..', '..', deps.config.frontendDir),
-    prefix: '/',
-  })
+  const frontendRoot = resolve(__dirname, '..', '..', deps.config.frontendDir)
+  const { existsSync } = await import('node:fs')
+  const frontendBuilt = existsSync(resolve(frontendRoot, 'index.html'))
+  if (frontendBuilt) {
+    await app.register(fastifyStatic, {
+      root: frontendRoot,
+      prefix: '/',
+    })
+    // SPA fallback: any GET that hits the not-found handler and isn't an /api
+    // or /ws path serves index.html so React Router can resolve client-side
+    // routes (/projects/:id, /chat/:session, etc.) on a hard refresh.
+    app.setNotFoundHandler((req, reply) => {
+      if (
+        req.method === 'GET' &&
+        !req.url.startsWith('/api') &&
+        !req.url.startsWith('/ws') &&
+        !req.url.startsWith('/assets')
+      ) {
+        return reply.type('text/html').sendFile('index.html')
+      }
+      return reply.code(404).send({ error: 'NOT_FOUND' })
+    })
+  } else {
+    // No build present: API still serves; "/" returns a hint so the operator
+    // knows what to do. Useful when running `npm run dev` without a prior
+    // `npm run web:build`.
+    app.get('/', async (_req, reply) => {
+      reply.type('text/plain').code(503)
+      return `Frontend not built. Run: npm run web:build (expected at ${frontendRoot})`
+    })
+  }
 
   // Detect pandoc once at boot (P1S4). `which`/`where` cross-platform via PATH
   //  resolution from execFile; cache result.

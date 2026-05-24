@@ -27,10 +27,10 @@ The reference for *what* each surface contains is [`../FRONTEND-HANDOFF.md`](../
 | P2 Module components (M1-M5) | 5 | 0 | 0 |
 | P2 Module discovery (P2S1) | 1 | 0 | 0 |
 | P3 Stubs (E1-E2) | 2 | 0 | 0 |
-| P3 Removal (R1) | 0 | 0 | 1 (deferred) |
-| **Total** | **41** | **0** | **1** |
+| P3 Removal (R1) | 1 | 0 | 0 |
+| **Total** | **42** | **0** | **0** |
 
-Only R1 (legacy `src/frontend/` removal) remains — deliberately deferred until a few days of dogfooding the React frontend confirms full parity.
+All items closed. R1 landed alongside Vite manual-chunk splitting; initial JS dropped from 297 KB gz → 155 KB gz (-48%).
 - **Depends on**: lists item IDs that must land first.
 - **Done means**: the acceptance criteria are met *and* an entry exists in the rewrite's testing/storybook surface where applicable.
 - The rewrite happens in a new workspace under `src/web/` (TypeScript + Vite). The legacy `src/frontend/` stays served until Phase 1.5 is feature-complete, then is removed in a single commit.
@@ -367,11 +367,12 @@ Each lives under `src/web/components/module/` and is pure render + callbacks; st
 ## P3 — Removal of legacy frontend
 
 ### R1. Delete `src/frontend/` static UI
-**Status**: ☐ · **Depends on**: every P0/P1 item above
-**Status detail**: deferred — Phase 1.5 React frontend ships alongside the legacy UI. Run `FRONTEND_DIR=./src/web/dist npm start` after `npm run web:build` to serve the new one. Remove the legacy commit-by-commit once a few days of dogfooding confirm parity.
-- Single commit removing the legacy UI, switching Fastify to serve the Vite build, and updating dev scripts.
-- README + FRONTEND-HANDOFF cross-references updated.
-- **Acceptance**: `pnpm dev` boots and serves the React app at `/`; the old UI is gone from `src/frontend/`.
+**Status**: ✓
+- Single commit removed `src/frontend/` (client.js, index.html, slash-parser.js, ws-backoff.js) and the redundant `tests/slash-parser.test.ts` + `tests/ws-backoff.test.ts` (frontend equivalents live in `src/web/tests/`).
+- Default `FRONTEND_DIR` is now `./src/web/dist`; `npm start` serves the Vite build when present and returns a clear 503 hint when not. SPA fallback added so `/projects/:id` deep links resolve via `index.html`.
+- New scripts: `npm run start:full` and `npm run dev:full` chain `web:build` before boot. README updated.
+- Phase 5 regression cleaned up: `/api/projects/:id/budget` was registered by both projects and invoicing modules — projects' stale handler removed (invoicing's richer Phase 5 shape is canonical).
+- Manual chunk split + route-level `lazy()`: initial JS preload dropped **297 KB gz → 155 KB gz (-48%)**; vendor-markdown (101 KB gz) and per-route bundles are now demand-loaded.
 
 ---
 

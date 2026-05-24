@@ -1,37 +1,63 @@
+import { lazy, Suspense, type ReactElement } from 'react'
 import { createBrowserRouter, Navigate } from 'react-router-dom'
 import { AppShell } from './shell/AppShell'
 import { ChatRoute } from './routes/chat/ChatRoute'
-import { DraftsRoute } from './routes/drafts/DraftsRoute'
-import { SkillsRoute } from './routes/skills/SkillsRoute'
-import { SettingsRoute } from './routes/settings/SettingsRoute'
-import { EmailRoute } from './routes/modules/EmailRoute'
-import { ProjectsRoute } from './routes/modules/ProjectsRoute'
-import { ProposalsRoute } from './routes/modules/ProposalsRoute'
-import { InvoicingRoute } from './routes/modules/InvoicingRoute'
-import { ComponentsRoute } from './routes/dev/ComponentsRoute'
 import { NotFound } from './routes/NotFound'
+import { RouteSkeleton } from './components/shared/RouteSkeleton'
+
+const DraftsRoute = lazy(() =>
+  import('./routes/drafts/DraftsRoute').then((m) => ({ default: m.DraftsRoute })),
+)
+const SkillsRoute = lazy(() =>
+  import('./routes/skills/SkillsRoute').then((m) => ({ default: m.SkillsRoute })),
+)
+const SettingsRoute = lazy(() =>
+  import('./routes/settings/SettingsRoute').then((m) => ({ default: m.SettingsRoute })),
+)
+const EmailRoute = lazy(() =>
+  import('./routes/modules/EmailRoute').then((m) => ({ default: m.EmailRoute })),
+)
+const ProjectsRoute = lazy(() =>
+  import('./routes/modules/ProjectsRoute').then((m) => ({ default: m.ProjectsRoute })),
+)
+const ProposalsRoute = lazy(() =>
+  import('./routes/modules/ProposalsRoute').then((m) => ({ default: m.ProposalsRoute })),
+)
+const InvoicingRoute = lazy(() =>
+  import('./routes/modules/InvoicingRoute').then((m) => ({ default: m.InvoicingRoute })),
+)
+
+function lazyElement(node: ReactElement): ReactElement {
+  return <Suspense fallback={<RouteSkeleton variant="list" />}>{node}</Suspense>
+}
 
 const baseChildren = [
   { index: true, element: <Navigate to="/chat" replace /> },
   { path: 'chat', element: <ChatRoute /> },
   { path: 'chat/:sessionId', element: <ChatRoute /> },
-  { path: 'email', element: <EmailRoute /> },
-  { path: 'email/:emailId', element: <EmailRoute /> },
-  { path: 'projects', element: <ProjectsRoute /> },
-  { path: 'projects/:projectId', element: <ProjectsRoute /> },
-  { path: 'proposals', element: <ProposalsRoute /> },
-  { path: 'proposals/:proposalId', element: <ProposalsRoute /> },
-  { path: 'invoicing', element: <InvoicingRoute /> },
-  { path: 'invoicing/:invoiceId', element: <InvoicingRoute /> },
-  { path: 'drafts', element: <DraftsRoute /> },
-  { path: 'skills', element: <SkillsRoute /> },
-  { path: 'settings', element: <SettingsRoute /> },
+  { path: 'email', element: lazyElement(<EmailRoute />) },
+  { path: 'email/:emailId', element: lazyElement(<EmailRoute />) },
+  { path: 'projects', element: lazyElement(<ProjectsRoute />) },
+  { path: 'projects/:projectId', element: lazyElement(<ProjectsRoute />) },
+  { path: 'proposals', element: lazyElement(<ProposalsRoute />) },
+  { path: 'proposals/:proposalId', element: lazyElement(<ProposalsRoute />) },
+  { path: 'invoicing', element: lazyElement(<InvoicingRoute />) },
+  { path: 'invoicing/:invoiceId', element: lazyElement(<InvoicingRoute />) },
+  { path: 'drafts', element: lazyElement(<DraftsRoute />) },
+  { path: 'skills', element: lazyElement(<SkillsRoute />) },
+  { path: 'settings', element: lazyElement(<SettingsRoute />) },
 ]
 
 // Dev-only sandbox at /__dev/components. Tree-shaken from production builds
 // by Vite when import.meta.env.DEV is false.
-const devChildren = import.meta.env.DEV
-  ? [{ path: '__dev/components', element: <ComponentsRoute /> }]
+const ComponentsRoute = import.meta.env.DEV
+  ? lazy(() =>
+      import('./routes/dev/ComponentsRoute').then((m) => ({ default: m.ComponentsRoute })),
+    )
+  : null
+
+const devChildren = ComponentsRoute
+  ? [{ path: '__dev/components', element: lazyElement(<ComponentsRoute />) }]
   : []
 
 export const router = createBrowserRouter([

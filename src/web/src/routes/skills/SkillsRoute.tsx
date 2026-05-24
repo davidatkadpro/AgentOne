@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { MarkdownView } from '@/components/shared/MarkdownView'
 import { useSkills, type SkillListEntry } from '@/api/skills'
 import { RouteSkeleton } from '@/components/shared/RouteSkeleton'
 import { EmptyState } from '@/components/shared/EmptyState'
@@ -95,7 +94,7 @@ export function SkillsRoute() {
               ) : null}
             </div>
             <div className="prose-sm">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{selectedSkill.body}</ReactMarkdown>
+              <MarkdownView content={selectedSkill.body} />
             </div>
           </div>
         ) : (

@@ -1,13 +1,22 @@
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import rehypeHighlight from 'rehype-highlight'
 import { cn } from '@/lib/cn'
+import { MarkdownView } from '@/components/shared/MarkdownView'
 import { ToolChip } from './ToolChip'
 import type { Turn, ToolChipState } from '@/types/domain'
 
 export interface MessageItemProps {
   turn: Turn
   toolChips: ToolChipState[]
+}
+
+const components = {
+  code({ children, className }: { children?: React.ReactNode; className?: string }) {
+    return (
+      <code className={cn('rounded bg-surface px-1 py-0.5 text-xs', className)}>{children}</code>
+    )
+  },
+  pre({ children }: { children?: React.ReactNode }) {
+    return <pre className="bg-surface rounded-md p-3 overflow-x-auto text-xs">{children}</pre>
+  },
 }
 
 export function MessageItem({ turn, toolChips }: MessageItemProps) {
@@ -30,22 +39,7 @@ export function MessageItem({ turn, toolChips }: MessageItemProps) {
         )}
       >
         {isAssistant ? (
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeHighlight]}
-            components={{
-              code({ children, className }) {
-                return (
-                  <code className={cn('rounded bg-surface px-1 py-0.5 text-xs', className)}>{children}</code>
-                )
-              },
-              pre({ children }) {
-                return <pre className="bg-surface rounded-md p-3 overflow-x-auto text-xs">{children}</pre>
-              },
-            }}
-          >
-            {turn.content}
-          </ReactMarkdown>
+          <MarkdownView content={turn.content} highlight components={components} />
         ) : (
           <span className="whitespace-pre-wrap">{turn.content}</span>
         )}

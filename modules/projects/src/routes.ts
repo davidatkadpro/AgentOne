@@ -580,21 +580,9 @@ export async function registerProjectsRoutes(
     })
   }
 
-  // --- GET /api/projects/:id/budget (P2P9) ---
-  for (const url of bothPaths('/:id/budget')) {
-    app.get(url, async (req, reply) => {
-      const params = ProjectIdParams.safeParse(req.params)
-      if (!params.success) {
-        reply.code(400)
-        return { error: 'INVALID_PARAMS' }
-      }
-      if (!service.getProject(params.data.id)) {
-        reply.code(404)
-        return { error: 'NOT_FOUND' }
-      }
-      return service.getProjectBudget(params.data.id)
-    })
-  }
+  // Note: GET /api/projects/:id/budget moved to the invoicing module in
+  // Phase 5 — it returns the richer InvoiceBudget shape that includes
+  // invoiced + paid totals. See modules/invoicing/src/routes.ts.
 }
 
 /**

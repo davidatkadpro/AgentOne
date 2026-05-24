@@ -20,7 +20,7 @@ const Env = z.object({
   DEFAULT_MODEL_PROFILE: z.string().default('local-fast'),
   COMPRESSOR_MODEL_PROFILE: z.string().default('local-compressor'),
   EMBEDDING_MODEL_PROFILE: z.string().default('local-embed'),
-  FRONTEND_DIR: z.string().default('./src/frontend'),
+  FRONTEND_DIR: z.string().default('./src/web/dist'),
   STORAGE_ROOT: z.string().default('./storage'),
   WIKI_PREFIX: z.string().default('wiki'),
   /** When set, install the example audit-log hook and write a JSONL record

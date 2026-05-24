@@ -34,19 +34,31 @@ See [CONTEXT.md](CONTEXT.md) for the domain language and [docs/PRD.md](docs/PRD.
 
 ```bash
 npm install
-cp .env.example .env   # then edit — see "Configuration" below
-npm run dev            # watches and restarts on change
+npm run web:install     # one-time: install frontend deps
+cp .env.example .env    # then edit — see "Configuration" below
+npm run web:build       # build the React frontend into src/web/dist
+npm run dev             # watches and restarts on change
 ```
 
 Open [http://127.0.0.1:3737](http://127.0.0.1:3737) for the chat UI.
 
+For active frontend work, run the Vite dev server in a second terminal — it
+proxies `/api` + `/ws` to Fastify on port 3737:
+
+```bash
+npm run web:dev         # http://localhost:5174
+```
+
 Other scripts:
 
 ```bash
-npm start         # production-style: no watcher
-npm test          # vitest run
+npm start               # production-style: no watcher
+npm run start:full      # web:build + start
+npm run dev:full        # web:build + dev (watcher)
+npm test                # vitest run
 npm run test:watch
 npm run typecheck
+npm run web:test        # frontend tests
 ```
 
 ---

@@ -1,8 +1,7 @@
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { Copy } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/shared/EmptyState'
+import { MarkdownView } from '@/components/shared/MarkdownView'
 import { useProjectScope } from '@/api/projects'
 
 export interface ScopeTabProps {
@@ -40,7 +39,7 @@ export function ScopeTab({ projectId }: ScopeTabProps) {
         className="flex-1 overflow-auto scrollbar-thin p-4 prose-sm text-sm text-fg"
         data-testid="scope-markdown"
       >
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{scope.data.markdown}</ReactMarkdown>
+        <MarkdownView content={scope.data.markdown} />
       </div>
     </div>
   )

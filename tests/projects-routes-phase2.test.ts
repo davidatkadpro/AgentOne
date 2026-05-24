@@ -479,36 +479,6 @@ describe('Projects routes — Phase 2 additions', () => {
     expect(res.json().entries).toEqual([])
   })
 
-  // ── P2P9: budget ─────────────────────────────────────────────────────────
-  it('P2P9: GET /api/projects/:id/budget returns zeroed budget when no invoices', async () => {
-    const p = h.service.createProject(
-      { number: '24001', name: 'P' },
-      { actor: { type: 'user' } },
-    )
-    const res = await h.app.inject({
-      method: 'GET',
-      url: `/api/projects/${p.id}/budget`,
-    })
-    expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({
-      projectId: p.id,
-      budgetCents: null,
-      invoicedCents: 0,
-      paidCents: 0,
-      draftCents: 0,
-    })
-  })
-
-  it('P2P9: budget reads budgetCents from project metadata when set', async () => {
-    const p = h.service.createProject(
-      { number: '24001', name: 'P', metadata: { budgetCents: 500000 } },
-      { actor: { type: 'user' } },
-    )
-    const res = await h.app.inject({
-      method: 'GET',
-      url: `/api/projects/${p.id}/budget`,
-    })
-    expect(res.statusCode).toBe(200)
-    expect(res.json().budgetCents).toBe(500000)
-  })
+  // P2P9: GET /api/projects/:id/budget moved to the invoicing module in Phase 5
+  // — see tests/invoicing-routes.test.ts for the canonical InvoiceBudget shape.
 })
