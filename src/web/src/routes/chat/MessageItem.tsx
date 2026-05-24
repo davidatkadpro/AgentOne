@@ -3,11 +3,17 @@ import { MarkdownView } from '@/components/shared/MarkdownView'
 import { AgentAvatar } from '@/components/shared/AgentAvatar'
 import { useHealth } from '@/api/health'
 import { ToolChip } from './ToolChip'
+import { MessageActionRow } from './MessageActionRow'
 import type { Turn, ToolChipState } from '@/types/domain'
+import type { RecallSource } from '@/stores/session-stream'
 
 export interface MessageItemProps {
   turn: Turn
   toolChips: ToolChipState[]
+  recallSources?: RecallSource[]
+  /** When true, the action row (copy / info / branch / retry) is hidden —
+   *  used for the live streaming assistant turn before it finalizes. */
+  isActive?: boolean
 }
 
 const components = {
@@ -21,7 +27,12 @@ const components = {
   },
 }
 
-export function MessageItem({ turn, toolChips }: MessageItemProps) {
+export function MessageItem({
+  turn,
+  toolChips,
+  recallSources = [],
+  isActive = false,
+}: MessageItemProps) {
   const isUser = turn.role === 'user'
   const isAssistant = turn.role === 'assistant'
   const health = useHealth()
@@ -41,6 +52,14 @@ export function MessageItem({ turn, toolChips }: MessageItemProps) {
                 <ToolChip key={c.toolCallId} chip={c} />
               ))}
             </div>
+          ) : null}
+          {!isActive && turn.content ? (
+            <MessageActionRow
+              sessionId={turn.sessionId}
+              turnId={turn.id}
+              content={turn.content}
+              recallSources={recallSources}
+            />
           ) : null}
         </div>
       </div>

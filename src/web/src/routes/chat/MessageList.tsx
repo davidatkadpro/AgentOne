@@ -84,9 +84,12 @@ export function MessageList({ sessionId, embedded = false }: MessageListProps) {
             key={turn.id}
             turn={turn}
             toolChips={stream.toolCalls[turn.id] ?? []}
+            recallSources={stream.recallByTurn[turn.id] ?? []}
           />
         ))}
-        {activeTurn ? <MessageItem turn={activeTurn} toolChips={activeChips} /> : null}
+        {activeTurn ? (
+          <MessageItem turn={activeTurn} toolChips={activeChips} isActive />
+        ) : null}
         {stream.metaRows.length > 0 ? (
           <div className="space-y-1 pt-2 border-t border-border">
             {stream.metaRows.map((row) => (

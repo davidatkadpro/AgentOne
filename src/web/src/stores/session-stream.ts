@@ -10,6 +10,12 @@ export interface MetaRow {
   kind: 'info' | 'warn' | 'error'
 }
 
+export interface RecallSource {
+  kind: 'wiki' | 'history'
+  ref: string
+  title: string
+}
+
 export interface ActiveAssistant {
   turnId: string
   text: string
@@ -25,6 +31,12 @@ export interface SessionStream {
   profileMismatch: { requiredProfile: string; message: string } | null
   awaitingInput: { notificationId: number; question: string } | null
   metaRows: MetaRow[]
+  /** Sources from `recall.injected` events that arrived since the last
+   *  assistant turn ended. Drained into `recallByTurn` when the next
+   *  assistant turn completes (or is cancelled). */
+  pendingRecall: RecallSource[]
+  /** Recall sources attached to a finalized assistant turn. */
+  recallByTurn: Record<string, RecallSource[]>
 }
 
 interface SessionStreamState {
@@ -50,7 +62,15 @@ function emptyStream(sessionId: string): SessionStream {
     profileMismatch: null,
     awaitingInput: null,
     metaRows: [],
+    pendingRecall: [],
+    recallByTurn: {},
   }
+}
+
+function drainRecallTo(stream: SessionStream, turnId: string): void {
+  if (stream.pendingRecall.length === 0) return
+  stream.recallByTurn = { ...stream.recallByTurn, [turnId]: stream.pendingRecall }
+  stream.pendingRecall = []
 }
 
 function pushMeta(stream: SessionStream, text: string, kind: MetaRow['kind'], ts: number): void {
@@ -121,6 +141,8 @@ export const useSessionStreamStore = create<SessionStreamState>((set) => ({
         turns: existing.turns,
         toolCalls: { ...existing.toolCalls },
         metaRows: [...existing.metaRows],
+        pendingRecall: [...existing.pendingRecall],
+        recallByTurn: existing.recallByTurn,
       }
 
       switch (event.type) {
@@ -164,6 +186,7 @@ export const useSessionStreamStore = create<SessionStreamState>((set) => ({
             stream.turns = [...stream.turns, newTurn]
             const chips = Object.values(a.toolChips)
             if (chips.length > 0) stream.toolCalls[a.turnId] = chips
+            drainRecallTo(stream, a.turnId)
             stream.activeAssistant = null
           }
           break
@@ -260,6 +283,7 @@ export const useSessionStreamStore = create<SessionStreamState>((set) => ({
             ]
             const chips = Object.values(a.toolChips)
             if (chips.length > 0) stream.toolCalls[a.turnId] = chips
+            drainRecallTo(stream, a.turnId)
             stream.activeAssistant = null
           }
           pushMeta(stream, `Cancelled (${event.kind})`, 'warn', event.ts)
@@ -269,12 +293,9 @@ export const useSessionStreamStore = create<SessionStreamState>((set) => ({
           stream.awaitingInput = { notificationId: event.notificationId, question: event.question }
           break
         case 'recall.injected':
-          pushMeta(
-            stream,
-            `Passive recall: ${event.sources.length} source${event.sources.length === 1 ? '' : 's'}`,
-            'info',
-            event.ts,
-          )
+          // Buffer until the next assistant turn completes; the action row
+          // on that turn surfaces these via an info pill.
+          stream.pendingRecall = [...stream.pendingRecall, ...event.sources]
           break
         case 'context.compressing':
           pushMeta(stream, 'Compressing context…', 'info', event.ts)
