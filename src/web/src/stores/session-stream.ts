@@ -58,13 +58,27 @@ function pushMeta(stream: SessionStream, text: string, kind: MetaRow['kind'], ts
   if (stream.metaRows.length > 50) stream.metaRows.shift()
 }
 
+function safeParseJson(raw: string | undefined): unknown {
+  if (raw === undefined) return undefined
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return raw
+  }
+}
+
 function toolChipFromRecord(rec: ToolCallRecord): ToolChipState {
-  return {
+  const out: ToolChipState = {
     toolCallId: rec.toolCallId,
     tool: rec.tool,
     status: rec.ok === undefined ? 'pending' : rec.ok ? 'done' : 'failed',
-    durationMs: rec.durationMs,
   }
+  if (rec.durationMs !== undefined) out.durationMs = rec.durationMs
+  const args = safeParseJson(rec.argsJson)
+  if (args !== undefined) out.args = args
+  const result = safeParseJson(rec.resultJson)
+  if (result !== undefined) out.result = result
+  return out
 }
 
 export const useSessionStreamStore = create<SessionStreamState>((set) => ({
@@ -159,6 +173,7 @@ export const useSessionStreamStore = create<SessionStreamState>((set) => ({
             toolCallId: event.toolCallId,
             tool: event.tool,
             status: 'pending',
+            args: event.args,
           }
           if (stream.activeAssistant) {
             stream.activeAssistant = {

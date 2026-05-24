@@ -55,6 +55,23 @@ describe('modules/proposals/skills — loader discovery', () => {
     expect(idx.bySlashCommand.get('generate-proposal')?.qualifiedName).toBe(
       'proposals/generate-proposal',
     )
+    expect(idx.bySlashCommand.get('explain-estimate')?.qualifiedName).toBe(
+      'proposals/explain-estimate',
+    )
+  })
+
+  it('explain-estimate ships as an ask_agent-only walkthrough', async () => {
+    const idx = await loadSkillIndex({
+      root: join(REPO, 'skills'),
+      moduleSkillRoots: [
+        { module: 'proposals', root: join(REPO, 'modules', 'proposals', 'skills') },
+      ],
+    })
+    const skill = idx.skills.get('proposals/explain-estimate')
+    expect(skill).toBeDefined()
+    expect(skill?.frontmatter.surface).toBe('ask_agent')
+    // No tool wiring — read-only prompt walkthrough.
+    expect(skill?.frontmatter.tools).toBeUndefined()
   })
 })
 

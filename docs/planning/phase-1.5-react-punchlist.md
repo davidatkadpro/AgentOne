@@ -14,23 +14,23 @@ The reference for *what* each surface contains is [`../FRONTEND-HANDOFF.md`](../
 
 - **Status**: ☐ todo · ◐ in progress · ☑ done · ⊘ blocked
 
-### Status overview (2026-05-23)
+### Status overview (2026-05-24)
 
 | Group | Done | In progress | Todo |
 |---|---|---|---|
 | P0 Foundations (F1-F6) | 6 | 0 | 0 |
-| P1 Shell (S1-S5) | 4 | 1 (S4 toast wiring) | 0 |
-| P1 Chat (C1-C5) | 3 | 2 (C2 expand, C3 filter) | 0 |
+| P1 Shell (S1-S5) | 5 | 0 | 0 |
+| P1 Chat (C1-C5) | 5 | 0 | 0 |
 | P1 Aux (A1-A2) | 2 | 0 | 0 |
-| P1 Settings (G1-G8) | 6 | 1 (G3 react-hook-form) | 1 (G7 needs P1S6) |
-| P1 Server (P1S1-P1S7) | 6 | 0 | 1 (P1S6) |
-| P2 Module components (M1-M5) | 0 | 5 (no dev-route fixtures) | 0 |
+| P1 Settings (G1-G8) | 8 | 0 | 0 |
+| P1 Server (P1S1-P1S7) | 7 | 0 | 0 |
+| P2 Module components (M1-M5) | 5 | 0 | 0 |
 | P2 Module discovery (P2S1) | 1 | 0 | 0 |
 | P3 Stubs (E1-E2) | 2 | 0 | 0 |
 | P3 Removal (R1) | 0 | 0 | 1 (deferred) |
-| **Total** | **30** | **9** | **3** |
+| **Total** | **41** | **0** | **1** |
 
-The 3 remaining todos: P1S6 (`GET /api/hooks`), R1 (legacy removal). The 9 in-progress items are mostly polish — none are blockers for Phase 2.
+Only R1 (legacy `src/frontend/` removal) remains — deliberately deferred until a few days of dogfooding the React frontend confirms full parity.
 - **Depends on**: lists item IDs that must land first.
 - **Done means**: the acceptance criteria are met *and* an entry exists in the rewrite's testing/storybook surface where applicable.
 - The rewrite happens in a new workspace under `src/web/` (TypeScript + Vite). The legacy `src/frontend/` stays served until Phase 1.5 is feature-complete, then is removed in a single commit.
@@ -112,7 +112,7 @@ The 3 remaining todos: P1S6 (`GET /api/hooks`), R1 (legacy removal). The 9 in-pr
 - **Acceptance**: visual parity with the legacy session list plus the two indicators above.
 
 ### S4. Notification tray
-**Status**: ◐ · **Depends on**: F3, F4, S1, P1S5
+**Status**: ☑ · **Depends on**: F3, F4, S1, P1S5
 **Remaining**: toast-on-arrival is wired via sonner `<Toaster />` mount but the WS dispatcher doesn't push toasts onto the queue yet (only the bell badge updates). One small wiring change in `stores/notifications.ts` `applyEvent` to call `toast(...)`.
 - shadcn `Sheet` anchored right; ~400px wide; manually opened by the bell.
 - Renders each notification: title, body, then (if `kind === 'attention_needed'` and `payload_json.options` is an array of `{ label, value }`) the options as buttons.
@@ -142,7 +142,7 @@ The 3 remaining todos: P1S6 (`GET /api/hooks`), R1 (legacy removal). The 9 in-pr
 - **Acceptance**: streamed assistant deltas render incrementally; code blocks highlight; long messages don't break the layout; `<MessageList>` is importable from outside the chat route with the props above.
 
 ### C2. Tool call chips
-**Status**: ◐ · **Depends on**: C1
+**Status**: ☑ · **Depends on**: C1
 **Remaining**: chips render state + truncation badge + failure tooltip, but no hover/click expansion to show full call args + result yet. Add a Popover with the args JSON.
 - Inline pills inside the assistant message at the point the call happened.
 - State: pending (spinner) → completed (duration in ms/s) → failed (error code).
@@ -150,7 +150,7 @@ The 3 remaining todos: P1S6 (`GET /api/hooks`), R1 (legacy removal). The 9 in-pr
 - **Acceptance**: `tool.called` / `tool.completed` / `tool.failed` events update the chip; truncated results show a `truncated` badge.
 
 ### C3. Composer with slash overlay
-**Status**: ◐ · **Depends on**: F2, F3, C1
+**Status**: ☑ · **Depends on**: F2, F3, C1
 **Remaining**: overlay lists every command and supports arrow-key + Enter selection, but doesn't filter incrementally as the user types past the `/`. Add a prefix filter in `SlashOverlay.tsx`.
 - `textarea` with auto-grow; `Enter` sends, `Shift+Enter` newline.
 - `/` at the start of an empty composer opens a shadcn `Command` (cmdk) overlay populated by `GET /api/commands`; reuses `slash-parser` for argument shape.
@@ -203,7 +203,7 @@ The 3 remaining todos: P1S6 (`GET /api/hooks`), R1 (legacy removal). The 9 in-pr
 - **Acceptance**: list matches `profiles/agents/*.yaml` on disk.
 
 ### G3. Profiles tab — editor form
-**Status**: ◐ · **Depends on**: G2, P1 (server item below)
+**Status**: ☑ · **Depends on**: G2, P1 (server item below)
 **Remaining**: editor uses plain `useState` + server-side validation rather than `react-hook-form` + `zod` resolver. Field-level server errors (`details: [{ path, message }]`) DO map to the right field via `setFieldErrors`. Migrate to react-hook-form for client-side validation parity and dirty-state tracking.
 - `react-hook-form` + `zod` resolver mirroring the server's profile schema.
 - Sections: identity (id, name, description), model, expert budgets, `deny_tools`, `auto_distill`.
@@ -229,7 +229,7 @@ The 3 remaining todos: P1S6 (`GET /api/hooks`), R1 (legacy removal). The 9 in-pr
 - **Acceptance**: changing here updates the top bar in real time.
 
 ### G7. Hooks tab (read-only)
-**Status**: ☐ · **Depends on**: G1, F3, **P1S6** (new — `GET /api/hooks`)
+**Status**: ☑ · **Depends on**: G1, F3, P1S6
 - Lists hooks from the current `settings.json`: event filter, handler, enabled state.
 - Note callout: *"Edit `settings.json` to add or remove hooks; this view is read-only in v2."*
 - **Acceptance**: any hook present in `settings.json` appears here.
@@ -283,7 +283,7 @@ The 3 remaining todos: P1S6 (`GET /api/hooks`), R1 (legacy removal). The 9 in-pr
 - **Acceptance**: integration tests for all three routes; S4 (Notification tray) can answer an attention-needed notification end-to-end with one click.
 
 ### P1S6. `GET /api/hooks` — read-only hook listing (new)
-**Status**: ☐ · **Depends on**: —
+**Status**: ☑ · **Depends on**: —
 - Surface configured hooks from `settings.json` for G7. Each entry: `event`, `handler`, `enabled`.
 - Loaded from disk on each request (`settings.json` is small) so an operator can edit and refresh without restart.
 - **Acceptance**: route returns the parsed hook list; G7 renders each entry; missing or malformed `settings.json` returns an empty array.
@@ -300,7 +300,7 @@ The 3 remaining todos: P1S6 (`GET /api/hooks`), R1 (legacy removal). The 9 in-pr
 Each lives under `src/web/components/module/` and is pure render + callbacks; state stays in TanStack Query (REST) and Zustand (WS). All five ship with an entry on the dev-only `/__dev/components` route (pinned in the impl spec §8 — no Storybook for Phase 1.5).
 
 ### M1. `<ActionToolbar module contextId actions />`
-**Status**: ◐ · **Depends on**: F3, P2S1
+**Status**: ☑ · **Depends on**: F3, P2S1
 **Remaining**: component shipped (renders primary buttons + More overflow + AlertDialog gate); no `/__dev/components` dev-route or fixture yet. Will be exercised first by Phase 2 (Projects).
 - Renders `actions` (from `GET /api/<module>/actions`) as primary buttons + `▾ More` overflow.
 - `requires_confirmation: true` interposes a shadcn `AlertDialog`.
@@ -308,7 +308,7 @@ Each lives under `src/web/components/module/` and is pure render + callbacks; st
 - **Acceptance**: dev-route renders a mock-toolbar that fires the dispatch callback; broken actions (server `ok: false`) render disabled with the error in a tooltip.
 
 ### M2. `<InlineSessionStream sessionId open onAwaitingInput />`
-**Status**: ◐ · **Depends on**: F4
+**Status**: ☑ · **Depends on**: F4
 **Remaining**: component shipped, reuses `<MessageList embedded>` from C1, calls `onAwaitingInput` on `session.awaiting_input`. No dev-route fixture.
 - Collapsible block subscribing to the session's WS stream; renders assistant deltas + tool chips with the same renderer as Chat (extract `<MessageList>` from C1 first).
 - Banner with `Open in full chat` link routing to `/chat/<sessionId>`.
@@ -316,21 +316,21 @@ Each lives under `src/web/components/module/` and is pure render + callbacks; st
 - **Acceptance**: dev-route subscribes to an existing session and matches the Chat route's rendering.
 
 ### M3. `<AskAgentMenu module tab contextId skills />`
-**Status**: ◐ · **Depends on**: F3, P2S1
+**Status**: ☑ · **Depends on**: F3, P2S1
 **Remaining**: component shipped (filters by `surface` + `tabs`). No dev-route fixture.
 - Dropdown of context-tagged Skills filtered by `surface === 'ask_agent' || 'both'` and `tabs` containing the current tab.
 - Same dispatch semantics as `<ActionToolbar>` — POSTs to `/api/<module>/actions`, returns the spawned session id.
 - **Acceptance**: dev-route renders with a mock skill list, filters by tab, dispatches on click.
 
 ### M4. `<KpiStrip pills />`
-**Status**: ◐ · **Depends on**: —
+**Status**: ☑ · **Depends on**: —
 **Remaining**: component shipped. No dev-route fixture.
 - Top-of-list count strip; each pill is a `<button>` calling `onClick(filterId)`.
 - Active pill visually distinct; total count always-visible.
 - **Acceptance**: dev-route renders a strip; clicking a pill calls the callback with the right id.
 
 ### M5. `<StatusActionButton status transitions />`
-**Status**: ◐ · **Depends on**: —
+**Status**: ☑ · **Depends on**: —
 **Remaining**: component shipped (primary + overflow). No dev-route fixture.
 - Primary button whose label/action come from `transitions[status]`; overflow menu (`▾`) for the rest.
 - `transitions` is `{ [status]: { primary: { label, onClick }, secondary: Array<{ label, onClick }> } }`.

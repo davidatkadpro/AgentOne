@@ -44,6 +44,13 @@ export interface ToolChipState {
   failCode?: string
   failMessage?: string
   truncated?: boolean
+  /** Captured from the `tool.called` event (live) or `argsJson` of the
+   *  persisted record (hydrated). May be undefined for chips emitted before
+   *  the args wiring landed. */
+  args?: unknown
+  /** Captured from the persisted `resultJson`. Live results aren't on the
+   *  WS event; the chip stays argless until the next session reload. */
+  result?: unknown
 }
 
 export interface ProfileListEntry {

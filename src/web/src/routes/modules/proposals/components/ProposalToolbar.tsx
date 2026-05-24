@@ -2,9 +2,10 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
-import { AlertDialog } from '@/components/ui/Dialog'
+import { AlertDialog, Dialog } from '@/components/ui/Dialog'
 import { StatusActionButton, type StatusTransition } from '@/components/module/StatusActionButton'
 import {
+  useArtifacts,
   useReviseEstimate,
   useUpdateEstimate,
   useUpdateProposal,
@@ -37,6 +38,7 @@ export function ProposalToolbar({
   const reviseEstimate = useReviseEstimate()
   const [downloadOpen, setDownloadOpen] = useState(false)
   const [confirmRevise, setConfirmRevise] = useState(false)
+  const [supersedeOpen, setSupersedeOpen] = useState(false)
 
   // Combined display status surfaced in the badge + state machine.
   const displayStatus = proposal
@@ -108,6 +110,23 @@ export function ProposalToolbar({
                 onSuccess: () => toast.success('Proposal rejected.'),
               },
             ),
+        },
+        {
+          label: 'Supersede…',
+          onClick: () => setSupersedeOpen(true),
+        },
+      ],
+    },
+    'Proposal · accepted': {
+      primary: {
+        label: 'Accepted',
+        onClick: () => {},
+        disabled: true,
+      },
+      secondary: [
+        {
+          label: 'Supersede…',
+          onClick: () => setSupersedeOpen(true),
         },
       ],
     },
@@ -207,6 +226,102 @@ export function ProposalToolbar({
           })
         }
       />
+
+      {proposal ? (
+        <SupersedePicker
+          open={supersedeOpen}
+          onOpenChange={setSupersedeOpen}
+          currentProposalId={proposal.id}
+          projectId={estimate.projectId}
+          onConfirm={(replacementId) =>
+            updateProposal.mutate(
+              { status: 'superseded', supersededByProposalId: replacementId },
+              {
+                onSuccess: () => {
+                  toast.success(
+                    replacementId
+                      ? 'Proposal superseded by the chosen replacement.'
+                      : 'Proposal marked superseded.',
+                  )
+                  setSupersedeOpen(false)
+                },
+              },
+            )
+          }
+        />
+      ) : null}
     </div>
+  )
+}
+
+interface SupersedePickerProps {
+  open: boolean
+  onOpenChange(open: boolean): void
+  currentProposalId: string
+  projectId: string
+  onConfirm(replacementId: string | null): void
+}
+
+/** Picks a replacement proposal from the same project. The list is the
+ *  set of issued or accepted proposals — drafts can't supersede anything. */
+function SupersedePicker({
+  open,
+  onOpenChange,
+  currentProposalId,
+  projectId,
+  onConfirm,
+}: SupersedePickerProps) {
+  const rows = useArtifacts({ projectId })
+  const [replacement, setReplacement] = useState<string | null>(null)
+  const candidates = (rows.data ?? []).filter(
+    (r) =>
+      r.kind === 'proposal' &&
+      r.id !== currentProposalId &&
+      (r.displayStatus === 'Proposal · issued' ||
+        r.displayStatus === 'Proposal · accepted'),
+  )
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange} title="Supersede this proposal">
+      <div className="space-y-3 text-sm">
+        <p className="text-xs text-muted">
+          Mark this proposal superseded. Optionally point it at the proposal
+          that replaces it — it will appear in the history chain.
+        </p>
+        <label className="block">
+          <div className="text-xs text-muted mb-1">Replacement (optional)</div>
+          <select
+            value={replacement ?? ''}
+            onChange={(e) => setReplacement(e.target.value || null)}
+            className="h-9 w-full px-2 text-sm bg-bg border border-border rounded-md"
+            data-testid="supersede-picker-select"
+          >
+            <option value="">— No replacement —</option>
+            {candidates.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.number} · {c.displayStatus.replace('Proposal · ', '')}
+              </option>
+            ))}
+          </select>
+          {candidates.length === 0 ? (
+            <p className="text-[10px] text-muted mt-1">
+              No issued or accepted siblings yet — supersede without a replacement.
+            </p>
+          ) : null}
+        </label>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            onClick={() => onConfirm(replacement)}
+            data-testid="supersede-picker-confirm"
+          >
+            Supersede
+          </Button>
+        </div>
+      </div>
+    </Dialog>
   )
 }

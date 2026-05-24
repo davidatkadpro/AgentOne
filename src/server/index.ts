@@ -369,6 +369,42 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return { drafts }
   })
 
+  // P1S6 — Read-only listing of event-hook entries. Settings → Hooks tab
+  // renders these so the operator can audit what runs without restarting.
+  // Reads the YAML from disk on each request — the file is small and
+  // operators may hand-edit it; caching at boot would lie about live state.
+  app.get('/api/hooks', async () => {
+    if (!deps.config.eventHooksPath) {
+      return { hooks: [], configPath: null }
+    }
+    try {
+      const raw = await readFile(deps.config.eventHooksPath, 'utf-8')
+      const parsed = yaml.load(raw)
+      if (!Array.isArray(parsed)) {
+        return { hooks: [], configPath: deps.config.eventHooksPath, error: 'NOT_A_LIST' }
+      }
+      const hooks = (parsed as Array<Record<string, unknown>>)
+        .filter((e) => e && typeof e === 'object')
+        .map((e) => ({
+          event: typeof e.on === 'string' ? e.on : '*',
+          handler: typeof e.handler === 'string' ? e.handler : '',
+          description: typeof e.description === 'string' ? e.description : null,
+          enabled: e.enabled !== false, // default true; only `enabled: false` opts out
+        }))
+        .filter((h) => h.handler.length > 0)
+      return { hooks, configPath: deps.config.eventHooksPath }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { hooks: [], configPath: deps.config.eventHooksPath }
+      }
+      return {
+        hooks: [],
+        configPath: deps.config.eventHooksPath,
+        error: err instanceof Error ? err.message : String(err),
+      }
+    }
+  })
+
   app.post('/api/sessions', async (req, reply) => {
     const parsed = CreateSessionBody.safeParse(req.body ?? {})
     if (!parsed.success) {

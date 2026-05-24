@@ -107,6 +107,7 @@ export function Composer({ sessionId, disabled }: ComposerProps) {
         </div>
         <SlashOverlay
           open={slashOpen}
+          query={text.startsWith('/') ? text.slice(1).split(/\s/, 1)[0] ?? '' : ''}
           onSelectCommand={(name) => {
             setText(`/${name} `)
             setSlashOpen(false)

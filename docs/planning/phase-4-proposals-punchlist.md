@@ -25,15 +25,15 @@ Last reviewed: 2026-05-24.
 | P3 Estimate editor (E1-E4) | 4 | 0 | 0 |
 | P4 Proposal preview (V1-V3) | 3 | 0 | 0 |
 | P5 Generation flow (G1-G3) | 3 | 0 | 0 |
-| P6 Revise + supersede (R1-R2) | 1 | 1 | 0 |
+| P6 Revise + supersede (R1-R2) | 2 | 0 | 0 |
 | P7 History + project tab (H1-H2) | 2 | 0 | 0 |
-| P8 Polish + agent QA (Q1-Q3) | 2 | 1 | 0 |
-| **Total** | **32** | **2** | **0** |
+| P8 Polish + agent QA (Q1-Q3) | 3 | 0 | 0 |
+| **Total** | **34** | **0** | **0** |
 
-Remaining: R2 (supersede via UI picker — backend route exists; the toolbar
-currently only exposes Revise). Q1 (AskAgentMenu on the toolbar — placeholder
-History button exists but `<AskAgentMenu>` mount per page is deferred until
-proposals skills land with `surface: 'ask_agent'` entries beyond build-estimate
+All items shipped. R2 picks a replacement proposal via the toolbar's
+overflow menu; Q1 mounts `<AskAgentMenu>` on the proposal detail toolbar
+backed by `build-estimate`, `generate-proposal`, and the new
+`explain-estimate` walkthrough skill (`surface: ask_agent`
 / generate-proposal).
 
 ---
@@ -235,7 +235,7 @@ proposals skills land with `surface: 'ask_agent'` entries beyond build-estimate
 - **Acceptance**: revising creates a new draft; predecessors visible via the History popover.
 
 ### R2. Supersede flow
-**Status**: ◐ · **Depends on**: D2
+**Status**: ☑ · **Depends on**: D2
 - Backend `PATCH /api/proposals/:id { status: 'superseded', supersededByProposalId }` lands in Phase 4 and is covered by `proposals-routes-phase4.test.ts`. Frontend toolbar exposes Revise but not yet a Supersede picker — deferred until we have a second issued proposal in the wild to test against.
 - **Acceptance**: superseding marks the old proposal `superseded`; the chain is visible in History.
 
@@ -261,7 +261,7 @@ proposals skills land with `surface: 'ask_agent'` entries beyond build-estimate
 ## P8 — Polish + agent QA
 
 ### Q1. Per-page `<AskAgentMenu>`
-**Status**: ◐ · **Depends on**: D2, P4P10
+**Status**: ☑ · **Depends on**: D2, P4P10
 - Backend discovery (`GET /api/proposals/actions`) + dispatcher (`POST /api/proposals/actions`) land in Phase 4 and surface both `build-estimate` and `generate-proposal` with `surface: 'both'`. The toolbar still needs a mounted `<AskAgentMenu>` — deferred until more proposals skills land beyond the two foundational ones.
 - **Acceptance**: at least 3 proposals skills exist with `surface: 'ask_agent'`; menu invocation streams a session.
 

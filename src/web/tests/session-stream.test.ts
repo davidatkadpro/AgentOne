@@ -61,6 +61,7 @@ describe('session-stream store', () => {
       tool: 'fs.read',
       status: 'done',
       durationMs: 123,
+      args: {},
     })
   })
 
