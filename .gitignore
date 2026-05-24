@@ -8,3 +8,8 @@ coverage/
 .DS_Store
 Thumbs.db
 *.log
+
+# Playwright MCP debug artifacts
+.playwright-mcp/
+chat-*.png
+page-*.png
