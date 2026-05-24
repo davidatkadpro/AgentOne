@@ -95,6 +95,16 @@ export function SessionList() {
         </button>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-2 space-y-2 pb-2">
+        {filter &&
+        grouped.awaitingInput.length === 0 &&
+        grouped.buckets.today.length === 0 &&
+        grouped.buckets.week.length === 0 &&
+        grouped.buckets.earlier.length === 0 &&
+        grouped.archived.length === 0 ? (
+          <div className="px-3 py-4 text-[11px] text-muted">
+            No sessions match <span className="text-fg font-medium">"{filter}"</span>.
+          </div>
+        ) : null}
         {grouped.awaitingInput.length > 0 ? (
           <div>
             <div className="px-3 text-[10px] uppercase text-warn font-semibold">Awaiting input</div>
