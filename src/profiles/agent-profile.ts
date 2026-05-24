@@ -47,6 +47,14 @@ const AutoDistillSchema = z
   })
   .optional()
 
+const AutoTitleSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    /** Generate a title once the session has this many assistant turns. */
+    trigger_after: z.number().int().positive().max(50).default(3),
+  })
+  .optional()
+
 const AgentProfileSchema = z.object({
   id: z.string().regex(/^[a-z0-9_-]+$/),
   description: z.string().optional(),
@@ -60,6 +68,7 @@ const AgentProfileSchema = z.object({
   permissions: PermissionsSchema,
   passive_recall: PassiveRecallSchema,
   auto_distill: AutoDistillSchema,
+  auto_title: AutoTitleSchema,
   /**
    * Tool-id patterns that this profile is not permitted to call. Wired
    * through the HookRegistry as a pre-hook so denied calls surface as a
@@ -98,6 +107,10 @@ export interface ResolvedAgentProfile {
     scanIntervalMinutes: number
     /** When > 0, prune drafts older than this many days during scans. */
     draftsMaxAgeDays: number
+  }
+  autoTitle: {
+    enabled: boolean
+    triggerAfter: number
   }
   /** Tool-id deny patterns (union of base + child). See HookRegistry.matchesToolId. */
   denyTools: string[]
@@ -244,6 +257,15 @@ export async function loadAgentProfile(
     draftsMaxAgeDays: rawDistill?.drafts_max_age_days ?? 0,
   }
 
+  // auto_title: child replaces base entirely when present, else inherit.
+  // Default is on with trigger_after=3 — matches the historical hardcoded
+  // behaviour so existing profiles keep auto-titling without changes.
+  const rawTitle = raw.auto_title ?? base?.auto_title
+  const autoTitle = {
+    enabled: rawTitle?.enabled ?? true,
+    triggerAfter: rawTitle?.trigger_after ?? 3,
+  }
+
   return {
     id: raw.id,
     ...(raw.description !== undefined && { description: raw.description }),
@@ -263,6 +285,7 @@ export async function loadAgentProfile(
     },
     passiveRecall,
     autoDistill,
+    autoTitle,
     denyTools,
     sourceFile: path,
   }

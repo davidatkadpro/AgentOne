@@ -72,19 +72,23 @@ at commits `99a73de..5076cbe`).
 
 ---
 
-## Nice-to-have (do when you have a slow afternoon)
+## Nice-to-have (DONE — 2026-05-24)
 
-9. **AutoTitler trigger configurable**
-   - Currently hardcoded at 3 assistant turns. Move into
-     `agent_profile.yaml` so different agents can choose different
-     thresholds. Default stays 3.
-   - Add `auto_title: { enabled: boolean, trigger_after: number }`.
+9. ~~**AutoTitler trigger configurable**~~ — done. `auto_title:
+   { enabled, trigger_after }` added to the agent-profile schema in
+   [src/profiles/agent-profile.ts](../../src/profiles/agent-profile.ts);
+   resolved as `autoTitle: { enabled, triggerAfter }`. Default stays
+   `{ enabled: true, triggerAfter: 3 }` to preserve the historical
+   hardcoded behaviour. Server boot in
+   [src/server/index.ts](../../src/server/index.ts) skips constructing
+   the `AutoTitler` entirely when `enabled: false`. Tests in
+   [tests/agent-profile.test.ts](../../tests/agent-profile.test.ts).
 
-10. **DocumentIndex startup prime**
-    - `ensureFresh()` runs lazily on first `doc_search`. For workloads
-      with 50+ files this makes the first search slow.
-    - Fix: kick off an `ensureFresh()` from server boot, fire-and-forget.
-    - Trivial; one line.
+10. ~~**DocumentIndex startup prime**~~ — done. Server boot now
+    fires `documents.ensureFresh().catch(() => {})` immediately after
+    creating the `DocumentIndex`, so the first `doc_search` no longer
+    pays the full indexing cost. Failures are silently swallowed —
+    `search()` still calls `ensureFresh()` lazily as a safety net.
 
 ---
 

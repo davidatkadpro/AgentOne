@@ -185,50 +185,9 @@ describe('Email routes', () => {
     expect(res.json()).toMatchObject({ ingested: 2 })
   })
 
-  it('POST /api/v1/email/:id/file-to-project files and returns folderPath', async () => {
-    const p = h.projects.createProject(
-      { number: '24001', name: 'Riverside' },
-      { actor: { type: 'user' } },
-    )
-    const id = ingestOne({
-      sourceId: 'msg-file',
-      receivedAt: Date.parse('2025-05-23T10:00:00Z'),
-      subject: 'RFI: fixtures',
-    })
-    const res = await h.app.inject({
-      method: 'POST',
-      url: `/api/v1/email/${id}/file-to-project`,
-      payload: {
-        projectId: p.id,
-        body: 'hi',
-        attachments: [{ filename: 'a.txt', contentBase64: Buffer.from('hello').toString('base64') }],
-      },
-    })
-    expect(res.statusCode).toBe(200)
-    const body = res.json() as { folderPath: string; email: { filedProjectId: string } }
-    expect(body.folderPath).toContain('250523')
-    expect(body.email.filedProjectId).toBe(p.id)
-  })
-
-  it('POST /api/v1/email/:id/file-to-project returns 409 when already filed', async () => {
-    const p = h.projects.createProject(
-      { number: '24001', name: 'Riverside' },
-      { actor: { type: 'user' } },
-    )
-    const id = ingestOne({ sourceId: 'msg-dup' })
-    await h.app.inject({
-      method: 'POST',
-      url: `/api/v1/email/${id}/file-to-project`,
-      payload: { projectId: p.id, body: 'body' },
-    })
-    const dup = await h.app.inject({
-      method: 'POST',
-      url: `/api/v1/email/${id}/file-to-project`,
-      payload: { projectId: p.id, body: 'body' },
-    })
-    expect(dup.statusCode).toBe(409)
-    expect(dup.json()).toMatchObject({ error: 'ALREADY_FILED' })
-  })
+  // POST /api/email/:id/file-to-project retired in P3P8 — synchronous
+  // service-level behavior is covered by tests/email-file-to-project.test.ts;
+  // the HTTP action-dispatch path is covered by tests/email-actions.test.ts.
 })
 
 describe('Email routes without a configured source', () => {

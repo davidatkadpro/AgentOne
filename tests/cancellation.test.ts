@@ -152,6 +152,7 @@ const baseAgentProfile: ResolvedAgentProfile = {
   },
   passiveRecall: { enabled: false, wikiHits: 2, historyHits: 2, maxCharsPerHit: 240 },
   autoDistill: { enabled: false, idleMinutes: 30, scanIntervalMinutes: 5, draftsMaxAgeDays: 0 },
+  autoTitle: { enabled: true, triggerAfter: 3 },
   denyTools: [],
   sourceFile: '',
 }

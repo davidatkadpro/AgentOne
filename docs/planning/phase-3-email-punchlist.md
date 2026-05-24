@@ -19,7 +19,7 @@ Last reviewed: 2026-05-23.
 
 | Group | Done | In progress | Todo |
 |---|---|---|---|
-| P0 Backend route gaps (P3P1-P3P8) | 7 | 0 | 1 (P3P8 deferred) |
+| P0 Backend route gaps (P3P1-P3P8) | 8 | 0 | 0 |
 | P1 Inbox list (I1-I4) | 4 | 0 | 0 |
 | P2 Detail view (D1-D4) | 4 | 0 | 0 |
 | P3 Action toolbar + inline stream (A1-A3) | 3 | 0 | 0 |
@@ -75,10 +75,10 @@ Last reviewed: 2026-05-23.
 - **Acceptance**: dropping a new `.eml` into the watched folder makes it appear in the React inbox within a second, no manual refresh.
 
 ### P3P8. Retire `POST /api/email/:id/file-to-project` in favour of action dispatch
-**Status**: ☐ deferred · **Depends on**: P3P5
-- The orphan endpoint exists from an earlier iteration. Replace its existing callers (tests, scripts) with `POST /api/email/actions { action: 'file-to-project', contextId: <emailId> }`. Delete the route.
-- **Acceptance**: existing email-action tests continue to pass against the new path; old endpoint is gone.
-- **Deferred** during Phase 3 — the orphan is mounted under both `/api/v1/` and `/api/` aliases but still works; deleting it requires updating in-tree callers (skills, scripts, tests) which is a separable cleanup. Action dispatch via `POST /api/email/actions` is the recommended path going forward.
+**Status**: ☑
+- Route removed from `modules/email/src/routes.ts`; `FileToProjectBody` schema deleted with it.
+- Two stale route tests in `tests/email-routes.test.ts` removed — the synchronous service path is still covered by `tests/email-file-to-project.test.ts`, and the HTTP entry point lives in `tests/email-actions.test.ts` (action dispatch via `POST /api/email/actions { action: 'file-to-project' }`).
+- No scripts or skills called the orphan endpoint directly.
 
 ---
 

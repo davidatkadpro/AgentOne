@@ -211,6 +211,26 @@ auto_distill:
     expect(p.autoDistill.scanIntervalMinutes).toBe(2)
   })
 
+  it('auto_title: defaults to enabled with trigger_after=3', async () => {
+    await write('_base', `id: _base\ndefault_model: local-fast\n`)
+    const p = await loadAgentProfile(dir, '_base')
+    expect(p.autoTitle).toEqual({ enabled: true, triggerAfter: 3 })
+  })
+
+  it('auto_title: respects explicit trigger_after + disabled flag', async () => {
+    await write(
+      'a',
+      `id: a
+default_model: local-fast
+auto_title:
+  enabled: false
+  trigger_after: 5
+`,
+    )
+    const p = await loadAgentProfile(dir, 'a')
+    expect(p.autoTitle).toEqual({ enabled: false, triggerAfter: 5 })
+  })
+
   it('deny_tools: defaults to empty list when absent', async () => {
     await write('_base', `id: _base\ndefault_model: local-fast\n`)
     const p = await loadAgentProfile(dir, '_base')

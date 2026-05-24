@@ -252,6 +252,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     permissions: z.unknown().optional(),
     passive_recall: z.unknown().optional(),
     auto_distill: z.unknown().optional(),
+    auto_title: z.unknown().optional(),
     deny_tools: z.array(z.string()).optional(),
   })
   const ProfilePatchBody = ProfileCreateBody.partial().omit({ id: true })
@@ -1032,6 +1033,10 @@ export async function bootstrap(): Promise<void> {
       }
     },
   })
+  // Fire-and-forget prime so the first `doc_search` doesn't pay the full
+  // indexing cost. ensureFresh() is also called lazily inside search(), so
+  // any failure here is harmless — the on-demand path still recovers.
+  void documents.ensureFresh().catch(() => {})
 
   bus.onAny((e) => {
     if (TRANSIENT_EVENT_TYPES.has(e.type)) return
@@ -1258,19 +1263,22 @@ export async function bootstrap(): Promise<void> {
     },
   })
 
-  // Auto-titler: always on. Generates short titles for sessions that hit
-  // the trigger threshold without one. Failures are swallowed inside the
-  // titler — never blocks the chat.
-  const autoTitler = new AutoTitler(
-    {},
-    {
-      store,
-      titlerProvider: compressorProvider,
-      titlerModel: compressorModel.model,
-      eventBus: bus,
-    },
-  )
-  autoTitler.start()
+  // Auto-titler: trigger + on/off come from agent_profile.yaml's
+  // `auto_title:` block. Default is enabled with trigger_after=3, matching
+  // the historical hardcoded behaviour. Failures inside the titler are
+  // swallowed — never blocks the chat.
+  if (agentProfile.autoTitle.enabled) {
+    const autoTitler = new AutoTitler(
+      { triggerAfterAssistantTurns: agentProfile.autoTitle.triggerAfter },
+      {
+        store,
+        titlerProvider: compressorProvider,
+        titlerModel: compressorModel.model,
+        eventBus: bus,
+      },
+    )
+    autoTitler.start()
+  }
 
   // Event hooks: optional YAML-declared subscribers run on every matching
   // bus event. Used for tee-to-file logging, custom alerting, etc. Failures

@@ -17,20 +17,6 @@ const PatchEmailBody = z.object({
   isRead: z.boolean().optional(),
 })
 
-const FileToProjectBody = z.object({
-  projectId: z.string().min(1),
-  body: z.string(),
-  attachments: z
-    .array(
-      z.object({
-        filename: z.string().min(1),
-        /** Base64 contents. The route decodes before passing to the service. */
-        contentBase64: z.string(),
-      }),
-    )
-    .optional(),
-})
-
 const HTTP_ACTOR: ActorContext = { actor: { type: 'user' } }
 
 export interface RegisterEmailRoutesDeps {
@@ -223,55 +209,7 @@ export async function registerEmailRoutes(
     })
   }
 
-  // --- POST /api/email/:id/file-to-project (legacy; kept for compat) ---
-  // ADR-0007 prefers the action-dispatch path
-  //   POST /api/email/actions { action: 'file-to-project', contextId }
-  // but this orphan exists from an earlier iteration and is still wired
-  // into a couple of tests + scripts. Marked for removal in a follow-up
-  // sweep once callers are migrated.
-  for (const url of bothPaths('/:id/file-to-project')) {
-    app.post(url, async (req, reply) => {
-      const params = EmailIdParams.safeParse(req.params)
-      if (!params.success) {
-        reply.code(400)
-        return { error: 'INVALID_PARAMS' }
-      }
-      const body = FileToProjectBody.safeParse(req.body ?? {})
-      if (!body.success) {
-        reply.code(400)
-        return { error: 'INVALID_BODY', details: body.error.flatten() }
-      }
-      try {
-        const fileInput: Parameters<typeof service.fileToProject>[0] = {
-          emailId: params.data.id,
-          projectId: body.data.projectId,
-          body: body.data.body,
-        }
-        if (body.data.attachments && body.data.attachments.length > 0) {
-          fileInput.attachments = body.data.attachments.map((a) => ({
-            filename: a.filename,
-            content: Buffer.from(a.contentBase64, 'base64'),
-          }))
-        }
-        const result = await service.fileToProject(fileInput, HTTP_ACTOR)
-        return { folderPath: result.folderPath, email: service.getEmail(params.data.id) }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        if (/already filed/i.test(message)) {
-          reply.code(409)
-          return { error: 'ALREADY_FILED', message }
-        }
-        if (/email not found/i.test(message)) {
-          reply.code(404)
-          return { error: 'EMAIL_NOT_FOUND', message }
-        }
-        if (/project not found/i.test(message)) {
-          reply.code(404)
-          return { error: 'PROJECT_NOT_FOUND', message }
-        }
-        reply.code(400)
-        return { error: 'FILE_TO_PROJECT_FAILED', message }
-      }
-    })
-  }
+  // POST /api/email/:id/file-to-project was retired in favour of action
+  // dispatch (POST /api/email/actions { action: 'file-to-project' }) — see
+  // ADR-0007 + modules/email/src/actions.ts.
 }
