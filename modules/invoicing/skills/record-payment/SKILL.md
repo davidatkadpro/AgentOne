@@ -2,6 +2,15 @@
 name: record-payment
 description: Record a payment against an open invoice. Auto-flips the invoice to partial / paid based on the running total.
 slash_command: record-payment
+label: Record payment
+icon: credit-card
+surface: ask_agent
+tabs: []
+default_profile: ops
+requires_confirmation: false
+prompt_template: |
+  Record a payment against invoice {{contextId}}. Ask the operator for the
+  amount, method, and any reference number, then call `record_payment`.
 tools:
   - id: record_payment
     handler: ./tools/record-payment.ts

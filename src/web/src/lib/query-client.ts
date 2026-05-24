@@ -69,4 +69,12 @@ export const queryKeys = {
   estimates: {
     detail: (id: string) => ['estimates', 'detail', id] as const,
   },
+  invoices: {
+    all: () => ['invoices'] as const,
+    list: (opts?: Record<string, unknown>) => ['invoices', 'list', opts ?? {}] as const,
+    detail: (id: string) => ['invoices', 'detail', id] as const,
+  },
+  qbo: {
+    status: () => ['qbo', 'status'] as const,
+  },
 } as const

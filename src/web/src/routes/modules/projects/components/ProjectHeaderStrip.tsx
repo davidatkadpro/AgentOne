@@ -52,8 +52,8 @@ export function ProjectHeaderStrip({
 }
 
 function BudgetChip({ budget }: { budget: ProjectBudget }) {
-  if (budget.budgetCents == null) return null
-  const pct = Math.round((budget.invoicedCents / Math.max(1, budget.budgetCents)) * 100)
+  if (budget.budgetTotal <= 0) return null
+  const pct = Math.round((budget.invoicedTotal / Math.max(1, budget.budgetTotal)) * 100)
   const tone =
     pct > 100
       ? 'text-danger'
@@ -63,7 +63,8 @@ function BudgetChip({ budget }: { budget: ProjectBudget }) {
   return (
     <span
       className={`inline-flex items-center gap-1 text-[11px] ${tone} bg-surface border border-border rounded px-1.5 py-0.5`}
-      title={`Invoiced ${(budget.invoicedCents / 100).toFixed(0)} of ${(budget.budgetCents / 100).toFixed(0)}`}
+      title={`Invoiced ${budget.invoicedTotal.toFixed(0)} of ${budget.budgetTotal.toFixed(0)}`}
+      data-testid="budget-chip"
     >
       Budget {pct}%
     </span>

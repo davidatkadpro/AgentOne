@@ -13,7 +13,6 @@ import type {
   Task,
   TaskDependency,
   EntityStatus,
-  ProjectBudget,
   ActivityEntry,
   ProjectFilesEntry,
   Email,
@@ -241,7 +240,8 @@ export interface ProjectFilesResponse {
   entries: ProjectFilesEntry[]
 }
 
-export type ProjectBudgetResponse = ProjectBudget
+// ProjectBudgetResponse is declared further down with the canonical shape
+// returned by /api/projects/:id/budget (`{ budget: InvoiceBudget }`).
 
 export interface NextProjectNumberResponse {
   number: string
@@ -380,4 +380,113 @@ export interface ListScopeFilesResponse {
 
 export interface ProposalHistoryResponse {
   entries: ArtifactHistoryEntry[]
+}
+
+// ── Invoicing (Phase 5) ─────────────────────────────────────────────────
+
+export interface ListInvoicesQuery {
+  projectId?: string
+  status?: import('./domain.js').InvoiceStatus | import('./domain.js').InvoiceStatus[]
+  syncStatus?: import('./domain.js').SyncStatus | import('./domain.js').SyncStatus[]
+  limit?: number
+}
+export interface ListInvoicesResponse {
+  invoices: import('./domain.js').Invoice[]
+}
+
+export interface InvoiceDetailResponse {
+  invoice: import('./domain.js').Invoice
+  payments: import('./domain.js').Payment[]
+  drift: import('./domain.js').InvoiceDrift | null
+}
+
+export interface CreateInvoiceRequest {
+  proposalId?: string
+  taxAmount?: number
+  dueDate?: number
+  notes?: string
+  lines: Array<{
+    kind?: import('./domain.js').InvoiceLineKind
+    description: string
+    qty?: number
+    unit?: string | null
+    unitPrice?: number
+    metadata?: Record<string, unknown>
+  }>
+}
+export interface CreateInvoiceResponse {
+  invoice: import('./domain.js').Invoice
+}
+
+export interface CreateInvoiceFromProposalRequest {
+  proposalId: string
+  taxAmount?: number
+  dueDate?: number
+  notes?: string
+}
+export type CreateInvoiceFromProposalResponse = CreateInvoiceResponse
+
+export interface UpdateInvoiceRequest {
+  status?: import('./domain.js').InvoiceStatus
+  taxAmount?: number
+  dueDate?: number | null
+  notes?: string | null
+  metadata?: Record<string, unknown>
+  lines?: Array<{
+    id?: string
+    kind?: import('./domain.js').InvoiceLineKind
+    description: string
+    qty?: number
+    unit?: string | null
+    unitPrice?: number
+    metadata?: Record<string, unknown>
+  }>
+}
+export type UpdateInvoiceResponse = CreateInvoiceResponse
+
+export interface RecordPaymentRequest {
+  amount: number
+  receivedAt?: number
+  method?: import('./domain.js').PaymentMethod
+  reference?: string
+  notes?: string
+}
+export interface RecordPaymentResponse {
+  payment: import('./domain.js').Payment
+  invoice: import('./domain.js').Invoice
+}
+
+export interface PushInvoiceRequest {
+  force?: boolean
+}
+export interface PushInvoiceResponse {
+  qboId: string
+  qboDocNumber: string | null
+  syncStatus: 'synced'
+  lastSyncedAt: string
+  invoice: import('./domain.js').Invoice
+}
+
+export interface PullInvoiceResponse {
+  syncStatus: 'synced' | 'drift'
+  lastSyncedAt: string
+  driftFields?: string[]
+  invoice: import('./domain.js').Invoice
+}
+
+export interface ReconcileRequest {
+  strategy: 'keep_local' | 'accept_qbo' | 'merge'
+  merged?: Record<string, unknown>
+}
+export interface ReconcileResponse {
+  syncStatus: 'synced'
+  lastSyncedAt: string
+  resolution: 'keep_local' | 'accept_qbo' | 'merge'
+  invoice: import('./domain.js').Invoice
+}
+
+export type QboStatusResponse = import('./domain.js').QboConnection
+
+export interface ProjectBudgetResponse {
+  budget: import('./domain.js').InvoiceBudget
 }

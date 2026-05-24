@@ -126,6 +126,51 @@ export function invalidateForEvent(event: AgentEvent): void {
         queryKey: queryKeys.projects.activity(event.projectId),
       })
       break
+    case 'invoice.created':
+    case 'invoice.issued':
+    case 'invoice.paid':
+    case 'invoice.voided':
+      void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.all() })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.invoices.detail(event.invoiceId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.detail(event.projectId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.budget(event.projectId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.activity(event.projectId),
+      })
+      break
+    case 'payment.recorded':
+      void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.all() })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.invoices.detail(event.invoiceId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.budget(event.projectId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.activity(event.projectId),
+      })
+      break
+    case 'qbo.invoice_pushed':
+    case 'qbo.invoice_pulled':
+    case 'qbo.drift_detected':
+    case 'qbo.sync_failed':
+      void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.all() })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.invoices.detail(event.invoiceId),
+      })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.qbo.status() })
+      break
+    case 'qbo.connected':
+    case 'qbo.disconnected':
+      void queryClient.invalidateQueries({ queryKey: queryKeys.qbo.status() })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.all() })
+      break
   }
 }
 

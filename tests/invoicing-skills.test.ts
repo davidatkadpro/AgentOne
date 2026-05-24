@@ -37,4 +37,20 @@ describe('modules/invoicing/skills — loader discovery', () => {
       'invoicing/record-payment',
     )
   })
+
+  it('discovers reconcile-drift with both tools', async () => {
+    const idx = await loadSkillIndex({
+      root: join(REPO, 'skills'),
+      moduleSkillRoots: [
+        { module: 'invoicing', root: join(REPO, 'modules', 'invoicing', 'skills') },
+      ],
+    })
+    const skill = idx.skills.get('invoicing/reconcile-drift')
+    expect(skill).toBeDefined()
+    const toolIds = skill?.frontmatter.tools?.map((t) => t.id).sort()
+    expect(toolIds).toEqual(['apply_reconcile', 'get_invoice_drift'])
+    expect(idx.bySlashCommand.get('reconcile-drift')?.qualifiedName).toBe(
+      'invoicing/reconcile-drift',
+    )
+  })
 })

@@ -55,6 +55,11 @@ export interface Invoice {
   lastSyncedAt: number | null
   lastError: Record<string, unknown> | null
   previousInvoiceId: string | null
+  /** Drift snapshot — populated when syncStatus='drift'. The full QBO doc
+   *  shape we pulled, used by the UI to render the side-by-side diff. */
+  qboPullSnapshot: Record<string, unknown> | null
+  /** Field paths flagged as divergent at the last pull. */
+  driftFields: string[]
   metadata: Record<string, unknown>
   createdAt: number
   updatedAt: number
@@ -98,6 +103,26 @@ export interface CreateInvoiceFromProposalInput {
   metadata?: Record<string, unknown>
 }
 
+export interface UpdateInvoiceLineInput {
+  /** Existing line id when editing in-place; absent means insert. */
+  id?: string
+  kind?: LineKind
+  description: string
+  qty?: number
+  unit?: string | null
+  unitPrice?: number
+  metadata?: Record<string, unknown>
+}
+
+export interface UpdateInvoiceInput {
+  status?: InvoiceStatus
+  lines?: UpdateInvoiceLineInput[]
+  taxAmount?: number
+  dueDate?: number | null
+  notes?: string | null
+  metadata?: Record<string, unknown>
+}
+
 export interface RecordPaymentInput {
   invoiceId: string
   amount: number
@@ -106,6 +131,33 @@ export interface RecordPaymentInput {
   reference?: string | null
   notes?: string | null
   metadata?: Record<string, unknown>
+}
+
+export interface ListInvoicesOptions {
+  projectId?: string
+  status?: InvoiceStatus[]
+  syncStatus?: SyncStatus[]
+  limit?: number
+}
+
+export interface QboConnectionRow {
+  realmId: string
+  companyName: string | null
+  accessTokenEncrypted: Buffer
+  refreshTokenEncrypted: Buffer
+  tokenExpiresAt: number
+  connectedAt: number
+  lastPushAt: number | null
+  lastPullAt: number | null
+  lastError: { code: string; message: string; at: number } | null
+}
+
+export interface UpsertQboConnectionInput {
+  realmId: string
+  companyName: string | null
+  accessTokenEncrypted: Buffer
+  refreshTokenEncrypted: Buffer
+  tokenExpiresAt: number
 }
 
 export interface ActorContext {
@@ -119,7 +171,9 @@ export interface InvoicingService {
     ctx: ActorContext,
   ): Invoice
   getInvoice(id: string): Invoice | undefined
+  listInvoices(opts?: ListInvoicesOptions): Invoice[]
   listInvoicesForProject(projectId: string): Invoice[]
+  updateInvoice(id: string, input: UpdateInvoiceInput, ctx: ActorContext): Invoice
   setInvoiceStatus(
     id: string,
     status: InvoiceStatus,
@@ -128,6 +182,31 @@ export interface InvoicingService {
   recordPayment(input: RecordPaymentInput, ctx: ActorContext): Payment
   listPayments(invoiceId: string): Payment[]
   getProjectBudget(projectId: string): ProjectBudget
+  // QBO sync surface
+  markPushed(
+    id: string,
+    args: { qboId: string; qboDocNumber: string | null; ts?: number },
+  ): Invoice
+  markPullResult(
+    id: string,
+    args: {
+      ts?: number
+      driftFields: string[]
+      snapshot: Record<string, unknown> | null
+    },
+  ): Invoice
+  markSyncFailed(id: string, err: { code: string; message: string }): Invoice
+  clearDrift(id: string): Invoice
+  // Connection ops
+  getQboConnection(): QboConnectionRow | null
+  upsertQboConnection(
+    input: UpsertQboConnectionInput,
+    ctx: ActorContext,
+  ): QboConnectionRow
+  recordQboPushTs(ts: number): void
+  recordQboPullTs(ts: number): void
+  recordQboError(err: { code: string; message: string }): void
+  clearQboConnection(ctx: ActorContext): void
 }
 
 export interface InvoicingServiceDeps {
@@ -158,6 +237,8 @@ interface InvoiceRow {
   last_synced_at: number | null
   last_error_json: string | null
   previous_invoice_id: string | null
+  qbo_pull_snapshot_json: string | null
+  drift_fields_json: string | null
   metadata_json: string
   created_at: number
   updated_at: number
@@ -190,6 +271,19 @@ interface PaymentRow {
   notes: string | null
   metadata_json: string
   created_at: number
+}
+
+interface QboConnectionDbRow {
+  id: number
+  realm_id: string
+  company_name: string | null
+  access_token_encrypted: Buffer
+  refresh_token_encrypted: Buffer
+  token_expires_at: number
+  connected_at: number
+  last_push_at: number | null
+  last_pull_at: number | null
+  last_error_json: string | null
 }
 
 const VALID_STATUS: ReadonlySet<InvoiceStatus> = new Set([
@@ -286,12 +380,37 @@ function rowToInvoice(row: InvoiceRow, lines: InvoiceLine[]): Invoice {
         ? (JSON.parse(row.last_error_json) as Record<string, unknown>)
         : null,
     previousInvoiceId: row.previous_invoice_id,
+    qboPullSnapshot:
+      row.qbo_pull_snapshot_json !== null
+        ? (JSON.parse(row.qbo_pull_snapshot_json) as Record<string, unknown>)
+        : null,
+    driftFields:
+      row.drift_fields_json !== null
+        ? (JSON.parse(row.drift_fields_json) as string[])
+        : [],
     metadata: JSON.parse(row.metadata_json) as Record<string, unknown>,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     issuedAt: row.issued_at,
     paidAt: row.paid_at,
     lines,
+  }
+}
+
+function rowToConnection(row: QboConnectionDbRow): QboConnectionRow {
+  return {
+    realmId: row.realm_id,
+    companyName: row.company_name,
+    accessTokenEncrypted: row.access_token_encrypted,
+    refreshTokenEncrypted: row.refresh_token_encrypted,
+    tokenExpiresAt: row.token_expires_at,
+    connectedAt: row.connected_at,
+    lastPushAt: row.last_push_at,
+    lastPullAt: row.last_pull_at,
+    lastError:
+      row.last_error_json !== null
+        ? (JSON.parse(row.last_error_json) as { code: string; message: string; at: number })
+        : null,
   }
 }
 
@@ -354,6 +473,78 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
   const projectBudgetStmt = deps.db.prepare(
     'SELECT * FROM project_budget WHERE project_id = ?',
   )
+  const updateInvoiceMetaStmt = deps.db.prepare(
+    `UPDATE invoice
+       SET tax_amount = ?, total = subtotal + ?, due_date = ?, notes = ?,
+           metadata_json = ?, updated_at = ?
+     WHERE id = ?`,
+  )
+  const deleteLinesStmt = deps.db.prepare('DELETE FROM invoice_line WHERE invoice_id = ?')
+  const updateInvoiceTotalsStmt = deps.db.prepare(
+    `UPDATE invoice
+       SET subtotal = ?, total = ? + tax_amount, updated_at = ?
+     WHERE id = ?`,
+  )
+  const updateSyncPushedStmt = deps.db.prepare(
+    `UPDATE invoice
+       SET sync_status = 'synced', qbo_id = ?, qbo_doc_number = ?,
+           last_synced_at = ?, last_error_json = NULL,
+           qbo_pull_snapshot_json = NULL, drift_fields_json = NULL,
+           updated_at = ?
+     WHERE id = ?`,
+  )
+  const updateSyncPullSyncedStmt = deps.db.prepare(
+    `UPDATE invoice
+       SET sync_status = 'synced', last_synced_at = ?, last_error_json = NULL,
+           qbo_pull_snapshot_json = NULL, drift_fields_json = NULL,
+           updated_at = ?
+     WHERE id = ?`,
+  )
+  const updateSyncDriftStmt = deps.db.prepare(
+    `UPDATE invoice
+       SET sync_status = 'drift', last_synced_at = ?, last_error_json = NULL,
+           qbo_pull_snapshot_json = ?, drift_fields_json = ?,
+           updated_at = ?
+     WHERE id = ?`,
+  )
+  const updateSyncFailedStmt = deps.db.prepare(
+    `UPDATE invoice
+       SET sync_status = 'failed', last_error_json = ?, updated_at = ?
+     WHERE id = ?`,
+  )
+  const clearDriftStmt = deps.db.prepare(
+    `UPDATE invoice
+       SET qbo_pull_snapshot_json = NULL, drift_fields_json = NULL,
+           sync_status = 'synced', updated_at = ?
+     WHERE id = ?`,
+  )
+  const getConnectionStmt = deps.db.prepare(
+    'SELECT * FROM qbo_connection WHERE id = 1',
+  )
+  const upsertConnectionStmt = deps.db.prepare(
+    `INSERT INTO qbo_connection
+       (id, realm_id, company_name, access_token_encrypted,
+        refresh_token_encrypted, token_expires_at, connected_at)
+     VALUES (1, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       realm_id = excluded.realm_id,
+       company_name = excluded.company_name,
+       access_token_encrypted = excluded.access_token_encrypted,
+       refresh_token_encrypted = excluded.refresh_token_encrypted,
+       token_expires_at = excluded.token_expires_at,
+       connected_at = excluded.connected_at,
+       last_error_json = NULL`,
+  )
+  const updateConnPushTsStmt = deps.db.prepare(
+    'UPDATE qbo_connection SET last_push_at = ? WHERE id = 1',
+  )
+  const updateConnPullTsStmt = deps.db.prepare(
+    'UPDATE qbo_connection SET last_pull_at = ? WHERE id = 1',
+  )
+  const updateConnErrorStmt = deps.db.prepare(
+    'UPDATE qbo_connection SET last_error_json = ? WHERE id = 1',
+  )
+  const deleteConnectionStmt = deps.db.prepare('DELETE FROM qbo_connection WHERE id = 1')
 
   function loadLines(invoiceId: string): InvoiceLine[] {
     const rows = listLinesStmt.all(invoiceId) as InvoiceLineRow[]
@@ -407,7 +598,7 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
     }
   }
 
-  return {
+  const service: InvoicingService = {
     createInvoice(input, ctx) {
       const project = getProjectStmt.get(input.projectId) as
         | { id: string; number: string }
@@ -485,7 +676,8 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
         entityType: 'invoice',
         entityId: id,
         actor: ctx.actor,
-        payload: { projectId: input.projectId, number, total },
+        projectId: input.projectId,
+        payload: { number, total },
       })
       void deps.eventBus.emit({
         type: 'invoice.created',
@@ -513,6 +705,8 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
         lastSyncedAt: null,
         lastError: null,
         previousInvoiceId: null,
+        qboPullSnapshot: null,
+        driftFields: [],
         metadata,
         createdAt: now,
         updatedAt: now,
@@ -554,7 +748,7 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
       if (input.dueDate !== undefined) fromInput.dueDate = input.dueDate
       if (input.notes !== undefined) fromInput.notes = input.notes
       if (input.metadata !== undefined) fromInput.metadata = input.metadata
-      return this.createInvoice(fromInput, ctx)
+      return service.createInvoice(fromInput, ctx)
     },
 
     getInvoice(id) {
@@ -563,9 +757,130 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
       return rowToInvoice(row, loadLines(id))
     },
 
+    listInvoices(opts) {
+      const clauses: string[] = []
+      const args: unknown[] = []
+      if (opts?.projectId) {
+        clauses.push('project_id = ?')
+        args.push(opts.projectId)
+      }
+      if (opts?.status && opts.status.length > 0) {
+        clauses.push(`status IN (${opts.status.map(() => '?').join(',')})`)
+        for (const s of opts.status) args.push(s)
+      }
+      if (opts?.syncStatus && opts.syncStatus.length > 0) {
+        clauses.push(`sync_status IN (${opts.syncStatus.map(() => '?').join(',')})`)
+        for (const s of opts.syncStatus) args.push(s)
+      }
+      const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''
+      const limit = opts?.limit ?? 500
+      const sql = `SELECT * FROM invoice ${where} ORDER BY created_at DESC, rowid DESC LIMIT ?`
+      args.push(limit)
+      const rows = deps.db.prepare(sql).all(...args) as InvoiceRow[]
+      return rows.map((r) => rowToInvoice(r, loadLines(r.id)))
+    },
+
     listInvoicesForProject(projectId) {
       const rows = listInvoicesByProjectStmt.all(projectId) as InvoiceRow[]
       return rows.map((r) => rowToInvoice(r, loadLines(r.id)))
+    },
+
+    updateInvoice(id, input, ctx) {
+      const row = getInvoiceStmt.get(id) as InvoiceRow | undefined
+      if (!row) throw new Error(`Invoice not found: ${id}`)
+      const status = parseStatus(row.status)
+      if (status === 'paid' || status === 'void') {
+        throw new Error(`Cannot edit a ${status} invoice`)
+      }
+      const now = Date.now()
+
+      const tx = deps.db.transaction(() => {
+        if (input.lines !== undefined) {
+          deleteLinesStmt.run(id)
+          let subtotal = 0
+          input.lines.forEach((lineInput, idx) => {
+            const lineId = lineInput.id ?? randomUUID()
+            const kind: LineKind = lineInput.kind ?? 'fixed'
+            const qty = lineInput.qty ?? 1
+            const unitPrice = lineInput.unitPrice ?? 0
+            const lineTotal = qty * unitPrice
+            subtotal += lineTotal
+            const meta = lineInput.metadata ?? {}
+            insertLine.run(
+              lineId,
+              id,
+              kind,
+              lineInput.description,
+              qty,
+              lineInput.unit ?? null,
+              unitPrice,
+              lineTotal,
+              idx,
+              JSON.stringify(meta),
+              now,
+              now,
+            )
+          })
+          updateInvoiceTotalsStmt.run(subtotal, subtotal, now, id)
+        }
+
+        if (
+          input.taxAmount !== undefined ||
+          input.dueDate !== undefined ||
+          input.notes !== undefined ||
+          input.metadata !== undefined
+        ) {
+          const refreshed = getInvoiceStmt.get(id) as InvoiceRow
+          const taxAmount = input.taxAmount ?? refreshed.tax_amount
+          const dueDate =
+            input.dueDate === undefined ? refreshed.due_date : input.dueDate
+          const notes = input.notes === undefined ? refreshed.notes : input.notes
+          const metadata =
+            input.metadata === undefined
+              ? (JSON.parse(refreshed.metadata_json) as Record<string, unknown>)
+              : input.metadata
+          updateInvoiceMetaStmt.run(
+            taxAmount,
+            taxAmount,
+            dueDate,
+            notes,
+            JSON.stringify(metadata),
+            now,
+            id,
+          )
+        }
+
+        if (input.status !== undefined && input.status !== status) {
+          updateInvoiceStatusStmt.run(
+            input.status,
+            now,
+            input.status,
+            now,
+            input.status,
+            now,
+            id,
+          )
+          emitStatusEvent(input.status, row.project_id, id, row.number, now)
+        }
+      })
+      tx()
+
+      deps.audit.record({
+        module: 'invoicing',
+        action: 'invoice.updated',
+        entityType: 'invoice',
+        entityId: id,
+        actor: ctx.actor,
+        projectId: row.project_id,
+        payload: {
+          number: row.number,
+          fields: Object.keys(input),
+        },
+      })
+
+      const updated = service.getInvoice(id)
+      if (!updated) throw new Error(`Invoice missing after update: ${id}`)
+      return updated
     },
 
     setInvoiceStatus(id, status, ctx) {
@@ -586,7 +901,8 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
         entityType: 'invoice',
         entityId: id,
         actor: ctx.actor,
-        payload: { status, projectId: row.project_id, number: row.number },
+        projectId: row.project_id,
+        payload: { status, number: row.number },
       })
       emitStatusEvent(status, row.project_id, id, row.number, now)
     },
@@ -617,7 +933,6 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
         JSON.stringify(metadata),
         now,
       )
-      // amount_paid + status (partial / paid) update in one go.
       updateAmountPaidStmt.run(
         input.amount,
         now,
@@ -634,9 +949,9 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
         entityType: 'payment',
         entityId: id,
         actor: ctx.actor,
+        projectId: row.project_id,
         payload: {
           invoiceId: input.invoiceId,
-          projectId: row.project_id,
           amount: input.amount,
         },
       })
@@ -649,9 +964,6 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
         ts: now,
       })
 
-      // If the payment pushed the invoice to fully paid, emit invoice.paid too
-      // so downstream listeners (KPI rollup, notifications) only need one
-      // subscription for "this invoice closed out."
       const refreshed = getInvoiceStmt.get(input.invoiceId) as InvoiceRow
       if (refreshed.status === 'paid' && row.status !== 'paid') {
         void deps.eventBus.emit({
@@ -695,5 +1007,143 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
         paidTotal: row.paid_total,
       }
     },
+
+    markPushed(id, args) {
+      const row = getInvoiceStmt.get(id) as InvoiceRow | undefined
+      if (!row) throw new Error(`Invoice not found: ${id}`)
+      const now = args.ts ?? Date.now()
+      updateSyncPushedStmt.run(args.qboId, args.qboDocNumber, now, now, id)
+      void deps.eventBus.emit({
+        type: 'qbo.invoice_pushed',
+        projectId: row.project_id,
+        invoiceId: id,
+        qboId: args.qboId,
+        ts: now,
+      })
+      const out = service.getInvoice(id)
+      if (!out) throw new Error(`Invoice missing after markPushed: ${id}`)
+      return out
+    },
+
+    markPullResult(id, args) {
+      const row = getInvoiceStmt.get(id) as InvoiceRow | undefined
+      if (!row) throw new Error(`Invoice not found: ${id}`)
+      const now = args.ts ?? Date.now()
+      if (args.driftFields.length === 0) {
+        updateSyncPullSyncedStmt.run(now, now, id)
+        void deps.eventBus.emit({
+          type: 'qbo.invoice_pulled',
+          projectId: row.project_id,
+          invoiceId: id,
+          ts: now,
+        })
+      } else {
+        updateSyncDriftStmt.run(
+          now,
+          JSON.stringify(args.snapshot ?? {}),
+          JSON.stringify(args.driftFields),
+          now,
+          id,
+        )
+        void deps.eventBus.emit({
+          type: 'qbo.drift_detected',
+          projectId: row.project_id,
+          invoiceId: id,
+          driftFields: args.driftFields,
+          ts: now,
+        })
+      }
+      const out = service.getInvoice(id)
+      if (!out) throw new Error(`Invoice missing after markPullResult: ${id}`)
+      return out
+    },
+
+    markSyncFailed(id, err) {
+      const row = getInvoiceStmt.get(id) as InvoiceRow | undefined
+      if (!row) throw new Error(`Invoice not found: ${id}`)
+      const now = Date.now()
+      updateSyncFailedStmt.run(JSON.stringify({ ...err, at: now }), now, id)
+      void deps.eventBus.emit({
+        type: 'qbo.sync_failed',
+        projectId: row.project_id,
+        invoiceId: id,
+        code: err.code,
+        message: err.message,
+        ts: now,
+      })
+      const out = service.getInvoice(id)
+      if (!out) throw new Error(`Invoice missing after markSyncFailed: ${id}`)
+      return out
+    },
+
+    clearDrift(id) {
+      const row = getInvoiceStmt.get(id) as InvoiceRow | undefined
+      if (!row) throw new Error(`Invoice not found: ${id}`)
+      const now = Date.now()
+      clearDriftStmt.run(now, id)
+      const out = service.getInvoice(id)
+      if (!out) throw new Error(`Invoice missing after clearDrift: ${id}`)
+      return out
+    },
+
+    getQboConnection() {
+      const row = getConnectionStmt.get() as QboConnectionDbRow | undefined
+      if (!row) return null
+      return rowToConnection(row)
+    },
+
+    upsertQboConnection(input, ctx) {
+      const now = Date.now()
+      upsertConnectionStmt.run(
+        input.realmId,
+        input.companyName,
+        input.accessTokenEncrypted,
+        input.refreshTokenEncrypted,
+        input.tokenExpiresAt,
+        now,
+      )
+      deps.audit.record({
+        module: 'invoicing',
+        action: 'qbo.connect',
+        entityType: 'qbo_connection',
+        entityId: 'qbo',
+        actor: ctx.actor,
+        payload: {
+          realmIdTail: input.realmId.slice(-4),
+          companyName: input.companyName,
+        },
+      })
+      void deps.eventBus.emit({ type: 'qbo.connected', ts: now })
+      const row = getConnectionStmt.get() as QboConnectionDbRow
+      return rowToConnection(row)
+    },
+
+    recordQboPushTs(ts) {
+      updateConnPushTsStmt.run(ts)
+    },
+    recordQboPullTs(ts) {
+      updateConnPullTsStmt.run(ts)
+    },
+    recordQboError(err) {
+      updateConnErrorStmt.run(JSON.stringify({ ...err, at: Date.now() }))
+    },
+
+    clearQboConnection(ctx) {
+      const had = service.getQboConnection()
+      deleteConnectionStmt.run()
+      if (had) {
+        deps.audit.record({
+          module: 'invoicing',
+          action: 'qbo.disconnect',
+          entityType: 'qbo_connection',
+          entityId: 'qbo',
+          actor: ctx.actor,
+          payload: { realmIdTail: had.realmId.slice(-4) },
+        })
+        void deps.eventBus.emit({ type: 'qbo.disconnected', ts: Date.now() })
+      }
+    },
   }
+
+  return service
 }

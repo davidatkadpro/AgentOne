@@ -55,8 +55,13 @@ import { MaildirEmailSource } from '../../modules/email/src/sources/maildir.js'
 import { createProposalsService, type ProposalsService } from '../../modules/proposals/src/service.js'
 import { registerProposalsRoutes } from '../../modules/proposals/src/routes.js'
 import { registerProposalsActions } from '../../modules/proposals/src/actions.js'
-import { createInvoicingService } from '../../modules/invoicing/src/service.js'
+import { createInvoicingService, type InvoicingService } from '../../modules/invoicing/src/service.js'
 import { registerInvoicingRoutes } from '../../modules/invoicing/src/routes.js'
+import { registerInvoicingActions } from '../../modules/invoicing/src/actions.js'
+import { createSecretVault, type SecretVault } from '../storage/secret-vault.js'
+import { HttpQboClient } from '../modules/qbo/auth.js'
+import { createOAuthStateStore } from '../modules/qbo/oauth-state.js'
+import { QboPoller } from '../modules/qbo/poller.js'
 import { LocalFolderAdapter } from '../storage/local-folder.js'
 import { WikiEngine } from '../memory/wiki/engine.js'
 import { Orchestrator } from '../orchestrator/turn.js'
@@ -127,6 +132,19 @@ export interface AppDeps {
   /** Shared audit log handle. Surfaced so Module routes can read by
    *  project_id without re-opening the DB. */
   audit: ReturnType<typeof createAuditLog>
+  /** QBO sync wiring — present only when the operator has set
+   *  QBO_CLIENT_ID/SECRET (and a viable vault key path). When absent, the
+   *  Invoicing routes register the local-only subset and return 503 for
+   *  push/pull/reconcile/connect/callback. */
+  qbo?: {
+    client: InstanceType<typeof HttpQboClient>
+    vault: SecretVault
+    oauthState: ReturnType<typeof createOAuthStateStore>
+    clientId: string
+    clientSecret: string
+    redirectUri: string
+    authorizeUrl: string
+  }
 }
 
 const CommandRequestBody = z.object({
@@ -728,7 +746,30 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     const invoicingService = invoicingHandle.service as Parameters<
       typeof registerInvoicingRoutes
     >[1]['service']
-    await registerInvoicingRoutes(app, { service: invoicingService })
+    const invoicingDeps: Parameters<typeof registerInvoicingRoutes>[1] = {
+      service: invoicingService,
+      audit: deps.audit,
+      eventBus: deps.bus,
+      pandocAvailable,
+    }
+    if (deps.qbo) {
+      invoicingDeps.qbo = {
+        client: deps.qbo.client,
+        vault: deps.qbo.vault,
+        oauthState: deps.qbo.oauthState,
+        clientId: deps.qbo.clientId,
+        clientSecret: deps.qbo.clientSecret,
+        redirectUri: deps.qbo.redirectUri,
+        authorizeUrl: deps.qbo.authorizeUrl,
+      }
+    }
+    await registerInvoicingRoutes(app, invoicingDeps)
+    await registerInvoicingActions(app, {
+      orchestrator: deps.orchestrator,
+      invoicing: invoicingService as InvoicingService,
+      skillsDir: join(invoicingHandle.rootPath, 'skills'),
+      eventBus: deps.bus,
+    })
   }
 
   const emailHandle = deps.modules.get('email')
@@ -1212,6 +1253,56 @@ export async function bootstrap(): Promise<void> {
     )
   }
 
+  // ── QBO sync wiring (Phase 5) ────────────────────────────────────────
+  // Only wired when QBO_CLIENT_ID + QBO_CLIENT_SECRET are present. The
+  // secret-vault throws at construct time if neither DPAPI nor QBO_TOKEN_KEY
+  // is available on a non-Windows host — we surface that as a degraded boot
+  // line so the operator can see why the integration is off.
+  let qboBundle: AppDeps['qbo']
+  if (config.qboClientId && config.qboClientSecret) {
+    try {
+      const vault = createSecretVault()
+      const client = new HttpQboClient({
+        clientId: config.qboClientId,
+        clientSecret: config.qboClientSecret,
+      })
+      const oauthState = createOAuthStateStore()
+      qboBundle = {
+        client,
+        vault,
+        oauthState,
+        clientId: config.qboClientId,
+        clientSecret: config.qboClientSecret,
+        redirectUri: config.qboRedirectUri,
+        authorizeUrl: config.qboAuthorizeUrl,
+      }
+      // eslint-disable-next-line no-console
+      console.log(`  QBO sync: enabled (vault=${vault.backend})`)
+
+      const invoicingHandle = modules.get('invoicing')
+      if (invoicingHandle?.status === 'active' && invoicingHandle.service) {
+        const invoicingService = invoicingHandle.service as ReturnType<
+          typeof createInvoicingService
+        >
+        const poller = new QboPoller({
+          service: invoicingService,
+          client,
+          vault,
+          intervalMs: config.qboPullIntervalMinutes * 60_000,
+        })
+        poller.start()
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `  QBO sync: disabled — ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  } else {
+    // eslint-disable-next-line no-console
+    console.log('  QBO sync: disabled (QBO_CLIENT_ID / QBO_CLIENT_SECRET not set)')
+  }
+
   const app = await buildApp({
     config,
     bus,
@@ -1228,6 +1319,7 @@ export async function bootstrap(): Promise<void> {
     modules,
     notifications,
     audit,
+    ...(qboBundle && { qbo: qboBundle }),
   })
 
   await wiki.whenReady()

@@ -2,6 +2,16 @@
 name: create-invoice
 description: Create a draft invoice for a project — either from an accepted proposal (copies estimate lines) or from scratch with manually-supplied line items.
 slash_command: create-invoice
+label: Create invoice
+icon: file-plus
+surface: both
+tabs: []
+default_profile: ops
+requires_confirmation: false
+prompt_template: |
+  Create a draft invoice for project {{project.number}}. If the project has
+  an accepted proposal, use `create_invoice_from_proposal` to copy its lines.
+  Otherwise, gather the line items from the operator and call `create_invoice`.
 tools:
   - id: create_invoice_from_proposal
     handler: ./tools/create-invoice-from-proposal.ts

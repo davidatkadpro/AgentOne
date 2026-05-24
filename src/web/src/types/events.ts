@@ -181,6 +181,38 @@ export type AgentEvent =
       ok: boolean
       ts: number
     }
+  // -- contributed by modules/invoicing --
+  | { type: 'invoice.created'; projectId: string; invoiceId: string; number: string; ts: number }
+  | { type: 'invoice.issued'; projectId: string; invoiceId: string; number: string; ts: number }
+  | { type: 'invoice.paid'; projectId: string; invoiceId: string; number: string; ts: number }
+  | { type: 'invoice.voided'; projectId: string; invoiceId: string; number: string; ts: number }
+  | {
+      type: 'payment.recorded'
+      projectId: string
+      invoiceId: string
+      paymentId: string
+      amount: number
+      ts: number
+    }
+  | { type: 'qbo.invoice_pushed'; projectId: string; invoiceId: string; qboId: string; ts: number }
+  | { type: 'qbo.invoice_pulled'; projectId: string; invoiceId: string; ts: number }
+  | {
+      type: 'qbo.drift_detected'
+      projectId: string
+      invoiceId: string
+      driftFields: string[]
+      ts: number
+    }
+  | {
+      type: 'qbo.sync_failed'
+      projectId: string
+      invoiceId: string
+      code: string
+      message: string
+      ts: number
+    }
+  | { type: 'qbo.connected'; ts: number }
+  | { type: 'qbo.disconnected'; ts: number }
 
 export type EventType = AgentEvent['type']
 export type EventByType<T extends EventType> = Extract<AgentEvent, { type: T }>
@@ -242,6 +274,17 @@ const KNOWN_TYPES = new Set<string>([
   'proposal.accepted',
   'proposal.rejected',
   'proposal.superseded',
+  'invoice.created',
+  'invoice.issued',
+  'invoice.paid',
+  'invoice.voided',
+  'payment.recorded',
+  'qbo.invoice_pushed',
+  'qbo.invoice_pulled',
+  'qbo.drift_detected',
+  'qbo.sync_failed',
+  'qbo.connected',
+  'qbo.disconnected',
 ])
 
 // Loose runtime validation: every event needs a known string `type`. Field-

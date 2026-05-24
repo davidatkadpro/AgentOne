@@ -46,7 +46,8 @@ export function useProject(id: string | null | undefined) {
 export function useProjectBudget(id: string | null | undefined) {
   return useQuery({
     queryKey: queryKeys.projects.budget(id ?? ''),
-    queryFn: () => api.get<ProjectBudgetResponse>(`/projects/${id}/budget`),
+    queryFn: () =>
+      api.get<ProjectBudgetResponse>(`/projects/${id}/budget`).then((r) => r.budget),
     enabled: !!id,
     staleTime: 60_000,
   })

@@ -181,12 +181,13 @@ export interface TaskDependency {
   dependsOnTaskId: string
 }
 
+/** @deprecated — use {@link InvoiceBudget} instead. Kept as an alias so existing
+ *  imports keep compiling while the BudgetChip is migrated. */
 export interface ProjectBudget {
   projectId: string
-  budgetCents: number | null
-  invoicedCents: number
-  paidCents: number
-  draftCents: number
+  budgetTotal: number
+  invoicedTotal: number
+  paidTotal: number
 }
 
 export interface ActivityEntry {
@@ -351,4 +352,91 @@ export interface ProposalRenderedFile {
   kind: 'md' | 'pdf' | 'docx'
   mtime: string
   bytes: number
+}
+
+// ── Invoicing (Phase 5) ─────────────────────────────────────────────────
+
+export type InvoiceStatus = 'draft' | 'issued' | 'partial' | 'paid' | 'void'
+export type SyncStatus = 'local' | 'pending' | 'synced' | 'drift' | 'failed'
+export type PaymentMethod = 'check' | 'ach' | 'card' | 'wire' | 'cash' | 'other'
+export type InvoiceLineKind = 'fixed' | 'time_and_materials' | 'unit'
+
+export interface InvoiceLine {
+  id: string
+  invoiceId: string
+  kind: InvoiceLineKind
+  description: string
+  qty: number
+  unit: string | null
+  unitPrice: number
+  lineTotal: number
+  position: number
+  metadata: Record<string, unknown>
+  createdAt: number
+  updatedAt: number
+}
+
+export interface Payment {
+  id: string
+  invoiceId: string
+  amount: number
+  receivedAt: number
+  method: PaymentMethod
+  reference: string | null
+  notes: string | null
+  metadata: Record<string, unknown>
+  createdAt: number
+}
+
+export interface Invoice {
+  id: string
+  projectId: string
+  proposalId: string | null
+  number: string
+  status: InvoiceStatus
+  subtotal: number
+  taxAmount: number
+  total: number
+  amountPaid: number
+  dueDate: number | null
+  notes: string | null
+  qboId: string | null
+  qboDocNumber: string | null
+  syncStatus: SyncStatus
+  lastSyncedAt: number | null
+  lastError: Record<string, unknown> | null
+  previousInvoiceId: string | null
+  qboPullSnapshot: Record<string, unknown> | null
+  driftFields: string[]
+  metadata: Record<string, unknown>
+  createdAt: number
+  updatedAt: number
+  issuedAt: number | null
+  paidAt: number | null
+  lines: InvoiceLine[]
+}
+
+export interface InvoiceDrift {
+  invoiceId: string
+  driftFields: string[]
+  local: Record<string, unknown>
+  qbo: Record<string, unknown>
+}
+
+export interface QboConnection {
+  connected: boolean
+  realmId?: string
+  companyName?: string | null
+  connectedAt?: number
+  tokenExpiresAt?: number
+  lastPushAt?: number | null
+  lastPullAt?: number | null
+  lastError?: { code: string; message: string; at: number } | null
+}
+
+export interface InvoiceBudget {
+  projectId: string
+  budgetTotal: number
+  invoicedTotal: number
+  paidTotal: number
 }

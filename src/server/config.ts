@@ -34,6 +34,20 @@ const Env = z.object({
    *  MaildirEmailSource (dev / offline fallback). Unset means no email
    *  source is wired and `POST /api/v1/email/poll` returns 503. */
   EMAIL_MAILDIR_PATH: z.string().optional(),
+  /** QuickBooks Online OAuth client id (Phase 5). When unset, the QBO sync
+   *  routes return 503 QBO_NOT_CONFIGURED. */
+  QBO_CLIENT_ID: z.string().optional(),
+  QBO_CLIENT_SECRET: z.string().optional(),
+  QBO_REDIRECT_URI: z
+    .string()
+    .default('http://127.0.0.1:3737/api/integrations/qbo/callback'),
+  QBO_AUTHORIZE_URL: z.string().default('https://appcenter.intuit.com/connect/oauth2'),
+  /** Override for the AES-GCM secret-vault key on non-Windows hosts. On
+   *  Windows the vault uses DPAPI by default — this is only consulted as a
+   *  fallback. Required for the QBO routes to start outside Windows. */
+  QBO_TOKEN_KEY: z.string().optional(),
+  /** Pull poll interval in minutes (default 15). */
+  QBO_PULL_INTERVAL_MIN: z.coerce.number().int().positive().default(15),
   LOG_EVENTS: z
     .enum(['0', '1', 'true', 'false'])
     .default('0')
@@ -63,6 +77,11 @@ export interface ServerConfig {
   auditLogPath: string | null
   eventHooksPath: string | null
   emailMaildirPath: string | null
+  qboClientId: string | null
+  qboClientSecret: string | null
+  qboRedirectUri: string
+  qboAuthorizeUrl: string
+  qboPullIntervalMinutes: number
   logEvents: boolean
 }
 
@@ -91,6 +110,11 @@ export function loadConfigFromEnv(): ServerConfig {
     auditLogPath: parsed.AUDIT_LOG_PATH ? resolve(parsed.AUDIT_LOG_PATH) : null,
     eventHooksPath: parsed.EVENT_HOOKS_PATH ? resolve(parsed.EVENT_HOOKS_PATH) : null,
     emailMaildirPath: parsed.EMAIL_MAILDIR_PATH ? resolve(parsed.EMAIL_MAILDIR_PATH) : null,
+    qboClientId: parsed.QBO_CLIENT_ID ?? null,
+    qboClientSecret: parsed.QBO_CLIENT_SECRET ?? null,
+    qboRedirectUri: parsed.QBO_REDIRECT_URI,
+    qboAuthorizeUrl: parsed.QBO_AUTHORIZE_URL,
+    qboPullIntervalMinutes: parsed.QBO_PULL_INTERVAL_MIN,
     logEvents: parsed.LOG_EVENTS,
   }
 }

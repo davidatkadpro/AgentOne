@@ -354,6 +354,37 @@ export type AgentEvent =
       amount: number
       ts: number
     }
+  // -- QBO sync (contributed by modules/invoicing) --
+  | {
+      type: 'qbo.invoice_pushed'
+      projectId: string
+      invoiceId: string
+      qboId: string
+      ts: number
+    }
+  | {
+      type: 'qbo.invoice_pulled'
+      projectId: string
+      invoiceId: string
+      ts: number
+    }
+  | {
+      type: 'qbo.drift_detected'
+      projectId: string
+      invoiceId: string
+      driftFields: string[]
+      ts: number
+    }
+  | {
+      type: 'qbo.sync_failed'
+      projectId: string
+      invoiceId: string
+      code: string
+      message: string
+      ts: number
+    }
+  | { type: 'qbo.connected'; ts: number }
+  | { type: 'qbo.disconnected'; ts: number }
 
 export type EventType = AgentEvent['type']
 export type EventByType<T extends EventType> = Extract<AgentEvent, { type: T }>

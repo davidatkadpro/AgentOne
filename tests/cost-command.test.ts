@@ -39,6 +39,11 @@ function fakeConfig(agentProfilesDir: string): ServerConfig {
     auditLogPath: null,
     eventHooksPath: null,
     emailMaildirPath: null,
+    qboClientId: null,
+    qboClientSecret: null,
+    qboRedirectUri: 'http://127.0.0.1:3737/api/integrations/qbo/callback',
+    qboAuthorizeUrl: 'https://appcenter.intuit.com/connect/oauth2',
+    qboPullIntervalMinutes: 15,
     logEvents: false,
   }
 }

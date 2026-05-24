@@ -38,10 +38,10 @@ export function ProjectListRow({
       </div>
       <div className="flex flex-col items-end gap-1">
         <ProjectStatusBadge status={project.status} />
-        {budget ? (
+        {budget && budget.budgetTotal > 0 ? (
           <BudgetMiniBar
-            invoicedCents={budget.invoicedCents}
-            budgetCents={budget.budgetCents}
+            invoicedCents={budget.invoicedTotal}
+            budgetCents={budget.budgetTotal}
           />
         ) : null}
         {lastActivity ? (
