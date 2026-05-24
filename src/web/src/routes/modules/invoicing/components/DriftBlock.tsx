@@ -34,7 +34,8 @@ export function DriftBlock({ drift, onResolve, disabled, onAgentDispatched }: Dr
         ⚠ Drift detected on {drift.driftFields.length} field
         {drift.driftFields.length === 1 ? '' : 's'}
       </div>
-      <table className="w-full text-xs">
+      <div className="overflow-x-auto scrollbar-thin">
+      <table className="w-full min-w-[420px] text-xs">
         <thead>
           <tr className="border-b border-warn/30 text-left text-muted">
             <th className="py-1 px-3 font-normal">Field</th>
@@ -56,6 +57,7 @@ export function DriftBlock({ drift, onResolve, disabled, onAgentDispatched }: Dr
           ))}
         </tbody>
       </table>
+      </div>
       <div className="px-3 py-2 flex items-center gap-2 flex-wrap border-t border-warn/30">
         <Button
           size="sm"

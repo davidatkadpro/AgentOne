@@ -40,7 +40,7 @@ export function SettingsRoute() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="border-b border-border px-6">
+      <div className="border-b border-border px-3 md:px-6 overflow-x-auto scrollbar-thin">
         <div className="flex gap-1">
           {TABS.map((t) => (
             <button

@@ -91,18 +91,21 @@ export function ProjectsRoute() {
     <>
       <ModulePanel
         kpiStrip={
-          <div className="flex items-center justify-between pr-3">
-            <KpiStrip
-              pills={kpis}
-              activePillId={filter === 'all' ? null : filter}
-              onPillClick={onPillClick}
-            />
+          <div className="flex items-center justify-between gap-2 pr-3 min-w-0">
+            <div className="flex-1 min-w-0">
+              <KpiStrip
+                pills={kpis}
+                activePillId={filter === 'all' ? null : filter}
+                onPillClick={onPillClick}
+              />
+            </div>
             <Button
               size="sm"
               onClick={() => setDialogOpen(true)}
               data-testid="new-project-button"
+              className="shrink-0"
             >
-              <Plus size={12} /> New project
+              <Plus size={12} /> <span className="hidden sm:inline">New project</span>
             </Button>
           </div>
         }

@@ -92,32 +92,35 @@ export function ProjectDetailRoute({ projectId }: ProjectDetailRouteProps) {
           />
         </div>
       ) : null}
-      <div className="border-b border-border px-3 flex items-center gap-2" role="tablist">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            aria-selected={link.tab === t.id}
-            onClick={() => link.setTab(t.id)}
-            data-testid={`project-tab-${t.id}`}
-            className={cn(
-              'h-9 px-2 text-xs border-b-2 -mb-px transition-colors',
-              link.tab === t.id
-                ? 'border-accent text-fg font-medium'
-                : 'border-transparent text-muted hover:text-fg',
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
-        <div className="flex-1" />
-        <AskAgentMenu
-          module="projects"
-          tab={link.tab}
-          contextId={projectId}
-          skills={actions.data?.actions ?? []}
-          onDispatched={(_action, sessionId) => setDispatchedSessionId(sessionId)}
-        />
+      <div className="border-b border-border px-3 flex items-center gap-2 min-w-0">
+        <div className="flex-1 min-w-0 flex items-center gap-2 overflow-x-auto scrollbar-thin" role="tablist">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              role="tab"
+              aria-selected={link.tab === t.id}
+              onClick={() => link.setTab(t.id)}
+              data-testid={`project-tab-${t.id}`}
+              className={cn(
+                'h-9 px-2 text-xs border-b-2 -mb-px transition-colors shrink-0',
+                link.tab === t.id
+                  ? 'border-accent text-fg font-medium'
+                  : 'border-transparent text-muted hover:text-fg',
+              )}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="shrink-0">
+          <AskAgentMenu
+            module="projects"
+            tab={link.tab}
+            contextId={projectId}
+            skills={actions.data?.actions ?? []}
+            onDispatched={(_action, sessionId) => setDispatchedSessionId(sessionId)}
+          />
+        </div>
       </div>
       <div className="flex-1 overflow-hidden">
         {link.tab === 'tasks' ? (

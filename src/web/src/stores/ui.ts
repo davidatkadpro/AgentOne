@@ -32,6 +32,8 @@ interface UiState {
   setNewChatDialogOpen(open: boolean): void
   settingsTab: SettingsTab
   setSettingsTab(tab: SettingsTab): void
+  sidebarOpen: boolean
+  setSidebarOpen(open: boolean): void
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -52,5 +54,9 @@ export const useUiStore = create<UiState>((set) => ({
   settingsTab: 'profiles',
   setSettingsTab(tab) {
     set({ settingsTab: tab })
+  },
+  sidebarOpen: false,
+  setSidebarOpen(open) {
+    set({ sidebarOpen: open })
   },
 }))

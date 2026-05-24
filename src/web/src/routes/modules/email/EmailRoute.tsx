@@ -73,13 +73,17 @@ export function EmailRoute() {
   return (
     <ModulePanel
       kpiStrip={
-        <div className="flex items-center justify-between pr-3">
-          <KpiStrip
-            pills={kpis}
-            activePillId={filter === 'all' ? null : filter}
-            onPillClick={onPillClick}
-          />
-          <EmailRefreshButton />
+        <div className="flex items-center justify-between gap-2 pr-3 min-w-0">
+          <div className="flex-1 min-w-0">
+            <KpiStrip
+              pills={kpis}
+              activePillId={filter === 'all' ? null : filter}
+              onPillClick={onPillClick}
+            />
+          </div>
+          <div className="shrink-0">
+            <EmailRefreshButton />
+          </div>
         </div>
       }
       list={

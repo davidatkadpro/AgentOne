@@ -10,7 +10,10 @@ export interface SheetProps {
   width?: 'sm' | 'md'
 }
 
-const WIDTHS = { sm: 'w-80', md: 'w-[400px]' } as const
+const WIDTHS = {
+  sm: 'w-[88vw] max-w-xs md:w-80 md:max-w-none',
+  md: 'w-[92vw] max-w-md md:w-[400px] md:max-w-none',
+} as const
 
 export function Sheet({ open, onOpenChange, children, title, width = 'md' }: SheetProps) {
   useEffect(() => {

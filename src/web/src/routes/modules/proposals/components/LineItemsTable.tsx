@@ -31,8 +31,8 @@ export function LineItemsTable({
   onLineRemove,
 }: LineItemsTableProps) {
   return (
-    <div className="border border-border rounded" data-testid="line-items-table">
-      <table className="w-full text-xs">
+    <div className="border border-border rounded overflow-x-auto scrollbar-thin" data-testid="line-items-table">
+      <table className="w-full min-w-[560px] text-xs">
         <thead className="bg-bg/40 border-b border-border text-muted">
           <tr>
             <th className="text-left px-2 py-1 w-16">Kind</th>

@@ -45,7 +45,7 @@ export function ChatHeader({ sessionId }: ChatHeaderProps) {
   }
 
   return (
-    <div className="h-9 shrink-0 border-b border-border px-6 flex items-center gap-3 bg-bg group">
+    <div className="min-h-9 shrink-0 border-b border-border px-3 md:px-6 py-1.5 md:py-0 flex items-center gap-2 md:gap-3 bg-bg group">
       <div className="flex-1 min-w-0 flex items-center gap-2">
         {editing ? (
           <>
@@ -57,7 +57,7 @@ export function ChatHeader({ sessionId }: ChatHeaderProps) {
                 if (e.key === 'Enter') commit()
                 else if (e.key === 'Escape') setEditing(false)
               }}
-              className="text-sm font-medium bg-surface border border-border rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-accent min-w-0 flex-1"
+              className="text-base md:text-sm font-medium bg-surface border border-border rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-accent min-w-0 flex-1"
               maxLength={120}
             />
             <button
@@ -85,7 +85,7 @@ export function ChatHeader({ sessionId }: ChatHeaderProps) {
             <button
               type="button"
               onClick={() => setEditing(true)}
-              className="p-1 rounded hover:bg-surface text-muted hover:text-fg opacity-0 group-hover:opacity-100 focus:opacity-100"
+              className="p-1 rounded hover:bg-surface text-muted hover:text-fg md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100 shrink-0"
               aria-label="Rename session"
               title="Rename"
             >
@@ -109,12 +109,12 @@ export function ChatHeader({ sessionId }: ChatHeaderProps) {
           </span>
         ) : null}
         {health.data?.model ? (
-          <span className="inline-flex items-center rounded-full px-2 py-0.5 border border-border bg-surface">
+          <span className="hidden md:inline-flex items-center rounded-full px-2 py-0.5 border border-border bg-surface">
             {health.data.model}
           </span>
         ) : null}
         {data?.session.createdAt ? (
-          <span className="text-muted" title={new Date(data.session.createdAt).toLocaleString()}>
+          <span className="hidden md:inline text-muted" title={new Date(data.session.createdAt).toLocaleString()}>
             {formatRelative(data.session.createdAt)}
           </span>
         ) : null}

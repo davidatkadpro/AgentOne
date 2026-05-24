@@ -89,16 +89,16 @@ function SkillGridView({
 }: SkillGridViewProps) {
   return (
     <div className="h-full flex flex-col">
-      <div className="border-b border-border px-6 py-3 flex items-center gap-3 shrink-0">
-        <div className="flex items-center gap-2">
+      <div className="border-b border-border px-3 md:px-6 py-3 flex flex-wrap items-center gap-2 md:gap-3 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           <Sparkles size={16} className="text-accent" />
           <h1 className="text-sm font-semibold">Skills</h1>
           <span className="text-xs text-muted">
             {filter ? `${visibleCount} of ${totalCount}` : totalCount}
           </span>
         </div>
-        <div className="flex-1" />
-        <div className="w-72">
+        <div className="hidden md:block flex-1" />
+        <div className="w-full md:w-72">
           <Input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -106,7 +106,7 @@ function SkillGridView({
           />
         </div>
       </div>
-      <div className="flex-1 overflow-auto scrollbar-thin px-6 py-4">
+      <div className="flex-1 overflow-auto scrollbar-thin px-3 md:px-6 py-4">
         {visibleCount === 0 ? (
           <EmptyState
             title="No skills match"
@@ -183,7 +183,8 @@ function SkillDetailView({
 }: SkillDetailViewProps) {
   return (
     <div className="flex h-full">
-      <div className="w-[280px] border-r border-border flex flex-col shrink-0">
+      {/* List sidebar — hidden on mobile (the detail takes over the full surface). */}
+      <div className="hidden md:flex w-[280px] border-r border-border flex-col shrink-0">
         <div className="p-3 border-b border-border flex items-center gap-2">
           <button
             type="button"
@@ -229,11 +230,21 @@ function SkillDetailView({
           ))}
         </div>
       </div>
-      <div className="flex-1 overflow-auto scrollbar-thin">
-        <div className="p-6 max-w-3xl">
+      <div className="flex-1 overflow-auto scrollbar-thin min-w-0">
+        {/* Mobile-only back link — desktop has the same affordance in the left rail. */}
+        <div className="md:hidden border-b border-border px-3 py-2">
+          <button
+            type="button"
+            onClick={onBackToGrid}
+            className="inline-flex items-center gap-1 text-xs text-muted hover:text-fg"
+          >
+            <ArrowLeft size={12} /> All skills
+          </button>
+        </div>
+        <div className="p-4 md:p-6 max-w-3xl">
           <div className="mb-4">
             <div className="text-[10px] uppercase text-muted">{skill.category}</div>
-            <h1 className="text-lg font-semibold">{skill.name}</h1>
+            <h1 className="text-lg font-semibold break-words">{skill.name}</h1>
             <p className="text-sm text-muted mt-1">{skill.description}</p>
             {skill.allowedTools.length > 0 ? (
               <div className="mt-2 flex flex-wrap gap-1">

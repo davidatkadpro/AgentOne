@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Plus } from 'lucide-react'
+import { ArrowLeft, Plus } from 'lucide-react'
 import { useProfiles } from '@/api/profiles'
 import { ProfileEditor } from './ProfileEditor'
 import { ProfileRestartBanner } from './ProfileRestartBanner'
@@ -20,10 +20,23 @@ export function ProfilesTab() {
   const bootProfile = profiles.data?.current ?? '_base'
   const selectedProfile: ProfileListEntry | null =
     list.find((p) => p.id === selected) ?? null
+  const editorOpen = creating || !!selectedProfile
+
+  function closeEditor() {
+    setSelected(null)
+    setCreating(false)
+  }
 
   return (
     <div className="flex h-full">
-      <div className="w-[280px] border-r border-border flex flex-col">
+      {/* List rail. On mobile this becomes a full-width column when no editor is open, hidden otherwise. */}
+      <div
+        className={cn(
+          'border-r border-border flex flex-col min-h-0',
+          editorOpen ? 'hidden md:flex' : 'flex-1 md:flex-none',
+          'md:w-[280px] md:shrink-0',
+        )}
+      >
         <div className="p-3 border-b border-border">
           <Button
             size="sm"
@@ -62,7 +75,24 @@ export function ProfilesTab() {
           ))}
         </div>
       </div>
-      <div className="flex-1 overflow-auto scrollbar-thin">
+      <div
+        className={cn(
+          'flex-1 overflow-auto scrollbar-thin min-w-0',
+          editorOpen ? 'block' : 'hidden md:block',
+        )}
+      >
+        {/* Mobile-only back link to the profile list. */}
+        {editorOpen ? (
+          <div className="md:hidden border-b border-border px-3 py-2">
+            <button
+              type="button"
+              onClick={closeEditor}
+              className="inline-flex items-center gap-1 text-xs text-muted hover:text-fg"
+            >
+              <ArrowLeft size={12} /> All profiles
+            </button>
+          </div>
+        ) : null}
         {showRestartBanner ? <ProfileRestartBanner /> : null}
         {creating ? (
           <ProfileEditor

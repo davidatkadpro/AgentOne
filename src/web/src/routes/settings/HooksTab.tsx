@@ -51,7 +51,8 @@ export function HooksTab() {
           <div className="text-[10px] text-muted mb-2 font-mono break-all">
             {data.configPath}
           </div>
-          <table className="w-full text-xs" data-testid="hooks-table">
+          <div className="overflow-x-auto scrollbar-thin">
+          <table className="w-full min-w-[420px] text-xs" data-testid="hooks-table">
             <thead>
               <tr className="border-b border-border text-left text-muted">
                 <th className="py-1 pr-2 font-normal w-32">Event</th>
@@ -84,6 +85,7 @@ export function HooksTab() {
               ))}
             </tbody>
           </table>
+          </div>
         </>
       )}
       {data?.error ? (

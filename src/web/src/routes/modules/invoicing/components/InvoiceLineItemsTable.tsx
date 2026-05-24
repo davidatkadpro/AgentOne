@@ -25,8 +25,8 @@ export function InvoiceLineItemsTable({
   onRemove,
 }: InvoiceLineItemsTableProps) {
   return (
-    <div data-testid="invoice-line-items">
-      <table className="w-full text-xs">
+    <div data-testid="invoice-line-items" className="overflow-x-auto scrollbar-thin">
+      <table className="w-full min-w-[560px] text-xs">
         <thead>
           <tr className="border-b border-border text-left text-muted">
             <th className="py-1 pr-2 font-normal">Kind</th>

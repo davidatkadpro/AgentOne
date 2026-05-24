@@ -63,7 +63,7 @@ export function MessageList({ sessionId, embedded = false }: MessageListProps) {
       onScroll={onScroll}
       className={cn(
         'overflow-auto scrollbar-thin',
-        embedded ? 'h-full px-3 py-2' : 'flex-1 px-6 py-4',
+        embedded ? 'h-full px-3 py-2' : 'flex-1 px-3 md:px-6 py-3 md:py-4',
       )}
     >
       <div

@@ -84,7 +84,7 @@ function SessionRow({
         type="button"
         onClick={() => onToggleSelected(session.id)}
         className={cn(
-          'w-full text-left flex items-center gap-2 px-3 h-8 text-xs rounded-md',
+          'w-full text-left flex items-center gap-2 px-3 h-10 md:h-8 text-xs rounded-md',
           isSelected ? 'bg-accent/10 text-fg' : 'text-muted hover:text-fg hover:bg-surface',
         )}
         title={session.id}
@@ -98,7 +98,7 @@ function SessionRow({
     <NavLink
       to={`/chat/${session.id}`}
       className={cn(
-        'flex items-center gap-2 px-3 h-8 text-xs rounded-md group',
+        'flex items-center gap-2 px-3 h-10 md:h-8 text-xs rounded-md group',
         isActive ? 'bg-surface text-fg' : 'text-muted hover:text-fg hover:bg-surface',
       )}
       title={session.id}
@@ -191,7 +191,7 @@ export function SessionList() {
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search sessions"
-            className="w-full h-7 pl-7 pr-2 text-xs rounded-md bg-bg border border-border text-fg placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
+            className="w-full h-9 md:h-7 pl-7 pr-2 text-base md:text-xs rounded-md bg-bg border border-border text-fg placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
           />
         </div>
         {selectionMode ? (

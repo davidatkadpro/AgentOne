@@ -96,7 +96,7 @@ export function Composer({ sessionId, disabled }: ComposerProps) {
   const sendDisabled = inputDisabled || !text.trim()
 
   return (
-    <div className="px-6 pb-4 pt-2 border-t border-border relative">
+    <div className="px-3 md:px-6 pb-3 md:pb-4 pt-2 border-t border-border relative">
       <div className="mx-auto max-w-[760px]">
         <div
           className={cn(
@@ -124,7 +124,7 @@ export function Composer({ sessionId, disabled }: ComposerProps) {
             disabled={sendDisabled}
             aria-label="Send message"
             className={cn(
-              'inline-flex items-center justify-center w-8 h-8 rounded-md transition-colors shrink-0',
+              'inline-flex items-center justify-center w-10 h-10 md:w-8 md:h-8 rounded-md transition-colors shrink-0',
               sendDisabled
                 ? 'bg-transparent text-muted/60 cursor-not-allowed'
                 : 'bg-accent text-white hover:bg-accent/90',

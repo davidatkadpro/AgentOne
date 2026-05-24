@@ -53,7 +53,7 @@ export function ChatRoute() {
       ) : null}
       <ChatHeader sessionId={sessionId} />
       <MessageList sessionId={sessionId} />
-      <div className="flex items-center justify-end px-6 py-1">
+      <div className="flex items-center justify-end px-3 md:px-6 py-1">
         <CancelButton sessionId={sessionId} visible={turnInFlight} />
       </div>
       <Composer sessionId={sessionId} disabled={!!stream?.profileMismatch} />

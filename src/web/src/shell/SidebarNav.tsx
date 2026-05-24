@@ -36,7 +36,7 @@ function NavItem({ entry }: { entry: NavEntry }) {
       to={entry.to}
       className={({ isActive }) =>
         cn(
-          'flex items-center gap-2 px-3 h-8 text-xs rounded-md',
+          'flex items-center gap-2 px-3 h-10 md:h-8 text-xs rounded-md',
           isActive ? 'bg-surface text-fg' : 'text-muted hover:text-fg hover:bg-surface',
         )
       }
