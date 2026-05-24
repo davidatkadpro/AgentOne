@@ -76,7 +76,14 @@ import { EmbeddingIndexer } from '../search/embedding-indexer.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const SendMessageBody = z.object({ text: z.string().min(1) })
-const RenameSessionBody = z.object({ title: z.string().min(1).max(200) })
+const PatchSessionBody = z
+  .object({
+    title: z.string().min(1).max(200).optional(),
+    state: z.enum(['active', 'archived']).optional(),
+  })
+  .refine((v) => v.title !== undefined || v.state !== undefined, {
+    message: 'Either title or state must be provided',
+  })
 const CreateSessionBody = z.object({
   /** Optional. When omitted, the server uses its boot agentProfile. When
    *  present and != boot profile, /api/sessions returns 409 (Path A
@@ -543,7 +550,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       reply.code(400)
       return { error: 'Invalid session id' }
     }
-    const body = RenameSessionBody.safeParse(req.body ?? {})
+    const body = PatchSessionBody.safeParse(req.body ?? {})
     if (!body.success) {
       reply.code(400)
       return { error: 'Invalid body', details: body.error.flatten() }
@@ -553,14 +560,23 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       reply.code(404)
       return { error: 'Session not found' }
     }
-    deps.store.setSessionTitle(params.data.id, body.data.title)
-    await deps.bus.emit({
-      type: 'session.titled',
-      sessionId: params.data.id,
-      title: body.data.title,
-      ts: Date.now(),
-    })
-    return { session: { ...session, title: body.data.title } }
+    let title = session.title
+    let state = session.state
+    if (body.data.title !== undefined) {
+      deps.store.setSessionTitle(params.data.id, body.data.title)
+      title = body.data.title
+      await deps.bus.emit({
+        type: 'session.titled',
+        sessionId: params.data.id,
+        title: body.data.title,
+        ts: Date.now(),
+      })
+    }
+    if (body.data.state !== undefined) {
+      deps.store.setSessionState(params.data.id, body.data.state)
+      state = body.data.state
+    }
+    return { session: { ...session, title, state } }
   })
 
   // --- Notifications HTTP routes (P1S5) ---

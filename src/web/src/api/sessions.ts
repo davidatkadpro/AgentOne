@@ -82,3 +82,20 @@ export function useRenameSession(sessionId: string) {
     },
   })
 }
+
+export function useArchiveSessions() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      // Loop client-side. Each PATCH is small; no bulk endpoint yet.
+      await Promise.all(
+        ids.map((id) =>
+          api.patch<RenameSessionResponse>(`/sessions/${id}`, { state: 'archived' }),
+        ),
+      )
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.sessions.list() })
+    },
+  })
+}
