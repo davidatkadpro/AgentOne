@@ -5,6 +5,7 @@ import { useUiStore } from '@/stores/ui'
 import { useNotificationsStore } from '@/stores/notifications'
 import { useWsStore } from '@/stores/ws'
 import { cn } from '@/lib/cn'
+import { Breadcrumbs } from './Breadcrumbs'
 
 function resolveEffective(theme: 'light' | 'dark' | 'system'): 'light' | 'dark' {
   if (theme !== 'system') return theme
@@ -24,10 +25,11 @@ export function TopBar() {
 
   return (
     <header className="h-12 border-b border-border flex items-center px-4 gap-2 bg-bg">
-      <Link to="/chat" className="text-sm font-semibold text-fg hover:opacity-80">
+      <Link to="/chat" className="text-sm font-semibold text-fg hover:opacity-80 shrink-0">
         AgentOne
       </Link>
-      <div className="flex-1" />
+      <div className="h-4 w-px bg-border shrink-0" />
+      <Breadcrumbs />
       {health.data?.emailSource?.configured && !health.data.emailSource.ok ? (
         <span
           className="inline-flex items-center gap-1 text-[11px] text-warn bg-warn/10 border border-warn/30 rounded-full px-2 py-0.5"
