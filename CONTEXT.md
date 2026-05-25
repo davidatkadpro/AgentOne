@@ -77,6 +77,13 @@ The in-process container holding instantiated Module services. Built at boot fro
 **Project Number**:
 Operator-configured short identifier on a `project` row (format default `YY###`, e.g. `24001`). The canonical reference used in folder names (`projects/24001 - Riverside Reno/`), invoice numbers (`24001-01`), and human conversation. Distinct from the row's internal `id` (a ULID).
 
+**Proposal Section**:
+An individually addressable, editable unit of a Proposal — a row carrying one `section_type`, ordered content, and `is_locked` / `is_included` flags. The Proposal's rendered output is assembled from its Sections in template-defined order; the rendered file on disk is a derivative, not the source of truth. Distinct from an **Estimate Line** (a fee-table row) — a Section holds prose or structured non-fee data.
+_Avoid_: Block, chunk, region, part
+
+**Section Type**:
+The closed enum identifying a Section's role in the document. Two flavours: **Content-Bearing Section Types** (`introduction`, `project_understanding`, `scope_of_services`, `deliverables`, `exclusions`, `assumptions`, `timeline`, `terms`, `acceptance`) have a backing **Proposal Section** row with editable content; **Computed Section Types** (`cover_page`, `fee_proposal`) are template positions only — the renderer fills them from the Proposal's metadata, theme, and linked **Estimate**'s lines. Computed types never have a row.
+
 **EmailSource**:
 Abstraction over the mail backend used by `modules/email/`. Two implementations: `GraphEmailSource` (Microsoft Graph, production default) and `MaildirEmailSource` (local `.eml` folder, dev/offline fallback). Narrow surface: list / get / mark / move. Outbound mail is intentionally out of scope.
 
