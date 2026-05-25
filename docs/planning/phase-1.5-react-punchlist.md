@@ -6,7 +6,7 @@ Last reviewed: 2026-05-23. Foundations, shell, chat, aux, settings, server work,
 
 > **npm vs pnpm note**: the spec was written for pnpm but the repo runs on npm. Scripts surface as `npm run web:dev` / `web:build` / `web:test` from the root, delegating to `src/web/` via `--prefix`.
 
-The reference for *what* each surface contains is [`../FRONTEND-HANDOFF.md`](../FRONTEND-HANDOFF.md), [ADR-0006](../adr/0006-frontend-shell-architecture.md), and [ADR-0007](../adr/0007-module-panel-conventions.md). The reference for *how* it's wired — folder layout, TS types, TanStack Query cache keys, Zustand store shape, component prop signatures — is [`./phase-1.5-frontend-impl-spec.md`](./phase-1.5-frontend-impl-spec.md). This doc tracks the *work*, not the spec.
+The reference for *what* each surface contains is [`../historical/FRONTEND-HANDOFF-2026-05.md`](../historical/FRONTEND-HANDOFF-2026-05.md), [ADR-0006](../adr/0006-frontend-shell-architecture.md), and [ADR-0007](../adr/0007-module-panel-conventions.md). The reference for *how* it's wired — folder layout, TS types, TanStack Query cache keys, Zustand store shape, component prop signatures — is [`./phase-1.5-frontend-impl-spec.md`](./phase-1.5-frontend-impl-spec.md). This doc tracks the *work*, not the spec.
 
 ---
 
@@ -246,7 +246,7 @@ All items closed. R1 landed alongside Vite manual-chunk splitting; initial JS dr
 
 ### P1S1. `POST /api/profiles` — create
 **Status**: ☑ · **Depends on**: —
-- Full contract in [`../FRONTEND-HANDOFF.md#post-apiprofiles`](../FRONTEND-HANDOFF.md).
+- Full contract in [`../historical/FRONTEND-HANDOFF-2026-05.md#post-apiprofiles`](../historical/FRONTEND-HANDOFF-2026-05.md).
 - Body validated against the server's Zod profile schema.
 - Writes `profiles/agents/<id>.yaml`; 409 if id already exists.
 - Returns the freshly resolved profile (same shape as `GET /api/profiles` rows).
@@ -254,14 +254,14 @@ All items closed. R1 landed alongside Vite manual-chunk splitting; initial JS dr
 
 ### P1S2. `PATCH /api/profiles/:id` — edit
 **Status**: ☑ · **Depends on**: P1S1
-- Full contract in [`../FRONTEND-HANDOFF.md#patch-apiprofilesid`](../FRONTEND-HANDOFF.md).
+- Full contract in [`../historical/FRONTEND-HANDOFF-2026-05.md#patch-apiprofilesid`](../historical/FRONTEND-HANDOFF-2026-05.md).
 - Partial update; full YAML rewrite (comments are not preserved — accepted trade-off, profiles are UI-managed now).
 - 404 if not found; 400 with field-level `details[]` on merged-result validation failure.
 - **Acceptance**: integration test edits a profile and `GET /api/profiles/:id` reflects the change.
 
 ### P1S3. `DELETE /api/profiles/:id` — delete
 **Status**: ☑ · **Depends on**: P1S1
-- Full contract in [`../FRONTEND-HANDOFF.md#delete-apiprofilesid`](../FRONTEND-HANDOFF.md).
+- Full contract in [`../historical/FRONTEND-HANDOFF-2026-05.md#delete-apiprofilesid`](../historical/FRONTEND-HANDOFF-2026-05.md).
 - 409 with distinct `error` codes: `ACTIVE_BOOT_PROFILE`, `PROFILE_IN_USE` (carries `affectedSessions`), `RESERVED_PROFILE` (for `_base`).
 - 200 + deletes the YAML otherwise. Profiles that other profiles `extends` are not auto-cascaded — dependents start failing on next read.
 - **Acceptance**: integration test asserts all three 409 codes and the success path.

@@ -112,5 +112,5 @@ These match the PRD's "Out of Scope" section and stay deferred:
 ## Cross-references
 
 - PRD: [`../PRD.md`](../PRD.md)
-- Frontend handoff: [`../FRONTEND-HANDOFF.md`](../FRONTEND-HANDOFF.md)
+- Frontend handoff: [`../historical/FRONTEND-HANDOFF-2026-05.md`](../historical/FRONTEND-HANDOFF-2026-05.md)
 - ADRs: [`../adr/`](../adr/)

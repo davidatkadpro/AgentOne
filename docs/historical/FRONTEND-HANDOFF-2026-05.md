@@ -1,4 +1,12 @@
-# AgentOne Frontend Handoff
+# AgentOne Frontend Handoff (archived 2026-05)
+
+> **HISTORICAL — DO NOT EDIT.** This was the brief for the Phase 1.5 React rewrite, written when the frontend was still a vanilla HTML+JS shell at `src/frontend/`. The rewrite shipped (see commit `a7a4d0c` and [`../planning/phase-1.5-react-punchlist.md`](../planning/phase-1.5-react-punchlist.md)); the React SPA now lives at [`src/web/`](../../src/web/). Internal path references inside this document (`src/frontend/...`) point at files that no longer exist.
+>
+> The REST + WebSocket reference inside is still broadly accurate for the contracts it covers, but **prefer the live route handlers in `src/server/index.ts` and module `routes.ts` files** as the source of truth — newer phase punch lists added routes this doc never knew about.
+>
+> Retained as a record of what the rewrite team was given to work from.
+
+---
 
 A single, complete reference for a team building the production React
 frontend that will replace the current temporary HTML+JS UI.

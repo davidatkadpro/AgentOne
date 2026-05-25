@@ -116,7 +116,7 @@ The legacy `src/frontend/client.js` is **not** a model for the file structure. D
 
 ### 2.1 Domain types (`src/web/types/domain.ts`)
 
-These mirror the server's persisted shapes, hand-translated from [`src/core/types.ts`](../../src/core/types.ts) and the response shapes in [FRONTEND-HANDOFF.md](../FRONTEND-HANDOFF.md). Keep them in sync with the server schema; don't import from `src/` directly (the Vite build doesn't have visibility into server code).
+These mirror the server's persisted shapes, hand-translated from [`src/core/types.ts`](../../src/core/types.ts) and the response shapes in [FRONTEND-HANDOFF.md](../historical/FRONTEND-HANDOFF-2026-05.md). Keep them in sync with the server schema; don't import from `src/` directly (the Vite build doesn't have visibility into server code).
 
 ```ts
 export type Role = 'system' | 'user' | 'assistant' | 'tool'
@@ -976,7 +976,7 @@ The four states (loading / loaded-empty / loaded-populated / errored) are mutual
 - Punch list (work items, statuses): [`./phase-1.5-react-punchlist.md`](./phase-1.5-react-punchlist.md)
 - Shell ADR (layout, notification pattern): [`../adr/0006-frontend-shell-architecture.md`](../adr/0006-frontend-shell-architecture.md)
 - Module conventions ADR (action surfaces, inline streams): [`../adr/0007-module-panel-conventions.md`](../adr/0007-module-panel-conventions.md)
-- Server contract reference (REST/WS shapes): [`../FRONTEND-HANDOFF.md`](../FRONTEND-HANDOFF.md)
+- Server contract reference (REST/WS shapes): [`../historical/FRONTEND-HANDOFF-2026-05.md`](../historical/FRONTEND-HANDOFF-2026-05.md)
 - Business flow + module specs: [`./v2-business-flow.md`](./v2-business-flow.md)
 - Server event union (authoritative): [`../../src/core/events.ts`](../../src/core/events.ts)
 - Server domain types: [`../../src/core/types.ts`](../../src/core/types.ts)
