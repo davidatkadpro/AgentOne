@@ -12,6 +12,8 @@ import type {
   Phase,
   Task,
   TaskDependency,
+  TaskFile,
+  TaskPriority,
   EntityStatus,
   ActivityEntry,
   ProjectFilesEntry,
@@ -167,12 +169,22 @@ export interface ProjectDetailResponse {
   phases: Phase[]
   tasks: Task[]
   dependencies: TaskDependency[]
+  taskFiles: TaskFile[]
 }
 
 export interface UpdateProjectStatusRequest {
   status: EntityStatus
 }
 export interface UpdateProjectStatusResponse {
+  project: Project
+}
+
+export interface UpdateProjectRequest {
+  name?: string
+  client?: string | null
+  description?: string | null
+}
+export interface UpdateProjectResponse {
   project: Project
 }
 
@@ -199,6 +211,10 @@ export interface AddTaskRequest {
   description?: string
   parentTaskId?: string
   assigneeProfile?: string
+  startDate?: number
+  dueDate?: number
+  estimatedMinutes?: number
+  priority?: TaskPriority
   metadata?: Record<string, unknown>
 }
 export interface AddTaskResponse {
@@ -211,10 +227,31 @@ export interface UpdateTaskRequest {
   status?: EntityStatus
   assigneeProfile?: string | null
   parentTaskId?: string | null
+  startDate?: number | null
+  dueDate?: number | null
+  estimatedMinutes?: number | null
+  spentMinutes?: number
+  priority?: TaskPriority
   reason?: string | null
 }
 export interface UpdateTaskResponse {
   task: Task
+}
+
+export interface AttachTaskFileRequest {
+  filePath: string
+  label?: string | null
+}
+export interface AttachTaskFileResponse {
+  file: TaskFile
+}
+
+export interface DetachTaskFileRequest {
+  filePath: string
+}
+
+export interface ListTaskFilesResponse {
+  files: TaskFile[]
 }
 
 export interface AddDependencyRequest {

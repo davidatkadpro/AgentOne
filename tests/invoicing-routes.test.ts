@@ -164,4 +164,53 @@ describe('Invoicing routes', () => {
     const res = await h.app.inject({ method: 'GET', url: '/api/v1/invoices/nope' })
     expect(res.statusCode).toBe(404)
   })
+
+  // R14: cross-project list query validation.
+  it('GET /api/v1/invoicing/invoices rejects limit above the cap with 400', async () => {
+    const res = await h.app.inject({
+      method: 'GET',
+      url: '/api/v1/invoicing/invoices?limit=10000',
+    })
+    expect(res.statusCode).toBe(400)
+    expect((res.json() as { error: string }).error).toBe('INVALID_QUERY')
+  })
+
+  it('GET /api/v1/invoicing/invoices rejects negative limit with 400', async () => {
+    const res = await h.app.inject({
+      method: 'GET',
+      url: '/api/v1/invoicing/invoices?limit=-1',
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('GET /api/v1/invoicing/invoices rejects unknown status enum with 400', async () => {
+    const res = await h.app.inject({
+      method: 'GET',
+      url: '/api/v1/invoicing/invoices?status=banana',
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('GET /api/v1/invoicing/invoices coerces a valid limit and returns 200', async () => {
+    const res = await h.app.inject({
+      method: 'GET',
+      url: '/api/v1/invoicing/invoices?limit=25',
+    })
+    expect(res.statusCode).toBe(200)
+  })
+
+  it('GET /api/v1/invoicing/invoices accepts a valid status filter', async () => {
+    const projectId = makeProject()
+    h.invoicing.createInvoice(
+      { projectId, lines: [] },
+      { actor: { type: 'user' } },
+    )
+    const res = await h.app.inject({
+      method: 'GET',
+      url: '/api/v1/invoicing/invoices?status=draft',
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { invoices: Array<{ status: string }> }
+    expect(body.invoices.every((i) => i.status === 'draft')).toBe(true)
+  })
 })

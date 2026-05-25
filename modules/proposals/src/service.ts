@@ -4,6 +4,8 @@ import type { EventBus } from '../../../src/core/events.js'
 import type { AuditActor, AuditLog } from '../../../src/modules/audit-log.js'
 import type { StorageAdapter } from '../../../src/storage/adapter.js'
 import type { ProjectsService } from '../../projects/src/service.js'
+import { escapeBlock, escapeTableCell } from '../../../src/render/markdown-escape.js'
+import { NotFoundError } from '../../../src/errors/domain.js'
 
 export type EstimateStatus =
   | 'draft'
@@ -292,18 +294,24 @@ function renderProposalMarkdown(scope: {
 }): string {
   const lineRows = scope.estimate.lines
     .map((l) => {
-      const unit = l.unit ?? ''
-      return `| ${l.description} | ${l.qty} | ${unit} | $${l.unitPrice.toFixed(2)} | $${l.lineTotal.toFixed(2)} |`
+      const desc = escapeTableCell(l.description)
+      const qty = escapeTableCell(l.qty)
+      const unit = escapeTableCell(l.unit ?? '')
+      const unitPrice = `$${l.unitPrice.toFixed(2)}`
+      const lineTotal = `$${l.lineTotal.toFixed(2)}`
+      return `| ${desc} | ${qty} | ${unit} | ${unitPrice} | ${lineTotal} |`
     })
     .join('\n')
   const total = scope.estimate.lines.reduce((sum, l) => sum + l.lineTotal, 0)
+  const projectNumber = escapeBlock(scope.project.number)
+  const projectName = escapeBlock(scope.project.name)
   const clientLine = scope.project.client
-    ? `\n**Client:** ${scope.project.client}`
+    ? `\n**Client:** ${escapeBlock(scope.project.client)}`
     : ''
   return [
-    `# Proposal ${scope.proposalNumber}`,
+    `# Proposal ${escapeBlock(scope.proposalNumber)}`,
     '',
-    `**Project:** ${scope.project.number} — ${scope.project.name}${clientLine}`,
+    `**Project:** ${projectNumber} — ${projectName}${clientLine}`,
     '',
     '## Line items',
     '',
@@ -565,7 +573,7 @@ export function createProposalsService(deps: ProposalsServiceDeps): ProposalsSer
       }
       const estimate = service.getEstimate(input.estimateId)
       if (!estimate) {
-        throw new Error(`Estimate not found: ${input.estimateId}`)
+        throw new NotFoundError('estimate', input.estimateId)
       }
       if (estimate.projectId !== input.projectId) {
         throw new Error(
@@ -674,7 +682,7 @@ export function createProposalsService(deps: ProposalsServiceDeps): ProposalsSer
       const row = getProposalProjectStmt.get(id) as
         | { project_id: string; number: string }
         | undefined
-      if (!row) throw new Error(`Proposal not found: ${id}`)
+      if (!row) throw new NotFoundError('proposal', id)
       const now = Date.now()
       updateProposalStatusStmt.run(status, now, status, now, status, now, id)
       deps.audit.record({
@@ -727,7 +735,7 @@ export function createProposalsService(deps: ProposalsServiceDeps): ProposalsSer
 
     setEstimateStatus(id, status, ctx) {
       const row = getEstimateProjectStmt.get(id) as { project_id: string } | undefined
-      if (!row) throw new Error(`Estimate not found: ${id}`)
+      if (!row) throw new NotFoundError('estimate', id)
       const now = Date.now()
       updateEstimateStatusStmt.run(status, now, status, now, id)
       deps.audit.record({
@@ -755,7 +763,7 @@ export function createProposalsService(deps: ProposalsServiceDeps): ProposalsSer
 
     updateEstimate(input, ctx) {
       const existing = service.getEstimate(input.estimateId)
-      if (!existing) throw new Error(`Estimate not found: ${input.estimateId}`)
+      if (!existing) throw new NotFoundError('estimate', input.estimateId)
       const now = Date.now()
       const changedFields: string[] = []
 
@@ -838,7 +846,7 @@ export function createProposalsService(deps: ProposalsServiceDeps): ProposalsSer
 
     reviseEstimate(estimateId, ctx) {
       const old = service.getEstimate(estimateId)
-      if (!old) throw new Error(`Estimate not found: ${estimateId}`)
+      if (!old) throw new NotFoundError('estimate', estimateId)
       // The new estimate starts fresh in `draft` carrying the previous
       // lines so the operator can edit from a known baseline. The old
       // estimate's status is intentionally untouched — promote/supersede
@@ -880,7 +888,7 @@ export function createProposalsService(deps: ProposalsServiceDeps): ProposalsSer
       const row = getProposalProjectStmt.get(id) as
         | { project_id: string; number: string }
         | undefined
-      if (!row) throw new Error(`Proposal not found: ${id}`)
+      if (!row) throw new NotFoundError('proposal', id)
       const now = Date.now()
       supersedeProposalStmt.run(supersededByProposalId, now, id)
       deps.audit.record({

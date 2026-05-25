@@ -52,6 +52,16 @@ const Env = z.object({
     .enum(['0', '1', 'true', 'false'])
     .default('0')
     .transform((v) => v === '1' || v === 'true'),
+  /** Comma-separated list of additional `Origin` header values allowed on
+   *  browser requests. The loopback aliases for the bound port are always
+   *  allowed. Use this when serving the SPA from a non-default origin. */
+  ALLOWED_ORIGINS: z.string().optional(),
+  /** Opt-in flag required when HOST is non-loopback. Set to "1" to
+   *  acknowledge that the API will be reachable beyond the local machine. */
+  ALLOW_UNAUTH_NETWORK: z
+    .enum(['0', '1', 'true', 'false'])
+    .default('0')
+    .transform((v) => v === '1' || v === 'true'),
 })
 
 export interface ServerConfig {
@@ -83,6 +93,11 @@ export interface ServerConfig {
   qboAuthorizeUrl: string
   qboPullIntervalMinutes: number
   logEvents: boolean
+  /** Extra browser origins permitted on `/api` and `/ws` (loopback aliases
+   *  for the bound port are always allowed). */
+  allowedOrigins: string[]
+  /** Operator opt-in: true allows binding to a non-loopback host. */
+  allowUnauthNetwork: boolean
 }
 
 export function loadConfigFromEnv(): ServerConfig {
@@ -116,5 +131,9 @@ export function loadConfigFromEnv(): ServerConfig {
     qboAuthorizeUrl: parsed.QBO_AUTHORIZE_URL,
     qboPullIntervalMinutes: parsed.QBO_PULL_INTERVAL_MIN,
     logEvents: parsed.LOG_EVENTS,
+    allowedOrigins: parsed.ALLOWED_ORIGINS
+      ? parsed.ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
+      : [],
+    allowUnauthNetwork: parsed.ALLOW_UNAUTH_NETWORK,
   }
 }

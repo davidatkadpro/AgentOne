@@ -3,6 +3,24 @@ import { countMessageTokens, countMessagesTokens } from '../core/tokenizer.js'
 import { EventBus } from '../core/events.js'
 import type { Provider } from '../providers/base.js'
 
+/**
+ * Persistence hook for the compression watermark. The conversation store
+ * implements this; tests can stub it. Optional in config so test cases
+ * that exercise transient behaviour don't need to plumb a store.
+ */
+export interface CompressionStateStore {
+  getCompressionState(sessionId: string): {
+    summaryText: string
+    throughTurnCount: number
+  } | undefined
+  saveCompressionState(input: {
+    sessionId: string
+    summaryText: string
+    throughTurnCount: number
+  }): void
+  clearCompressionState(sessionId: string): void
+}
+
 export interface ContextManagerConfig {
   compressorProvider: Provider
   compressorModel: string
@@ -19,6 +37,13 @@ export interface ContextManagerConfig {
    * per PRD. Set to >= 1 to disable.
    */
   truncateThreshold?: number
+  /**
+   * Persistence backend for the per-session watermark. When omitted the
+   * watermark lives in memory only and is lost on process restart —
+   * leading to a full re-compression on the next user message after a
+   * restart. Production wires the conversation store; tests can omit.
+   */
+  compressionStore?: CompressionStateStore
 }
 
 export interface PrepareOptions {
@@ -63,16 +88,61 @@ const ROLE_LABEL: Record<Role, string> = {
  * Per-message truncation (the 60% rule) is reserved for the tool-result path
  * which arrives with M3. It is intentionally not implemented in M1.
  */
+/**
+ * Per-session compression state. `text` is the summary rendered into a
+ * synthetic system message; `throughTurnCount` is the high-water mark
+ * (counted in the caller-supplied history) of turns already folded into
+ * the summary. The next `prepare` call slices `history.slice(throughTurnCount)`
+ * so the same prefix isn't paid for again and doesn't keep re-tripping the
+ * threshold.
+ */
+interface CompressionState {
+  text: string
+  throughTurnCount: number
+}
+
 export class ContextManager {
   private readonly compressThreshold: number
   private readonly recencyWindow: number
   private readonly truncateThreshold: number
-  private summaries = new Map<string, string>()
+  private summaries = new Map<string, CompressionState>()
+  /** Sessions whose persisted state we've already pulled into the cache.
+   *  Prevents repeated DB hits for sessions that have never been compressed. */
+  private hydratedSessions = new Set<string>()
 
   constructor(private readonly cfg: ContextManagerConfig) {
     this.compressThreshold = cfg.compressThreshold ?? 0.8
     this.recencyWindow = cfg.recencyWindow ?? 6
     this.truncateThreshold = cfg.truncateThreshold ?? 0.6
+  }
+
+  /**
+   * Read the compression state for a session, populating the in-memory
+   * cache from the persistence store on first touch. Idempotent — once a
+   * session is hydrated, subsequent calls hit the in-memory map only.
+   */
+  private getState(sessionId: string): CompressionState | undefined {
+    if (!this.hydratedSessions.has(sessionId)) {
+      this.hydratedSessions.add(sessionId)
+      const persisted = this.cfg.compressionStore?.getCompressionState(sessionId)
+      if (persisted) {
+        this.summaries.set(sessionId, {
+          text: persisted.summaryText,
+          throughTurnCount: persisted.throughTurnCount,
+        })
+      }
+    }
+    return this.summaries.get(sessionId)
+  }
+
+  private setState(sessionId: string, state: CompressionState): void {
+    this.summaries.set(sessionId, state)
+    this.hydratedSessions.add(sessionId)
+    this.cfg.compressionStore?.saveCompressionState({
+      sessionId,
+      summaryText: state.text,
+      throughTurnCount: state.throughTurnCount,
+    })
   }
 
   async prepare(
@@ -88,14 +158,33 @@ export class ContextManager {
     // to a new array.
     const truncatedHistory = this.truncateOversizedTools(sessionId, history)
 
-    const initial = [system, ...this.withSummary(sessionId, truncatedHistory)]
+    // Drop the prefix already represented by the stored summary. Without
+    // this, the caller (the orchestrator) reloads the full history from
+    // the conversation store on every user message; we'd add the summary
+    // on top of the same prefix and re-trip the threshold every turn.
+    //
+    // Defensive: if the caller hands us a history *shorter* than the
+    // watermark (test code, a manual rewind, a fresh DB), fall back to
+    // offset=0 and keep the summary attached to whatever was passed.
+    // We can't slice past the end of the input.
+    const entry = this.getState(sessionId)
+    const offset =
+      entry && entry.throughTurnCount <= truncatedHistory.length
+        ? entry.throughTurnCount
+        : 0
+    const effectiveHistory =
+      offset > 0 ? truncatedHistory.slice(offset) : truncatedHistory
+
+    const initial = [system, ...this.withSummary(sessionId, effectiveHistory)]
     const systemTokens = countMessageTokens(system) + this.summaryTokens(sessionId)
-    // Recount history if we truncated (passed-in historyTokens is stale).
+    // Caller's historyTokens applies to the *full* history they passed.
+    // After we slice off the compressed prefix, we have to recount.
     const historyChanged = truncatedHistory !== history
-    const historyTokens = historyChanged
-      ? countMessagesTokens(truncatedHistory)
-      : opts.historyTokens ?? countMessagesTokens(history)
-    let total = systemTokens + historyTokens
+    const effectiveHistoryTokens =
+      offset > 0 || historyChanged
+        ? countMessagesTokens(effectiveHistory)
+        : opts.historyTokens ?? countMessagesTokens(history)
+    let total = systemTokens + effectiveHistoryTokens
 
     if (total <= this.compressThreshold * this.cfg.contextWindow) {
       // No compression — the initial assembly is what the model sees.
@@ -103,14 +192,14 @@ export class ContextManager {
       return {
         messages: initial,
         tokenCount:
-          opts.historyTokens !== undefined && !historyChanged
+          opts.historyTokens !== undefined && !historyChanged && offset === 0
             ? total
             : countMessagesTokens(initial),
         compressed: false,
       }
     }
 
-    const recency = await this.compress(sessionId, system, truncatedHistory)
+    const recency = await this.compress(sessionId, system, effectiveHistory, offset)
     const finalMessages = [system, ...this.withSummary(sessionId, recency)]
     total = countMessagesTokens(finalMessages)
     return { messages: finalMessages, tokenCount: total, compressed: true }
@@ -151,6 +240,8 @@ export class ContextManager {
 
   reset(sessionId: string): void {
     this.summaries.delete(sessionId)
+    this.hydratedSessions.add(sessionId)
+    this.cfg.compressionStore?.clearCompressionState(sessionId)
   }
 
   /**
@@ -165,15 +256,22 @@ export class ContextManager {
     system: Message,
     history: Message[],
   ): Promise<{ tokensBefore: number; tokensAfter: number; changed: boolean }> {
-    const willCompress = history.length > this.recencyWindow
+    // Same slice as prepare() so /compact doesn't double-summarise turns
+    // already inside the existing summary.
+    const entry = this.getState(sessionId)
+    const offset =
+      entry && entry.throughTurnCount <= history.length ? entry.throughTurnCount : 0
+    const effectiveHistory = offset > 0 ? history.slice(offset) : history
+
+    const willCompress = effectiveHistory.length > this.recencyWindow
     const tokensBefore = countMessagesTokens([
       system,
-      ...this.withSummary(sessionId, history),
+      ...this.withSummary(sessionId, effectiveHistory),
     ])
     if (!willCompress) {
       return { tokensBefore, tokensAfter: tokensBefore, changed: false }
     }
-    const recency = await this.compress(sessionId, system, history)
+    const recency = await this.compress(sessionId, system, effectiveHistory, offset)
     const finalMessages = [system, ...this.withSummary(sessionId, recency)]
     const tokensAfter = countMessagesTokens(finalMessages)
     return { tokensBefore, tokensAfter, changed: true }
@@ -181,34 +279,59 @@ export class ContextManager {
 
   /** Test seam — exposes the stored summary text for a session, if any. */
   getSummary(sessionId: string): string | undefined {
-    return this.summaries.get(sessionId)
+    return this.getState(sessionId)?.text
+  }
+
+  /** Test seam — exposes the watermark for a session, if compressed. */
+  getCompressionWatermark(sessionId: string): number | undefined {
+    return this.getState(sessionId)?.throughTurnCount
   }
 
   private withSummary(sessionId: string, history: Message[]): Message[] {
-    const summary = this.summaries.get(sessionId)
-    if (!summary) return history
-    return [{ role: 'system', content: summary }, ...history]
+    const entry = this.getState(sessionId)
+    if (!entry) return history
+    return [{ role: 'system', content: entry.text }, ...history]
   }
 
   private summaryTokens(sessionId: string): number {
-    const summary = this.summaries.get(sessionId)
-    if (!summary) return 0
-    return countMessageTokens({ role: 'system', content: summary })
+    const entry = this.getState(sessionId)
+    if (!entry) return 0
+    return countMessageTokens({ role: 'system', content: entry.text })
   }
 
+  /**
+   * Compress the prefix of `effectiveHistory`. `priorOffset` is the
+   * already-summarised count from the *caller's* (full) history — we add
+   * the newly-compressed count to it so the next prepare slices correctly.
+   *
+   * When a prior summary exists, we pass it into the compressor so the
+   * new summary can subsume it rather than dropping old context. Without
+   * this, repeated compressions would lose the original prefix entirely.
+   */
   private async compress(
     sessionId: string,
     system: Message,
-    history: Message[],
+    effectiveHistory: Message[],
+    priorOffset: number,
   ): Promise<Message[]> {
-    const splitAt = Math.max(0, history.length - this.recencyWindow)
-    const toCompress = history.slice(0, splitAt)
-    const recency = history.slice(splitAt)
+    // Natural split point honouring the recency window. We then snap to a
+    // safe seam so we never cut mid-task — see snapToSafeSplit. Without
+    // this, `recency` could start with a `tool` result whose initiating
+    // `assistant` (tool_calls) message ended up in `toCompress`, leaving
+    // the model with an orphan tool message in its prompt. Strict
+    // providers reject; lenient ones (LMStudio) often just return empty.
+    let splitAt = Math.max(0, effectiveHistory.length - this.recencyWindow)
+    splitAt = snapToSafeSplit(effectiveHistory, splitAt)
+    const toCompress = effectiveHistory.slice(0, splitAt)
+    const recency = effectiveHistory.slice(splitAt)
 
     // History is shorter than recency window — nothing to compress; do not emit.
     if (toCompress.length === 0) return recency
 
-    const tokensBefore = countMessagesTokens([system, ...this.withSummary(sessionId, history)])
+    const tokensBefore = countMessagesTokens([
+      system,
+      ...this.withSummary(sessionId, effectiveHistory),
+    ])
     await this.cfg.eventBus.emit({
       type: 'context.compressing',
       sessionId,
@@ -216,9 +339,10 @@ export class ContextManager {
       ts: Date.now(),
     })
 
+    const priorEntry = this.getState(sessionId)
     let summaryBody: string | null = null
     try {
-      summaryBody = await this.callCompressor(toCompress)
+      summaryBody = await this.callCompressor(toCompress, priorEntry?.text ?? null)
     } catch (err) {
       await this.cfg.eventBus.emit({
         type: 'context.compression_failed',
@@ -228,19 +352,19 @@ export class ContextManager {
       })
     }
 
-    // Replace, don't append: each compression supersedes the prior summary,
-    // because the compressor saw the whole compressed prefix (which already
-    // includes any previously-summarised content visible via withSummary).
+    const newThroughTurnCount = priorOffset + toCompress.length
     if (summaryBody) {
-      this.summaries.set(
-        sessionId,
-        `${SUMMARY_HEADER}${summaryBody.trim()}${RECOVERABILITY_HINT}`,
-      )
+      this.setState(sessionId, {
+        text: `${SUMMARY_HEADER}${summaryBody.trim()}${RECOVERABILITY_HINT}`,
+        throughTurnCount: newThroughTurnCount,
+      })
     } else {
-      this.summaries.set(
-        sessionId,
-        `${SUMMARY_HEADER}[${toCompress.length} earlier turns dropped — compressor unavailable.]${RECOVERABILITY_HINT}`,
-      )
+      // Compressor unavailable — fall back to "earlier turns dropped" but
+      // keep the watermark advancing so we don't loop on the same prefix.
+      this.setState(sessionId, {
+        text: `${SUMMARY_HEADER}[${newThroughTurnCount} earlier turns dropped — compressor unavailable.]${RECOVERABILITY_HINT}`,
+        throughTurnCount: newThroughTurnCount,
+      })
     }
 
     const tokensAfter = countMessagesTokens([system, ...this.withSummary(sessionId, recency)])
@@ -256,8 +380,17 @@ export class ContextManager {
     return recency
   }
 
-  private async callCompressor(toCompress: Message[]): Promise<string> {
+  private async callCompressor(
+    toCompress: Message[],
+    priorSummary: string | null,
+  ): Promise<string> {
     const transcript = toCompress.map((m) => renderMessageForCompressor(m)).join('\n\n')
+
+    const userPrompt = priorSummary
+      ? `Existing summary of earlier turns (already folded in):\n\n${priorSummary}\n\n` +
+        `New turns to fold into the summary:\n\n${transcript}\n\n` +
+        `Produce an updated summary that subsumes both. Do not duplicate facts already in the existing summary; do not drop them either.`
+      : `Summarise the following turns:\n\n${transcript}`
 
     const res = await this.cfg.compressorProvider.chat({
       model: this.cfg.compressorModel,
@@ -273,7 +406,7 @@ export class ContextManager {
         },
         {
           role: 'user',
-          content: `Summarise the following turns:\n\n${transcript}`,
+          content: userPrompt,
         },
       ],
       temperature: 0.1,
@@ -285,6 +418,40 @@ export class ContextManager {
     }
     return res.content
   }
+}
+
+/**
+ * Snap a tentative split point in a message history to a `user`-message
+ * boundary so neither side of the slice contains an orphaned tool message.
+ *
+ * Why: an agent task is `user → (assistant ± tool_calls → tool result)* →
+ * final assistant`. If we cut mid-task, `recency[0]` can be a `tool`
+ * message whose initiating `assistant(tool_calls)` is now in `toCompress`.
+ * Many providers reject such messages outright; lenient ones (LMStudio)
+ * accept them but the local model frequently responds with nothing,
+ * leaving the user staring at "[The model produced no response]".
+ *
+ * Strategy: walk backward to find the nearest earlier user message
+ * (= start of an agent task). Recency may grow larger than configured —
+ * that's preferable to fracturing a tool call. If no earlier user
+ * message exists, walk forward — the orchestrator just persisted the
+ * latest user turn so this branch always succeeds in practice.
+ *
+ * Exported for testing.
+ */
+export function snapToSafeSplit(history: Message[], candidate: number): number {
+  if (candidate <= 0) return 0
+  if (candidate >= history.length) return history.length
+  if (history[candidate]?.role === 'user') return candidate
+  for (let i = candidate - 1; i >= 0; i--) {
+    if (history[i]?.role === 'user') return i
+  }
+  for (let i = candidate + 1; i < history.length; i++) {
+    if (history[i]?.role === 'user') return i
+  }
+  // No user message anywhere — leave the candidate. Compression in this
+  // state is unusual and the caller can decide whether to bail.
+  return candidate
 }
 
 /**

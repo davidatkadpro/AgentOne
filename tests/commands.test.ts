@@ -53,6 +53,8 @@ function fakeConfig(): ServerConfig {
     qboAuthorizeUrl: 'https://appcenter.intuit.com/connect/oauth2',
     qboPullIntervalMinutes: 15,
     logEvents: false,
+    allowedOrigins: [],
+    allowUnauthNetwork: false,
   }
 }
 

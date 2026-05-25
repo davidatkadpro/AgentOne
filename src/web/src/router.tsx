@@ -60,14 +60,28 @@ const devChildren = ComponentsRoute
   ? [{ path: '__dev/components', element: lazyElement(<ComponentsRoute />) }]
   : []
 
-export const router = createBrowserRouter([
+export const router = createBrowserRouter(
+  [
+    {
+      path: '/',
+      element: <AppShell />,
+      children: [
+        ...baseChildren,
+        ...devChildren,
+        { path: '*', element: <NotFound /> },
+      ],
+    },
+  ],
   {
-    path: '/',
-    element: <AppShell />,
-    children: [
-      ...baseChildren,
-      ...devChildren,
-      { path: '*', element: <NotFound /> },
-    ],
+    // Opt into the v7 behaviour React Router warns about today so we
+    // don't break on the v7 upgrade. `v7_startTransition` lives on
+    // RouterProvider (different surface) and is set in main.tsx.
+    future: {
+      v7_relativeSplatPath: true,
+      v7_fetcherPersist: true,
+      v7_normalizeFormMethod: true,
+      v7_partialHydration: true,
+      v7_skipActionErrorRevalidation: true,
+    },
   },
-])
+)

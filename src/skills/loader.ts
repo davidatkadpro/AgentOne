@@ -1,5 +1,5 @@
 import { readFile, readdir, stat } from 'node:fs/promises'
-import { join, resolve, isAbsolute, sep } from 'node:path'
+import { join, resolve, isAbsolute, relative, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
   SkillFrontmatterSchema,
@@ -45,6 +45,7 @@ export class SkillLoadError extends Error {
     readonly code:
       | 'INVALID_FRONTMATTER'
       | 'MISSING_HANDLER'
+      | 'INVALID_HANDLER_PATH'
       | 'SLASH_COLLISION'
       | 'DUPLICATE_SKILL'
       | 'IO',
@@ -191,7 +192,25 @@ async function readSkill(
 
   if (fm.tools) {
     for (const tool of fm.tools) {
+      // Reject absolute / escaping handler paths *at index time* — same
+      // policy importSkillTools enforces, so a malformed manifest never
+      // makes it into the registry to be loaded later.
+      if (isAbsolute(tool.handler)) {
+        throw new SkillLoadError(
+          `Handler path ${tool.handler} for ${category}/${fm.name} is absolute; ` +
+            `skill handlers must be relative to the skill folder.`,
+          'INVALID_HANDLER_PATH',
+        )
+      }
       const abs = resolve(folder, tool.handler)
+      const rel = relative(folder, abs)
+      if (rel.startsWith('..') || isAbsolute(rel)) {
+        throw new SkillLoadError(
+          `Handler path ${tool.handler} for ${category}/${fm.name} resolves ` +
+            `outside the skill folder (resolved to ${abs}).`,
+          'INVALID_HANDLER_PATH',
+        )
+      }
       if (!(await pathExists(abs))) {
         throw new SkillLoadError(
           `Tool handler not found: ${tool.handler} (resolved to ${abs}) for ${category}/${fm.name}`,
@@ -251,7 +270,30 @@ export async function importSkillTools(
   }
   const out: LoadedSkillTool[] = []
   for (const decl of manifest.frontmatter.tools) {
+    // Reject absolute handler paths up-front. Anything like `/etc/evil.js`
+    // (POSIX) or `C:\evil.js` (Windows) is never a legitimate skill
+    // handler declaration.
+    if (isAbsolute(decl.handler)) {
+      throw new SkillLoadError(
+        `Handler path ${decl.handler} for ${manifest.qualifiedName} is absolute; ` +
+          `skill handlers must be relative to the skill folder.`,
+        'INVALID_HANDLER_PATH',
+      )
+    }
     const abs = resolve(manifest.folder, decl.handler)
+    // Defence-in-depth: after `resolve`, the path MUST stay inside the
+    // skill folder. A malformed `decl.handler` like `../../leak.ts` would
+    // otherwise resolve outside, and a malicious SKILL.md could pull code
+    // from anywhere on disk. We reject sibling-prefix tricks via the same
+    // relative-path check used elsewhere.
+    const rel = relative(manifest.folder, abs)
+    if (rel.startsWith('..') || isAbsolute(rel)) {
+      throw new SkillLoadError(
+        `Handler path ${decl.handler} for ${manifest.qualifiedName} resolves ` +
+          `outside the skill folder (resolved to ${abs}).`,
+        'INVALID_HANDLER_PATH',
+      )
+    }
     const url = pathToFileURL(abs).href
     let mod: Record<string, unknown>
     try {

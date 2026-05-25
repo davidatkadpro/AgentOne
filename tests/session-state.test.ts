@@ -120,7 +120,7 @@ describe('Session state — migration from legacy schema', () => {
     expect(fetched?.state).toBe('active')
     expect(fetched?.spawnedBy).toBeNull()
 
-    expect(db.pragma('user_version', { simple: true })).toBe(7)
+    expect(db.pragma('user_version', { simple: true })).toBe(8)
 
     db.close()
   })

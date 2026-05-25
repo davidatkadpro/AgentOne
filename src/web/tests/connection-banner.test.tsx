@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { MemoryRouter } from 'react-router-dom'
 import { render, screen } from '@testing-library/react'
 import { ConnectionBanner } from '@/routes/modules/invoicing/components/ConnectionBanner'
+import { TestRouter } from './helpers/test-router'
 
 function withRouter(node: React.ReactNode) {
-  return <MemoryRouter>{node}</MemoryRouter>
+  return <TestRouter>{node}</TestRouter>
 }
 
 describe('ConnectionBanner', () => {

@@ -197,10 +197,26 @@ export class ToolRegistry {
     if (mockedResult !== null) {
       handlerResult = mockedResult
     } else {
+      // Per-call AbortController. We abort it on timeout so handlers that
+      // honour `ctx.signal` can short-circuit their in-flight work instead
+      // of running to completion after the orchestrator has given up on
+      // them. If the caller already passed a signal (turn cancel), we
+      // forward its abort by attaching a listener; the abort then cascades.
+      const controller = new AbortController()
+      const upstream = ctx.signal
+      const onUpstreamAbort = (): void => {
+        controller.abort()
+      }
+      if (upstream) {
+        if (upstream.aborted) controller.abort()
+        else upstream.addEventListener('abort', onUpstreamAbort, { once: true })
+      }
+      const handlerCtx: ToolContext = { ...ctx, signal: controller.signal }
       try {
         const r = await raceTimeout(
-          Promise.resolve(tool.handler(effectiveArgs as never, ctx)),
+          Promise.resolve(tool.handler(effectiveArgs as never, handlerCtx)),
           timeoutMs,
+          controller,
         )
         handlerResult = normaliseResult(r)
       } catch (err) {
@@ -218,6 +234,8 @@ export class ToolRegistry {
             err instanceof Error && err.stack ? { stack: err.stack } : undefined,
           )
         }
+      } finally {
+        if (upstream) upstream.removeEventListener('abort', onUpstreamAbort)
       }
     }
 
@@ -252,10 +270,19 @@ class TimeoutError extends Error {
   }
 }
 
-async function raceTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+async function raceTimeout<T>(
+  p: Promise<T>,
+  ms: number,
+  controller?: AbortController,
+): Promise<T> {
   let timer: NodeJS.Timeout | undefined
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new TimeoutError(ms)), ms)
+    timer = setTimeout(() => {
+      // Abort first so handlers honouring the signal can short-circuit
+      // before the rejection propagates.
+      if (controller && !controller.signal.aborted) controller.abort()
+      reject(new TimeoutError(ms))
+    }, ms)
   })
   try {
     return (await Promise.race([p, timeout])) as T

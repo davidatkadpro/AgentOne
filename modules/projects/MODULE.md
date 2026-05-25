@@ -1,7 +1,7 @@
 ---
 name: projects
 description: Project, phase, and task records — the central domain every other module references.
-version: 0.1.0
+version: 0.2.0
 events:
   - project.created
   - project.updated
@@ -12,6 +12,8 @@ events:
   - task.updated
   - task.completed
   - task.blocked
+  - task.file_attached
+  - task.file_detached
 ---
 
 # Projects

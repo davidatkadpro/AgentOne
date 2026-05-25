@@ -1,8 +1,10 @@
 import { z } from 'zod'
 import { readdir, readFile, stat } from 'node:fs/promises'
-import { join, isAbsolute, resolve, basename } from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { join, basename } from 'node:path'
+import { confineToRoot } from '../../../src/storage/path-confine.js'
+import { renderPandoc } from '../../../src/render/pandoc.js'
+import { moneyNonNegative, qtyNonNegative } from '../../../src/modules/numeric.js'
+import { mapDomainError } from '../../../src/errors/domain.js'
 import type { FastifyInstance } from 'fastify'
 import type { AuditLog } from '../../../src/modules/audit-log.js'
 import type { EventBus } from '../../../src/core/events.js'
@@ -13,8 +15,6 @@ import {
   type ProposalsService,
   type ProposalStatus,
 } from './service.js'
-
-const execFileAsync = promisify(execFile)
 
 const LineKindEnum: z.ZodType<LineKind> = z.enum(['fixed', 'time_and_materials', 'unit'])
 const EstimateStatusEnum: z.ZodType<EstimateStatus> = z.enum([
@@ -43,9 +43,9 @@ const CreateEstimateBody = z.object({
       z.object({
         kind: LineKindEnum.optional(),
         description: z.string().min(1),
-        qty: z.number().nonnegative().optional(),
+        qty: qtyNonNegative().optional(),
         unit: z.string().optional(),
-        unitPrice: z.number().nonnegative().optional(),
+        unitPrice: moneyNonNegative().optional(),
         metadata: z.record(z.unknown()).optional(),
       }),
     )
@@ -66,9 +66,9 @@ const UpdateEstimateBody = z
           id: z.string().optional(),
           kind: LineKindEnum.optional(),
           description: z.string().min(1),
-          qty: z.number().nonnegative().optional(),
+          qty: qtyNonNegative().optional(),
           unit: z.string().nullable().optional(),
-          unitPrice: z.number().nonnegative().optional(),
+          unitPrice: moneyNonNegative().optional(),
           metadata: z.record(z.unknown()).optional(),
         }),
       )
@@ -231,9 +231,13 @@ export async function registerProposalsRoutes(
       }
       try {
         service.setEstimateStatus(params.data.id, body.data.status, HTTP_ACTOR)
-      } catch {
-        reply.code(404)
-        return { error: 'NOT_FOUND' }
+      } catch (err) {
+        const mapped = mapDomainError(err)
+        if (mapped) {
+          reply.code(mapped.status)
+          return mapped.body
+        }
+        throw err
       }
       return { estimate: service.getEstimate(params.data.id) }
     })
@@ -704,19 +708,22 @@ export async function registerProposalsRoutes(
             continue
           }
           const dest = mdAbs.replace(/\.md$/i, `.${fmt}`)
-          try {
-            await execFileAsync('pandoc', [mdAbs, '-o', dest], { timeout: 30_000 })
-            const s = await safeStat(dest)
-            if (s) {
-              files.push({
-                path: proposal.renderedMarkdownPath.replace(/\.md$/i, `.${fmt}`),
-                kind: fmt,
-                mtime: new Date(s.mtimeMs).toISOString(),
-                bytes: s.size,
-              })
-            }
-          } catch {
+          const result = await renderPandoc({
+            inputFile: mdAbs,
+            outputFile: dest,
+          })
+          if (result.kind !== 'ok') {
             unavailable.push(fmt)
+            continue
+          }
+          const s = await safeStat(dest)
+          if (s) {
+            files.push({
+              path: proposal.renderedMarkdownPath.replace(/\.md$/i, `.${fmt}`),
+              kind: fmt,
+              mtime: new Date(s.mtimeMs).toISOString(),
+              bytes: s.size,
+            })
           }
         }
       }
@@ -848,11 +855,7 @@ async function safeStat(p: string): Promise<{ size: number; mtimeMs: number } | 
 }
 
 function resolveUnder(root: string, rel: string): string | null {
-  if (isAbsolute(rel)) return null
-  const joined = resolve(root, rel)
-  const normalizedRoot = resolve(root)
-  if (!joined.startsWith(normalizedRoot)) return null
-  return joined
+  return confineToRoot(root, rel)
 }
 
 function sanitiseFilename(name: string): string {

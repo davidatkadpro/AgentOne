@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { fail, ok, type ToolHandler } from '../../../../src/skills/tool.js'
 import { readBodyWithCap } from './fetch-helpers.js'
+import { fetchWithPolicy } from './fetch-policy.js'
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_BODY_BYTES = 200_000
@@ -13,18 +14,30 @@ export const parameters = z.object({
   timeout_ms: z.number().int().positive().max(120_000).default(DEFAULT_TIMEOUT_MS),
 })
 
-export const handler: ToolHandler<typeof parameters> = async (args) => {
+export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), args.timeout_ms)
+  // Forward upstream cancellation (turn cancel, tool timeout) so we drop
+  // the fetch instead of running to completion after the caller gave up.
+  const onAbort = (): void => controller.abort()
+  if (ctx?.signal) {
+    if (ctx.signal.aborted) controller.abort()
+    else ctx.signal.addEventListener('abort', onAbort, { once: true })
+  }
   const start = Date.now()
   try {
-    const res = await fetch(args.url, {
+    const result = await fetchWithPolicy(args.url, {
       method: args.method,
       headers: args.headers,
       body: args.body,
       signal: controller.signal,
     })
-    const contentType = res.headers.get('content-type') ?? ''
+    if (result.kind === 'validation') return fail('TOOL_VALIDATION', result.error, false)
+    if (result.kind === 'policy') return fail('PERMISSION_DENIED', result.error, false)
+    if (result.kind === 'runtime') return fail('TOOL_RUNTIME', result.error, false)
+
+    const { response, finalUrl } = result
+    const contentType = response.headers.get('content-type') ?? ''
     const isText =
       contentType.startsWith('text/') ||
       contentType.includes('json') ||
@@ -33,15 +46,15 @@ export const handler: ToolHandler<typeof parameters> = async (args) => {
       contentType.includes('html')
 
     const headers: Record<string, string> = {}
-    res.headers.forEach((v, k) => {
+    response.headers.forEach((v, k) => {
       headers[k] = v
     })
 
-    const { buf, truncated } = await readBodyWithCap(res, MAX_BODY_BYTES, controller)
+    const { buf, truncated } = await readBodyWithCap(response, MAX_BODY_BYTES, controller)
 
     return ok({
-      url: args.url,
-      status: res.status,
+      url: finalUrl,
+      status: response.status,
       headers,
       content_type: contentType,
       duration_ms: Date.now() - start,
@@ -68,6 +81,7 @@ export const handler: ToolHandler<typeof parameters> = async (args) => {
     )
   } finally {
     clearTimeout(timer)
+    if (ctx?.signal) ctx.signal.removeEventListener('abort', onAbort)
   }
 }
 

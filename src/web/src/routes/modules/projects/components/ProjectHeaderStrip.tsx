@@ -1,6 +1,10 @@
-import { Copy, MessageSquare } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Copy, MessageSquare, Pencil } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
+import { Dialog } from '@/components/ui/Dialog'
+import { Input, Textarea } from '@/components/ui/Input'
 import { StatusActionButton } from '@/components/module/StatusActionButton'
+import { useUpdateProject } from '@/api/projects'
 import type { Project, ProjectBudget, EntityStatus } from '@/types/domain'
 import { ProjectStatusBadge } from './ProjectStatusBadge'
 
@@ -20,6 +24,7 @@ export function ProjectHeaderStrip({
   onOpenInChat,
 }: ProjectHeaderStripProps) {
   const transitions = buildStatusTransitions(project.status, onStatusChange)
+  const [editOpen, setEditOpen] = useState(false)
 
   return (
     <div className="border-b border-border px-4 py-3 flex items-center gap-3 flex-wrap">
@@ -33,6 +38,14 @@ export function ProjectHeaderStrip({
       <ProjectStatusBadge status={project.status} size="md" />
       {budget ? <BudgetChip budget={budget} /> : null}
       <div className="flex-1" />
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={() => setEditOpen(true)}
+        data-testid="project-edit"
+      >
+        <Pencil size={12} /> Edit
+      </Button>
       {rootPath ? (
         <Button
           variant="secondary"
@@ -47,7 +60,94 @@ export function ProjectHeaderStrip({
         <MessageSquare size={12} /> Open in chat
       </Button>
       <StatusActionButton status={project.status} transitions={transitions} />
+      <ProjectEditDialog project={project} open={editOpen} onOpenChange={setEditOpen} />
     </div>
+  )
+}
+
+function ProjectEditDialog({
+  project,
+  open,
+  onOpenChange,
+}: {
+  project: Project
+  open: boolean
+  onOpenChange(open: boolean): void
+}) {
+  const update = useUpdateProject(project.id)
+  const [name, setName] = useState(project.name)
+  const [client, setClient] = useState(project.client ?? '')
+  const [description, setDescription] = useState(project.description ?? '')
+
+  // When the project changes (or the dialog re-opens), reset drafts to the
+  // server's current values rather than carrying over a half-edited form.
+  useEffect(() => {
+    if (!open) return
+    setName(project.name)
+    setClient(project.client ?? '')
+    setDescription(project.description ?? '')
+  }, [open, project.id, project.name, project.client, project.description])
+
+  function save() {
+    const body: Parameters<typeof update.mutateAsync>[0] = {}
+    const trimmedName = name.trim()
+    if (trimmedName && trimmedName !== project.name) body.name = trimmedName
+    const nextClient = client.trim() || null
+    if (nextClient !== (project.client ?? null)) body.client = nextClient
+    const nextDesc = description.trim() || null
+    if (nextDesc !== (project.description ?? null)) body.description = nextDesc
+    if (Object.keys(body).length === 0) {
+      onOpenChange(false)
+      return
+    }
+    void update.mutateAsync(body).then(() => onOpenChange(false))
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange} title={`Edit project ${project.number}`}>
+      <div className="space-y-3">
+        <label className="block">
+          <div className="text-[10px] uppercase tracking-wider text-muted mb-1">Name</div>
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            data-testid="project-edit-name"
+          />
+        </label>
+        <label className="block">
+          <div className="text-[10px] uppercase tracking-wider text-muted mb-1">Client</div>
+          <Input
+            value={client}
+            onChange={(e) => setClient(e.target.value)}
+            placeholder="(none)"
+            data-testid="project-edit-client"
+          />
+        </label>
+        <label className="block">
+          <div className="text-[10px] uppercase tracking-wider text-muted mb-1">Description</div>
+          <Textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            className="h-28"
+            placeholder="(optional)"
+            data-testid="project-edit-description"
+          />
+        </label>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="secondary" size="sm" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={save}
+            disabled={update.isPending || !name.trim()}
+            data-testid="project-edit-save"
+          >
+            Save
+          </Button>
+        </div>
+      </div>
+    </Dialog>
   )
 }
 

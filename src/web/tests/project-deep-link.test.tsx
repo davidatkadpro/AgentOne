@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { MemoryRouter, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
+import { TestRouter as MemoryRouter } from './helpers/test-router'
 import { useProjectDeepLink } from '@/routes/modules/projects/hooks/useProjectDeepLink'
 
 function withRouter(initialEntries: string[]) {

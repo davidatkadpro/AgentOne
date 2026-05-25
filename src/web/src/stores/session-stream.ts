@@ -8,6 +8,9 @@ export interface MetaRow {
   ts: number
   text: string
   kind: 'info' | 'warn' | 'error'
+  /** Optional tag so a follow-up event can find + replace this row
+   *  (e.g. context.compressed replaces context.compressing). */
+  tag?: string
 }
 
 export interface RecallSource {
@@ -97,9 +100,49 @@ function finalizeTurnMetadata(
   if (stream.pendingRecall.length > 0) stream.pendingRecall = []
 }
 
-function pushMeta(stream: SessionStream, text: string, kind: MetaRow['kind'], ts: number): void {
-  stream.metaRows.push({ id: `${ts}-${Math.random().toString(36).slice(2, 8)}`, ts, text, kind })
+function pushMeta(
+  stream: SessionStream,
+  text: string,
+  kind: MetaRow['kind'],
+  ts: number,
+  opts?: { tag?: string },
+): void {
+  const row: MetaRow = {
+    id: `${ts}-${Math.random().toString(36).slice(2, 8)}`,
+    ts,
+    text,
+    kind,
+  }
+  if (opts?.tag) row.tag = opts.tag
+  stream.metaRows.push(row)
   if (stream.metaRows.length > 50) stream.metaRows.shift()
+}
+
+/**
+ * Replace the most recent meta row carrying `tag` with the new text/kind.
+ * If no tagged row exists, the new row is appended like a normal push.
+ * Used for "in-flight indicator → final result" transitions.
+ */
+function replaceTaggedMeta(
+  stream: SessionStream,
+  tag: string,
+  text: string,
+  kind: MetaRow['kind'],
+  ts: number,
+): void {
+  for (let i = stream.metaRows.length - 1; i >= 0; i--) {
+    if (stream.metaRows[i]?.tag === tag) {
+      stream.metaRows[i] = {
+        ...stream.metaRows[i]!,
+        text,
+        kind,
+        ts,
+        tag: undefined,
+      }
+      return
+    }
+  }
+  pushMeta(stream, text, kind, ts)
 }
 
 function safeParseJson(raw: string | undefined): unknown {
@@ -319,18 +362,29 @@ export const useSessionStreamStore = create<SessionStreamState>((set) => ({
           stream.pendingRecall = [...stream.pendingRecall, ...event.sources]
           break
         case 'context.compressing':
-          pushMeta(stream, 'Compressing context…', 'info', event.ts)
+          // Marked transient via a `compressing` tag so the matching
+          // `context.compressed` (or `_failed`) event can replace it
+          // instead of leaving two rows in the chat — the "Compressing…"
+          // spinner is only useful while the call is in flight.
+          pushMeta(stream, 'Compressing context…', 'info', event.ts, { tag: 'compressing' })
           break
         case 'context.compressed':
-          pushMeta(
+          replaceTaggedMeta(
             stream,
+            'compressing',
             `Compressed ${event.turnsCompressed} turns (${event.tokensBefore} → ${event.tokensAfter} tokens)`,
             'info',
             event.ts,
           )
           break
         case 'context.compression_failed':
-          pushMeta(stream, `Compression failed: ${event.reason}`, 'error', event.ts)
+          replaceTaggedMeta(
+            stream,
+            'compressing',
+            `Compression failed: ${event.reason}`,
+            'error',
+            event.ts,
+          )
           break
         case 'context.truncated':
           pushMeta(stream, `Context truncated (${event.bytesBefore} → ${event.bytesAfter} bytes)`, 'warn', event.ts)

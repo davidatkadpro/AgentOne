@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
+import { createRequire } from 'node:module'
 
 /**
  * Encrypt/decrypt small secrets (OAuth tokens) at rest.
@@ -34,6 +35,10 @@ export interface SecretVaultOptions {
     protectData(plaintext: Buffer, entropy: Buffer | null, scope: 'CurrentUser' | 'LocalMachine'): Buffer
     unprotectData(ciphertext: Buffer, entropy: Buffer | null, scope: 'CurrentUser' | 'LocalMachine'): Buffer
   }
+  /** Custom CommonJS-style require used by the DPAPI loader (test-only).
+   *  Defaults to `createRequire(import.meta.url)`. Lets tests exercise the
+   *  real loader code path without installing a native binding on disk. */
+  requireFn?: (id: string) => unknown
 }
 
 const VERSION_BYTE = 0x01
@@ -43,14 +48,20 @@ function deriveKey(rawKey: string): Buffer {
   return createHash('sha256').update(rawKey, 'utf-8').digest()
 }
 
-function tryLoadDpapi(): SecretVaultOptions['dpapiBinding'] | null {
+function tryLoadDpapi(
+  requireFn?: (id: string) => unknown,
+): SecretVaultOptions['dpapiBinding'] | null {
   // win-dpapi is an optional native dep. We don't require it at the top of
-  // the file so the bundle doesn't blow up on non-Windows hosts. require() is
-  // wrapped — any failure falls through to AES-GCM.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // the file so the bundle doesn't blow up on non-Windows hosts.
+  //
+  // We're an ES module (`"type": "module"`), so the bare `require` global is
+  // undefined here. Use `createRequire(import.meta.url)` to get a CommonJS
+  // require that can resolve installed packages from this file's location.
+  // The historical `require('win-dpapi')` form silently threw ReferenceError
+  // and made the binding effectively unreachable.
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require('win-dpapi') as SecretVaultOptions['dpapiBinding']
+    const req = requireFn ?? createRequire(import.meta.url)
+    const mod = req('win-dpapi') as SecretVaultOptions['dpapiBinding']
     if (mod && typeof mod.protectData === 'function' && typeof mod.unprotectData === 'function') {
       return mod
     }
@@ -67,7 +78,7 @@ export function createSecretVault(opts: SecretVaultOptions = {}): SecretVault {
   const useDpapi = force ? force === 'dpapi' : platform === 'win32'
 
   if (useDpapi) {
-    const binding = opts.dpapiBinding ?? tryLoadDpapi()
+    const binding = opts.dpapiBinding ?? tryLoadDpapi(opts.requireFn)
     if (binding) {
       return {
         backend: 'dpapi',

@@ -6,6 +6,7 @@ import { useSessionStreamStore } from '@/stores/session-stream'
 import { useNotificationsStore } from '@/stores/notifications'
 import { useEmailChipsStore } from '@/stores/email-chips'
 import { queryClient, queryKeys } from './query-client'
+import { getAuthToken } from './auth-token'
 
 let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -208,7 +209,11 @@ export function connectWebSocket(): void {
   const wasReconnecting = store.status === 'reconnecting' || store.reconnectAttempts > 0
   store.setStatus(store.reconnectAttempts > 0 ? 'reconnecting' : 'connecting')
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const url = `${proto}://${window.location.host}/ws`
+  const token = getAuthToken()
+  // WS upgrades cannot set custom headers from browsers, so we append
+  // ?token= to the URL; the auth gate accepts either form.
+  const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : ''
+  const url = `${proto}://${window.location.host}/ws${tokenQuery}`
   try {
     ws = new WebSocket(url)
   } catch {

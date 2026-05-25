@@ -1,4 +1,5 @@
 import type { ApiErrorBody } from '@/types/api'
+import { clearAuthToken, getAuthToken } from './auth-token'
 
 export class ApiError extends Error {
   readonly status: number
@@ -23,6 +24,10 @@ async function request<TResponse>(
 ): Promise<TResponse> {
   const url = path.startsWith('/api') ? path : `/api${path}`
   const headers: Record<string, string> = { Accept: 'application/json', ...(init?.headers as Record<string, string>) }
+  const token = getAuthToken()
+  if (token && !headers.Authorization) {
+    headers.Authorization = `Bearer ${token}`
+  }
   let payload: BodyInit | undefined
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json'
@@ -35,6 +40,10 @@ async function request<TResponse>(
       errBody = (await res.json()) as ApiErrorBody
     } catch {
       errBody = { error: `HTTP_${res.status}`, message: res.statusText }
+    }
+    if (res.status === 401) {
+      // Token is missing or wrong — drop it so the gate re-prompts.
+      clearAuthToken()
     }
     throw new ApiError(res.status, errBody)
   }
@@ -52,7 +61,7 @@ export const api = {
   patch<T>(path: string, body?: unknown, init?: RequestInit) {
     return request<T>('PATCH', path, body, init)
   },
-  delete<T>(path: string, init?: RequestInit) {
-    return request<T>('DELETE', path, undefined, init)
+  delete<T>(path: string, body?: unknown, init?: RequestInit) {
+    return request<T>('DELETE', path, body, init)
   },
 }

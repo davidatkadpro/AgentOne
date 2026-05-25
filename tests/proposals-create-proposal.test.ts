@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { readFileSync } from 'node:fs'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createDatabase, type Db } from '@/storage/db.js'
-import { applyModuleMigrations } from '@/modules/migrations.js'
+import { applyAllMigrationsForModule } from './helpers/module-migrations.js'
 import { createAuditLog } from '@/modules/audit-log.js'
 import { EventBus, type AgentEvent } from '@/core/events.js'
 import { LocalFolderAdapter } from '@/storage/local-folder.js'
@@ -27,26 +26,8 @@ interface Harness {
 
 async function newHarness(): Promise<Harness> {
   const db = createDatabase({ path: ':memory:', skipMkdir: true })
-  applyModuleMigrations(db, 'projects', [
-    {
-      version: 1,
-      name: '001_init',
-      sql: readFileSync(
-        join(process.cwd(), 'modules', 'projects', 'schema', '001_init.sql'),
-        'utf-8',
-      ),
-    },
-  ])
-  applyModuleMigrations(db, 'proposals', [
-    {
-      version: 1,
-      name: '001_init',
-      sql: readFileSync(
-        join(process.cwd(), 'modules', 'proposals', 'schema', '001_init.sql'),
-        'utf-8',
-      ),
-    },
-  ])
+  applyAllMigrationsForModule(db, 'projects')
+  applyAllMigrationsForModule(db, 'proposals')
   const audit = createAuditLog(db)
   const bus = new EventBus()
   const storageRoot = await mkdtemp(join(tmpdir(), 'agentone-prop-'))

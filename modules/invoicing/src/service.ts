@@ -4,6 +4,7 @@ import type { EventBus } from '../../../src/core/events.js'
 import type { AuditActor, AuditLog } from '../../../src/modules/audit-log.js'
 import type { ProjectsService } from '../../projects/src/service.js'
 import type { ProposalsService } from '../../proposals/src/service.js'
+import { NotFoundError } from '../../../src/errors/domain.js'
 
 export type InvoiceStatus = 'draft' | 'issued' | 'partial' | 'paid' | 'void'
 export type SyncStatus = 'local' | 'pending' | 'synced' | 'drift' | 'failed'
@@ -831,7 +832,7 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
 
     updateInvoice(id, input, ctx) {
       const row = getInvoiceStmt.get(id) as InvoiceRow | undefined
-      if (!row) throw new Error(`Invoice not found: ${id}`)
+      if (!row) throw new NotFoundError('invoice', id)
       const status = parseStatus(row.status)
       if (status === 'paid' || status === 'void') {
         throw new Error(`Cannot edit a ${status} invoice`)
@@ -929,7 +930,7 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
 
     setInvoiceStatus(id, status, ctx) {
       const row = getInvoiceStmt.get(id) as InvoiceRow | undefined
-      if (!row) throw new Error(`Invoice not found: ${id}`)
+      if (!row) throw new NotFoundError('invoice', id)
       const now = Date.now()
       updateInvoiceStatusStmt.run(status, now, status, now, status, now, id)
       deps.audit.record({
@@ -953,7 +954,7 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
 
     recordPayment(input, ctx) {
       const row = getInvoiceStmt.get(input.invoiceId) as InvoiceRow | undefined
-      if (!row) throw new Error(`Invoice not found: ${input.invoiceId}`)
+      if (!row) throw new NotFoundError('invoice', input.invoiceId)
       if (row.status === 'void') {
         throw new Error('Cannot record payment on a voided invoice')
       }
@@ -1054,7 +1055,7 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
 
     markPushed(id, args) {
       const row = getInvoiceStmt.get(id) as InvoiceRow | undefined
-      if (!row) throw new Error(`Invoice not found: ${id}`)
+      if (!row) throw new NotFoundError('invoice', id)
       const now = args.ts ?? Date.now()
       updateSyncPushedStmt.run(args.qboId, args.qboDocNumber, now, now, id)
       void deps.eventBus.emit({
@@ -1071,7 +1072,7 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
 
     markPullResult(id, args) {
       const row = getInvoiceStmt.get(id) as InvoiceRow | undefined
-      if (!row) throw new Error(`Invoice not found: ${id}`)
+      if (!row) throw new NotFoundError('invoice', id)
       const now = args.ts ?? Date.now()
       if (args.driftFields.length === 0) {
         updateSyncPullSyncedStmt.run(now, now, id)
@@ -1104,7 +1105,7 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
 
     markSyncFailed(id, err) {
       const row = getInvoiceStmt.get(id) as InvoiceRow | undefined
-      if (!row) throw new Error(`Invoice not found: ${id}`)
+      if (!row) throw new NotFoundError('invoice', id)
       const now = Date.now()
       updateSyncFailedStmt.run(JSON.stringify({ ...err, at: now }), now, id)
       void deps.eventBus.emit({
@@ -1122,7 +1123,7 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
 
     clearDrift(id) {
       const row = getInvoiceStmt.get(id) as InvoiceRow | undefined
-      if (!row) throw new Error(`Invoice not found: ${id}`)
+      if (!row) throw new NotFoundError('invoice', id)
       const now = Date.now()
       clearDriftStmt.run(now, id)
       const out = service.getInvoice(id)

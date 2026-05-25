@@ -197,6 +197,43 @@ describe('session-stream store', () => {
     expect(meta?.recallSources).toHaveLength(1)
   })
 
+  it('collapses context.compressing + context.compressed into a single meta row', () => {
+    const store = useSessionStreamStore.getState()
+    store.applyEvent({ type: 'context.compressing', sessionId: SID, tokensBefore: 9000, ts: 1 } as never)
+    let meta = useSessionStreamStore.getState().byId[SID]?.metaRows
+    expect(meta).toHaveLength(1)
+    expect(meta?.[0]?.text).toMatch(/Compressing/)
+    expect(meta?.[0]?.tag).toBe('compressing')
+
+    store.applyEvent({
+      type: 'context.compressed',
+      sessionId: SID,
+      tokensBefore: 9000,
+      tokensAfter: 1500,
+      turnsCompressed: 30,
+      ts: 2,
+    } as never)
+    meta = useSessionStreamStore.getState().byId[SID]?.metaRows
+    expect(meta).toHaveLength(1)
+    expect(meta?.[0]?.text).toContain('Compressed 30 turns')
+    expect(meta?.[0]?.tag).toBeUndefined()
+  })
+
+  it('collapses context.compressing + context.compression_failed into one error row', () => {
+    const store = useSessionStreamStore.getState()
+    store.applyEvent({ type: 'context.compressing', sessionId: SID, tokensBefore: 9000, ts: 1 } as never)
+    store.applyEvent({
+      type: 'context.compression_failed',
+      sessionId: SID,
+      reason: 'compressor offline',
+      ts: 2,
+    } as never)
+    const meta = useSessionStreamStore.getState().byId[SID]?.metaRows
+    expect(meta).toHaveLength(1)
+    expect(meta?.[0]?.kind).toBe('error')
+    expect(meta?.[0]?.text).toContain('compressor offline')
+  })
+
   it('replaces an optimistic turn id when message.user.received fires', () => {
     const store = useSessionStreamStore.getState()
     store.optimisticAppendUser(SID, 'hi', 'optimistic-a')

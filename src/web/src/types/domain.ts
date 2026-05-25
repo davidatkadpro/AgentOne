@@ -167,6 +167,8 @@ export interface Phase {
   completedAt: number | null
 }
 
+export type TaskPriority = 'low' | 'normal' | 'high' | 'urgent'
+
 export interface Task {
   id: string
   projectId: string
@@ -177,6 +179,11 @@ export interface Task {
   status: EntityStatus
   assigneeProfile: string | null
   position: number
+  startDate: number | null
+  dueDate: number | null
+  estimatedMinutes: number | null
+  spentMinutes: number
+  priority: TaskPriority
   metadata: Record<string, unknown>
   createdAt: number
   updatedAt: number
@@ -186,6 +193,13 @@ export interface Task {
 export interface TaskDependency {
   taskId: string
   dependsOnTaskId: string
+}
+
+export interface TaskFile {
+  taskId: string
+  filePath: string
+  label: string | null
+  createdAt: number
 }
 
 /** @deprecated — use {@link InvoiceBudget} instead. Kept as an alias so existing

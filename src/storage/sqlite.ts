@@ -98,6 +98,27 @@ export interface ConversationStore {
     totalCalls: number
     byModel: Array<{ model: string; calls: number; costUsd: number }>
   }
+
+  /**
+   * Per-session compression watermark. Returned by `getCompressionState`,
+   * written by `saveCompressionState`, cleared on reset. ContextManager
+   * uses this to survive process restarts — without persistence, every
+   * restart re-runs compression on the full prefix on the next message.
+   */
+  getCompressionState(sessionId: string): CompressionStateRow | undefined
+  saveCompressionState(input: {
+    sessionId: string
+    summaryText: string
+    throughTurnCount: number
+  }): void
+  clearCompressionState(sessionId: string): void
+}
+
+export interface CompressionStateRow {
+  sessionId: string
+  summaryText: string
+  throughTurnCount: number
+  updatedAt: number
 }
 
 export interface VectorSearchOptions {
@@ -201,6 +222,13 @@ CREATE TABLE IF NOT EXISTS event_log (
   type TEXT NOT NULL,
   payload TEXT NOT NULL,
   created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS compression_state (
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  summary_text TEXT NOT NULL,
+  through_turn_count INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_session ON event_log(session_id, created_at);
@@ -314,7 +342,7 @@ function rowToToolCall(row: ToolCallRow): StoredToolCall {
  */
 function migrate(db: Db): void {
   const version = (db.pragma('user_version', { simple: true }) as number) ?? 0
-  if (version >= 7) return
+  if (version >= 8) return
 
   if (version < 2) runV2Migration(db)
   if (version < 3) runV3Migration(db)
@@ -322,6 +350,26 @@ function migrate(db: Db): void {
   if (version < 5) runV5Migration(db)
   if (version < 6) runV6Migration(db)
   if (version < 7) runV7Migration(db)
+  if (version < 8) runV8Migration(db)
+}
+
+function runV8Migration(db: Db): void {
+  // Per-session compression state, so the in-memory ContextManager
+  // watermark survives process restarts. Without this, every restart
+  // re-runs compression on the full conversation prefix on the next
+  // user message.
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS compression_state (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+        summary_text TEXT NOT NULL,
+        through_turn_count INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `)
+    db.pragma('user_version = 8')
+  })
+  tx()
 }
 
 function runV7Migration(db: Db): void {
@@ -728,6 +776,21 @@ export function createConversationStore(db: Db): ConversationStore {
     LIMIT @limit OFFSET @offset
   `)
 
+  const getCompressionStateStmt = db.prepare(
+    'SELECT session_id, summary_text, through_turn_count, updated_at FROM compression_state WHERE session_id = ?',
+  )
+  const upsertCompressionStateStmt = db.prepare(`
+    INSERT INTO compression_state (session_id, summary_text, through_turn_count, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET
+      summary_text = excluded.summary_text,
+      through_turn_count = excluded.through_turn_count,
+      updated_at = excluded.updated_at
+  `)
+  const deleteCompressionStateStmt = db.prepare(
+    'DELETE FROM compression_state WHERE session_id = ?',
+  )
+
   return {
     createSession({ agentProfile, title = null, spawnedBy = null }) {
       const session: Session = {
@@ -984,6 +1047,37 @@ export function createConversationStore(db: Db): ConversationStore {
         offset: opts.offset ?? 0,
       }) as TurnSearchRow[]
       return rows.map(rowToTurnSearchHit)
+    },
+
+    getCompressionState(sessionId) {
+      const row = getCompressionStateStmt.get(sessionId) as
+        | {
+            session_id: string
+            summary_text: string
+            through_turn_count: number
+            updated_at: number
+          }
+        | undefined
+      if (!row) return undefined
+      return {
+        sessionId: row.session_id,
+        summaryText: row.summary_text,
+        throughTurnCount: row.through_turn_count,
+        updatedAt: row.updated_at,
+      }
+    },
+
+    saveCompressionState(input) {
+      upsertCompressionStateStmt.run(
+        input.sessionId,
+        input.summaryText,
+        input.throughTurnCount,
+        Date.now(),
+      )
+    },
+
+    clearCompressionState(sessionId) {
+      deleteCompressionStateStmt.run(sessionId)
     },
   }
 }

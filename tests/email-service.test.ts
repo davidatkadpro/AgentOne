@@ -1,8 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { createDatabase, type Db } from '@/storage/db.js'
-import { applyModuleMigrations } from '@/modules/migrations.js'
+import { applyAllMigrationsForModule } from './helpers/module-migrations.js'
 import { createAuditLog, type AuditLog } from '@/modules/audit-log.js'
 import { EventBus, type AgentEvent } from '@/core/events.js'
 import { createEmailService, type EmailService } from '../modules/email/src/service.js'
@@ -17,16 +15,8 @@ interface Harness {
 function newHarness(): Harness {
   const db = createDatabase({ path: ':memory:', skipMkdir: true })
   // Email depends on projects (filed_project_id REFERENCES project(id)).
-  const projectsSql = readFileSync(
-    join(process.cwd(), 'modules', 'projects', 'schema', '001_init.sql'),
-    'utf-8',
-  )
-  applyModuleMigrations(db, 'projects', [{ version: 1, name: '001_init', sql: projectsSql }])
-  const emailSql = readFileSync(
-    join(process.cwd(), 'modules', 'email', 'schema', '001_init.sql'),
-    'utf-8',
-  )
-  applyModuleMigrations(db, 'email', [{ version: 1, name: '001_init', sql: emailSql }])
+  applyAllMigrationsForModule(db, 'projects')
+  applyAllMigrationsForModule(db, 'email')
   const audit = createAuditLog(db)
   const bus = new EventBus()
   const service = createEmailService({ db, eventBus: bus, audit })

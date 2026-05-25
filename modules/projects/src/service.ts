@@ -4,6 +4,8 @@ import type { EventBus } from '../../../src/core/events.js'
 import type { AuditActor, AuditLog } from '../../../src/modules/audit-log.js'
 import type { StorageAdapter } from '../../../src/storage/adapter.js'
 
+import { NotFoundError } from '../../../src/errors/domain.js'
+
 export class DuplicateProjectNumberError extends Error {
   constructor(public readonly number: string) {
     super(`Project number "${number}" is already in use`)
@@ -44,6 +46,15 @@ export interface Project {
   completedAt: number | null
 }
 
+export type TaskPriority = 'low' | 'normal' | 'high' | 'urgent'
+
+export interface TaskFile {
+  taskId: string
+  filePath: string
+  label: string | null
+  createdAt: number
+}
+
 export interface Phase {
   id: string
   projectId: string
@@ -81,6 +92,11 @@ export interface Task {
   status: EntityStatus
   assigneeProfile: string | null
   position: number
+  startDate: number | null
+  dueDate: number | null
+  estimatedMinutes: number | null
+  spentMinutes: number
+  priority: TaskPriority
   metadata: Record<string, unknown>
   createdAt: number
   updatedAt: number
@@ -94,6 +110,10 @@ export interface AddTaskInput {
   description?: string | null
   parentTaskId?: string | null
   assigneeProfile?: string | null
+  startDate?: number | null
+  dueDate?: number | null
+  estimatedMinutes?: number | null
+  priority?: TaskPriority
   metadata?: Record<string, unknown>
 }
 
@@ -111,6 +131,13 @@ export interface ListProjectsOptions {
   limit?: number
 }
 
+export interface UpdateProjectInput {
+  projectId: string
+  name?: string
+  client?: string | null
+  description?: string | null
+}
+
 export interface UpdateTaskInput {
   taskId: string
   title?: string
@@ -118,6 +145,22 @@ export interface UpdateTaskInput {
   status?: EntityStatus
   assigneeProfile?: string | null
   parentTaskId?: string | null
+  startDate?: number | null
+  dueDate?: number | null
+  estimatedMinutes?: number | null
+  spentMinutes?: number
+  priority?: TaskPriority
+}
+
+export interface AttachTaskFileInput {
+  taskId: string
+  filePath: string
+  label?: string | null
+}
+
+export interface DetachTaskFileInput {
+  taskId: string
+  filePath: string
 }
 
 export interface UpdatePhaseInput {
@@ -145,6 +188,7 @@ export interface ProjectsService {
   listTasks(projectId: string): Task[]
   getTask(taskId: string): Task | undefined
   getPhase(phaseId: string): Phase | undefined
+  updateProject(input: UpdateProjectInput, ctx: ActorContext): Project
   updateTask(input: UpdateTaskInput, ctx: BlockedActorContext): Task
   updatePhase(input: UpdatePhaseInput, ctx: ActorContext): Phase
   setProjectStatus(id: string, status: EntityStatus, ctx: ActorContext): void
@@ -154,6 +198,9 @@ export interface ProjectsService {
   removeDependency(input: TaskDependencyInput, ctx: ActorContext): void
   getBlockers(taskId: string): Task[]
   listAllDependencies(projectId: string): TaskDependencyInput[]
+  attachTaskFile(input: AttachTaskFileInput, ctx: ActorContext): TaskFile
+  detachTaskFile(input: DetachTaskFileInput, ctx: ActorContext): void
+  listTaskFiles(taskId: string): TaskFile[]
   suggestNextNumber(year?: number): string
   getProjectBudget(projectId: string): ProjectBudget
 }
@@ -209,10 +256,37 @@ interface TaskRow {
   status: string
   assignee_profile: string | null
   position: number
+  start_date: number | null
+  due_date: number | null
+  estimated_minutes: number | null
+  spent_minutes: number
+  priority: string
   metadata_json: string
   created_at: number
   updated_at: number
   completed_at: number | null
+}
+
+interface TaskFileRow {
+  task_id: string
+  file_path: string
+  label: string | null
+  created_at: number
+}
+
+const VALID_PRIORITIES: ReadonlySet<TaskPriority> = new Set([
+  'low',
+  'normal',
+  'high',
+  'urgent',
+])
+
+function parsePriority(raw: string): TaskPriority {
+  if (VALID_PRIORITIES.has(raw as TaskPriority)) return raw as TaskPriority
+  // Unknown values in the DB shouldn't happen because of the column CHECK,
+  // but fall back rather than throwing so a single malformed row can't take
+  // the whole project list offline.
+  return 'normal'
 }
 
 function rowToTask(row: TaskRow): Task {
@@ -226,10 +300,24 @@ function rowToTask(row: TaskRow): Task {
     status: parseStatus(row.status),
     assigneeProfile: row.assignee_profile,
     position: row.position,
+    startDate: row.start_date,
+    dueDate: row.due_date,
+    estimatedMinutes: row.estimated_minutes,
+    spentMinutes: row.spent_minutes,
+    priority: parsePriority(row.priority),
     metadata: JSON.parse(row.metadata_json) as Record<string, unknown>,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
+  }
+}
+
+function rowToTaskFile(row: TaskFileRow): TaskFile {
+  return {
+    taskId: row.task_id,
+    filePath: row.file_path,
+    label: row.label,
+    createdAt: row.created_at,
   }
 }
 
@@ -326,8 +414,9 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
   const insertTask = deps.db.prepare(
     `INSERT INTO task
        (id, project_id, phase_id, parent_task_id, title, description,
-        assignee_profile, position, metadata_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        assignee_profile, position, start_date, due_date, estimated_minutes,
+        priority, metadata_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   const nextTaskPositionStmt = deps.db.prepare(
     `SELECT COALESCE(MAX(position) + 1, 0) AS next FROM task
@@ -388,8 +477,32 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
        description = CASE WHEN ? THEN ? ELSE description END,
        assignee_profile = CASE WHEN ? THEN ? ELSE assignee_profile END,
        parent_task_id = CASE WHEN ? THEN ? ELSE parent_task_id END,
+       start_date = CASE WHEN ? THEN ? ELSE start_date END,
+       due_date = CASE WHEN ? THEN ? ELSE due_date END,
+       estimated_minutes = CASE WHEN ? THEN ? ELSE estimated_minutes END,
+       spent_minutes = CASE WHEN ? THEN ? ELSE spent_minutes END,
+       priority = COALESCE(?, priority),
        updated_at = ?
      WHERE id = ?`,
+  )
+  const updateProjectFieldsStmt = deps.db.prepare(
+    `UPDATE project SET
+       name = COALESCE(?, name),
+       client = CASE WHEN ? THEN ? ELSE client END,
+       description = CASE WHEN ? THEN ? ELSE description END,
+       updated_at = ?
+     WHERE id = ?`,
+  )
+  const insertTaskFileStmt = deps.db.prepare(
+    `INSERT INTO task_file (task_id, file_path, label, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(task_id, file_path) DO UPDATE SET label = excluded.label`,
+  )
+  const deleteTaskFileStmt = deps.db.prepare(
+    'DELETE FROM task_file WHERE task_id = ? AND file_path = ?',
+  )
+  const listTaskFilesStmt = deps.db.prepare(
+    'SELECT * FROM task_file WHERE task_id = ? ORDER BY created_at ASC, file_path ASC',
   )
   const updatePhaseFieldsStmt = deps.db.prepare(
     `UPDATE phase SET
@@ -557,7 +670,7 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
     addTask(input, ctx) {
       const phaseRow = getPhaseStmt.get(input.phaseId) as PhaseRow | undefined
       if (!phaseRow) {
-        throw new Error(`Phase not found: ${input.phaseId}`)
+        throw new NotFoundError('phase', input.phaseId)
       }
       if (phaseRow.project_id !== input.projectId) {
         throw new Error(
@@ -569,6 +682,7 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
       const now = Date.now()
       const metadata = input.metadata ?? {}
       const parentTaskId = input.parentTaskId ?? null
+      const priority: TaskPriority = input.priority ?? 'normal'
       const nextRow = nextTaskPositionStmt.get(
         input.phaseId,
         parentTaskId,
@@ -585,6 +699,10 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
         input.description ?? null,
         input.assigneeProfile ?? null,
         position,
+        input.startDate ?? null,
+        input.dueDate ?? null,
+        input.estimatedMinutes ?? null,
+        priority,
         JSON.stringify(metadata),
         now,
         now,
@@ -623,6 +741,11 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
         status: 'pending',
         assigneeProfile: input.assigneeProfile ?? null,
         position,
+        startDate: input.startDate ?? null,
+        dueDate: input.dueDate ?? null,
+        estimatedMinutes: input.estimatedMinutes ?? null,
+        spentMinutes: 0,
+        priority,
         metadata,
         createdAt: now,
         updatedAt: now,
@@ -639,7 +762,7 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
       const now = Date.now()
       const info = updateProjectStatusStmt.run(status, now, status, now, id)
       if (info.changes === 0) {
-        throw new Error(`Project not found: ${id}`)
+        throw new NotFoundError('project', id)
       }
       deps.audit.record({
         module: 'projects',
@@ -660,7 +783,7 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
     setPhaseStatus(id, status, ctx) {
       const phaseRow = getPhaseProjectIdStmt.get(id) as { project_id: string } | undefined
       if (!phaseRow) {
-        throw new Error(`Phase not found: ${id}`)
+        throw new NotFoundError('phase', id)
       }
       const now = Date.now()
       updatePhaseStatusStmt.run(status, now, status, now, id)
@@ -737,7 +860,7 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
     setTaskStatus(id, status, ctx) {
       const row = getTaskProjectIdStmt.get(id) as { project_id: string } | undefined
       if (!row) {
-        throw new Error(`Task not found: ${id}`)
+        throw new NotFoundError('task', id)
       }
       const now = Date.now()
       updateTaskStatusStmt.run(status, now, status, now, id)
@@ -794,12 +917,16 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
     updateTask(input, ctx) {
       const existing = getTaskStmt.get(input.taskId) as TaskRow | undefined
       if (!existing) {
-        throw new Error(`Task not found: ${input.taskId}`)
+        throw new NotFoundError('task', input.taskId)
       }
       const now = Date.now()
       const descTouched = 'description' in input
       const assigneeTouched = 'assigneeProfile' in input
       const parentTouched = 'parentTaskId' in input
+      const startTouched = 'startDate' in input
+      const dueTouched = 'dueDate' in input
+      const estimatedTouched = 'estimatedMinutes' in input
+      const spentTouched = 'spentMinutes' in input
 
       updateTaskFieldsStmt.run(
         input.title ?? null,
@@ -809,6 +936,15 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
         assigneeTouched ? input.assigneeProfile ?? null : null,
         parentTouched ? 1 : 0,
         parentTouched ? input.parentTaskId ?? null : null,
+        startTouched ? 1 : 0,
+        startTouched ? input.startDate ?? null : null,
+        dueTouched ? 1 : 0,
+        dueTouched ? input.dueDate ?? null : null,
+        estimatedTouched ? 1 : 0,
+        estimatedTouched ? input.estimatedMinutes ?? null : null,
+        spentTouched ? 1 : 0,
+        spentTouched ? input.spentMinutes ?? 0 : null,
+        input.priority ?? null,
         now,
         input.taskId,
       )
@@ -818,6 +954,11 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
       if (descTouched) changedFields.push('description')
       if (assigneeTouched) changedFields.push('assigneeProfile')
       if (parentTouched) changedFields.push('parentTaskId')
+      if (startTouched) changedFields.push('startDate')
+      if (dueTouched) changedFields.push('dueDate')
+      if (estimatedTouched) changedFields.push('estimatedMinutes')
+      if (spentTouched) changedFields.push('spentMinutes')
+      if (input.priority !== undefined) changedFields.push('priority')
 
       if (changedFields.length > 0) {
         deps.audit.record({
@@ -844,6 +985,109 @@ export function createProjectsService(deps: ProjectsServiceDeps): ProjectsServic
 
       const after = getTaskStmt.get(input.taskId) as TaskRow
       return rowToTask(after)
+    },
+
+    updateProject(input, ctx) {
+      const existing = getProjectStmt.get(input.projectId) as ProjectRow | undefined
+      if (!existing) {
+        throw new NotFoundError('project', input.projectId)
+      }
+      const now = Date.now()
+      const clientTouched = 'client' in input
+      const descTouched = 'description' in input
+
+      updateProjectFieldsStmt.run(
+        input.name ?? null,
+        clientTouched ? 1 : 0,
+        clientTouched ? input.client ?? null : null,
+        descTouched ? 1 : 0,
+        descTouched ? input.description ?? null : null,
+        now,
+        input.projectId,
+      )
+
+      const changedFields: string[] = []
+      if (input.name !== undefined) changedFields.push('name')
+      if (clientTouched) changedFields.push('client')
+      if (descTouched) changedFields.push('description')
+
+      if (changedFields.length > 0) {
+        deps.audit.record({
+          module: 'projects',
+          action: 'project.updated',
+          entityType: 'project',
+          entityId: input.projectId,
+          actor: ctx.actor,
+          payload: { fields: changedFields },
+          projectId: input.projectId,
+        })
+        void deps.eventBus.emit({
+          type: 'project.updated',
+          projectId: input.projectId,
+          ts: now,
+        })
+      }
+
+      const after = getProjectStmt.get(input.projectId) as ProjectRow
+      return rowToProject(after)
+    },
+
+    attachTaskFile(input, ctx) {
+      const existing = getTaskStmt.get(input.taskId) as TaskRow | undefined
+      if (!existing) {
+        throw new NotFoundError('task', input.taskId)
+      }
+      const now = Date.now()
+      const label = input.label ?? null
+      insertTaskFileStmt.run(input.taskId, input.filePath, label, now)
+      deps.audit.record({
+        module: 'projects',
+        action: 'task.file_attached',
+        entityType: 'task',
+        entityId: input.taskId,
+        actor: ctx.actor,
+        payload: { projectId: existing.project_id, filePath: input.filePath, label },
+        projectId: existing.project_id,
+      })
+      void deps.eventBus.emit({
+        type: 'task.file_attached',
+        projectId: existing.project_id,
+        taskId: input.taskId,
+        filePath: input.filePath,
+        ts: now,
+      })
+      return { taskId: input.taskId, filePath: input.filePath, label, createdAt: now }
+    },
+
+    detachTaskFile(input, ctx) {
+      const existing = getTaskStmt.get(input.taskId) as TaskRow | undefined
+      if (!existing) {
+        throw new NotFoundError('task', input.taskId)
+      }
+      const info = deleteTaskFileStmt.run(input.taskId, input.filePath)
+      if (info.changes === 0) return
+      const now = Date.now()
+      deps.audit.record({
+        module: 'projects',
+        action: 'task.file_detached',
+        entityType: 'task',
+        entityId: input.taskId,
+        actor: ctx.actor,
+        payload: { projectId: existing.project_id, filePath: input.filePath },
+        projectId: existing.project_id,
+      })
+      void deps.eventBus.emit({
+        type: 'task.file_detached',
+        projectId: existing.project_id,
+        taskId: input.taskId,
+        filePath: input.filePath,
+        ts: now,
+      })
+    },
+
+    listTaskFiles(taskId) {
+      const rows = listTaskFilesStmt.all(taskId) as TaskFileRow[]
+      return rows.map(rowToTaskFile)
     },
 
     updatePhase(input, ctx) {

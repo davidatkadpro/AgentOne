@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight, Lock } from 'lucide-react'
+import { ChevronDown, ChevronRight, Lock, CalendarClock } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { Input } from '@/components/ui/Input'
-import type { EntityStatus } from '@/types/domain'
+import type { EntityStatus, TaskPriority } from '@/types/domain'
 import { ProjectStatusBadge } from '../ProjectStatusBadge'
 import type { TaskTreeRow } from '../../hooks/useTaskTree'
 
@@ -90,6 +90,20 @@ export function TaskRow({
           </button>
         )}
       </div>
+      {row.task && row.task.priority !== 'normal' && row.kind === 'task' ? (
+        <span
+          className={cn(
+            'text-[10px] px-1.5 py-0.5 rounded border',
+            priorityChip(row.task.priority),
+          )}
+          data-testid={`row-priority-${row.id}`}
+        >
+          {row.task.priority}
+        </span>
+      ) : null}
+      {row.task?.dueDate ? (
+        <DueDateChip due={row.task.dueDate} status={row.status} />
+      ) : null}
       {row.blockedBy.length > 0 ? (
         <span className="inline-flex items-center gap-1 text-[10px] text-warn">
           <Lock size={10} /> blocked
@@ -134,5 +148,45 @@ export function TaskRow({
         </button>
       ) : null}
     </div>
+  )
+}
+
+function priorityChip(p: TaskPriority): string {
+  switch (p) {
+    case 'urgent':
+      return 'border-danger bg-danger/10 text-danger'
+    case 'high':
+      return 'border-warn bg-warn/10 text-warn'
+    case 'low':
+      return 'border-border bg-surface text-muted'
+    case 'normal':
+      return 'border-border bg-surface text-muted'
+  }
+}
+
+function DueDateChip({ due, status }: { due: number; status: EntityStatus }) {
+  // Treat anything before "today at local midnight" as overdue. Completed and
+  // cancelled tasks render the chip in a muted style — overdue alarms there
+  // would just be noise.
+  const dueDate = new Date(due)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const overdue =
+    dueDate.getTime() < today.getTime() && status !== 'completed' && status !== 'cancelled'
+  const label = dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border',
+        overdue
+          ? 'border-danger bg-danger/10 text-danger'
+          : 'border-border bg-surface text-muted',
+      )}
+      data-testid={`row-due-${dueDate.toISOString().slice(0, 10)}`}
+      title={dueDate.toLocaleDateString()}
+    >
+      <CalendarClock size={10} />
+      {label}
+    </span>
   )
 }

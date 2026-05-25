@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { join, sep } from 'node:path'
+import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createDatabase, type Db } from '@/storage/db.js'
-import { applyModuleMigrations } from '@/modules/migrations.js'
+import { applyAllMigrationsForModule } from './helpers/module-migrations.js'
 import { createAuditLog, type AuditLog } from '@/modules/audit-log.js'
 import { EventBus } from '@/core/events.js'
 import {
@@ -24,11 +24,7 @@ interface Harness {
 
 async function newHarness(opts: { storageRoot?: string } = {}): Promise<Harness> {
   const db = createDatabase({ path: ':memory:', skipMkdir: true })
-  const sql = readFileSync(
-    join(process.cwd(), 'modules', 'projects', 'schema', '001_init.sql'),
-    'utf-8',
-  )
-  applyModuleMigrations(db, 'projects', [{ version: 1, name: '001_init', sql }])
+  applyAllMigrationsForModule(db, 'projects')
   const audit = createAuditLog(db)
   const service = createProjectsService({
     db,
@@ -454,8 +450,10 @@ describe('Projects routes — Phase 2 additions', () => {
       rootPath: string
       entries: Array<{ relativePath: string; kind: 'file' | 'directory' }>
     }
-    const expectedSegment = p.folderPath!.split('/').join(sep)
-    expect(body.rootPath).toContain(expectedSegment)
+    // Response now returns the storage-relative path (no absolute host
+    // path leak). Verify it matches the project's folder_path verbatim —
+    // clients combine this with `relativePath` when addressing files.
+    expect(body.rootPath).toBe(p.folderPath)
     const rels = body.entries.map((e) => e.relativePath).sort()
     expect(rels).toEqual([
       'drafts/estimate.md',

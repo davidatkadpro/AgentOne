@@ -4,7 +4,6 @@ default_model: local-fast
 compressor_model: local-compressor
 default_skills:
   - system/filesystem
-  - system/shell
   - system/web
   - system/memory
   - system/documents

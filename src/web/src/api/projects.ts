@@ -9,9 +9,13 @@ import type {
   AddPhaseResponse,
   AddTaskRequest,
   AddTaskResponse,
+  AttachTaskFileRequest,
+  AttachTaskFileResponse,
   CreateProjectRequest,
   CreateProjectResponse,
+  DetachTaskFileRequest,
   ListProjectsResponse,
+  ListTaskFilesResponse,
   NextProjectNumberResponse,
   ProjectActivityResponse,
   ProjectDetailResponse,
@@ -19,6 +23,8 @@ import type {
   ProjectScopeResponse,
   UpdatePhaseRequest,
   UpdatePhaseResponse,
+  UpdateProjectRequest,
+  UpdateProjectResponse,
   UpdateProjectStatusRequest,
   UpdateProjectStatusResponse,
   UpdateTaskRequest,
@@ -110,6 +116,23 @@ export function useUpdateProjectStatus(projectId: string) {
   })
 }
 
+export function useUpdateProject(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: UpdateProjectRequest) =>
+      api.patch<UpdateProjectResponse>(`/projects/${projectId}`, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) })
+      void qc.invalidateQueries({ queryKey: queryKeys.projects.list() })
+      void qc.invalidateQueries({ queryKey: queryKeys.projects.activity(projectId) })
+    },
+    onError: (err) => {
+      toast.error(`Project update failed: ${err instanceof Error ? err.message : String(err)}`)
+      void qc.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) })
+    },
+  })
+}
+
 export function useAddPhase(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
@@ -192,6 +215,41 @@ export function useRemoveDependency(projectId: string) {
       api.delete<{ ok: true }>(`/tasks/${taskId}/dependencies/${dependsOnTaskId}`),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) })
+    },
+  })
+}
+
+export function useTaskFiles(taskId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['task-files', taskId ?? ''],
+    queryFn: () => api.get<ListTaskFilesResponse>(`/tasks/${taskId}/files`).then((r) => r.files),
+    enabled: !!taskId,
+  })
+}
+
+export function useAttachTaskFile(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ taskId, body }: { taskId: string; body: AttachTaskFileRequest }) =>
+      api.post<AttachTaskFileResponse>(`/tasks/${taskId}/files`, body),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) })
+      void qc.invalidateQueries({ queryKey: ['task-files', vars.taskId] })
+    },
+    onError: (err) => {
+      toast.error(`Attach file failed: ${err instanceof Error ? err.message : String(err)}`)
+    },
+  })
+}
+
+export function useDetachTaskFile(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ taskId, body }: { taskId: string; body: DetachTaskFileRequest }) =>
+      api.delete<{ ok: true }>(`/tasks/${taskId}/files`, body),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) })
+      void qc.invalidateQueries({ queryKey: ['task-files', vars.taskId] })
     },
   })
 }

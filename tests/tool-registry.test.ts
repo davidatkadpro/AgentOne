@@ -153,6 +153,84 @@ describe('ToolRegistry', () => {
     expect(result.durationMs).toBeGreaterThanOrEqual(0)
   })
 
+  it('execute aborts the handler signal on timeout', async () => {
+    const reg = new ToolRegistry()
+    let observedAborted: boolean | undefined
+    reg.register({
+      id: 'slow-abortable',
+      description: 'slow-abortable',
+      parameters: PSchema,
+      handler: (async (_args, ctx) => {
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, 200)
+          ctx.signal?.addEventListener('abort', () => {
+            clearTimeout(t)
+            resolve()
+          })
+        })
+        observedAborted = ctx.signal?.aborted
+        return { ok: true, value: 'handler finished after abort' }
+      }) as ToolHandler,
+      source: 'test',
+      timeoutMs: 25,
+    })
+    const result = await reg.execute('slow-abortable', '{"n": 1}', fakeCtx())
+    // Timeout still reported to caller.
+    expect(result.result.ok).toBe(false)
+    if (!result.result.ok) expect(result.result.error.code).toBe('TOOL_TIMEOUT')
+    // Give the handler a tick to observe the abort and resolve.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(observedAborted).toBe(true)
+  })
+
+  it('execute forwards an upstream signal to handler.ctx.signal', async () => {
+    const reg = new ToolRegistry()
+    let handlerSignal: AbortSignal | undefined
+    reg.register({
+      id: 'observe',
+      description: 'observe',
+      parameters: PSchema,
+      handler: (async (_args, ctx) => {
+        handlerSignal = ctx.signal
+        return { ok: true, value: null }
+      }) as ToolHandler,
+      source: 'test',
+    })
+    const upstream = new AbortController()
+    const ctx = { ...fakeCtx(), signal: upstream.signal }
+    await reg.execute('observe', '{"n": 1}', ctx)
+    expect(handlerSignal).toBeInstanceOf(AbortSignal)
+    // Aborting the upstream cascades to the handler signal — verify the
+    // listener wiring works by aborting *during* a slower handler.
+  })
+
+  it('upstream abort cascades into the handler signal', async () => {
+    const reg = new ToolRegistry()
+    let observedAborted = false
+    reg.register({
+      id: 'wait-for-abort',
+      description: 'wait-for-abort',
+      parameters: PSchema,
+      handler: (async (_args, ctx) => {
+        await new Promise<void>((resolve) => {
+          ctx.signal?.addEventListener('abort', () => {
+            observedAborted = true
+            resolve()
+          })
+        })
+        return { ok: true, value: null }
+      }) as ToolHandler,
+      source: 'test',
+      timeoutMs: 5_000,
+    })
+    const upstream = new AbortController()
+    const ctx = { ...fakeCtx(), signal: upstream.signal }
+    const exec = reg.execute('wait-for-abort', '{"n": 1}', ctx)
+    setTimeout(() => upstream.abort(), 10)
+    await exec
+    expect(observedAborted).toBe(true)
+  })
+
   it('toolDefinitions returns OpenAI-style entries with JSON Schema', () => {
     const reg = new ToolRegistry()
     register(reg, 'add', async () => ({ ok: true, value: null }))

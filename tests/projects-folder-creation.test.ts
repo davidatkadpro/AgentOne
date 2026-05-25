@@ -1,8 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { createDatabase, type Db } from '@/storage/db.js'
-import { applyModuleMigrations } from '@/modules/migrations.js'
+import { applyAllMigrationsForModule } from './helpers/module-migrations.js'
 import { createAuditLog } from '@/modules/audit-log.js'
 import { EventBus } from '@/core/events.js'
 import type { StorageAdapter, StorageReadResult, StorageWriteResult, StorageListEntry } from '@/storage/adapter.js'
@@ -31,6 +29,12 @@ class RecordingStorage implements StorageAdapter {
   async exists(_path: string): Promise<boolean> {
     return false
   }
+  async stat(_path: string): Promise<StorageListEntry> {
+    throw new Error('not implemented')
+  }
+  async readRange(_path: string, _end: number, _start?: number): Promise<StorageReadResult> {
+    throw new Error('not implemented')
+  }
   async delete(_path: string): Promise<void> {
     // no-op
   }
@@ -48,11 +52,7 @@ interface Harness {
 
 function newHarness(): Harness {
   const db = createDatabase({ path: ':memory:', skipMkdir: true })
-  const sql = readFileSync(
-    join(process.cwd(), 'modules', 'projects', 'schema', '001_init.sql'),
-    'utf-8',
-  )
-  applyModuleMigrations(db, 'projects', [{ version: 1, name: '001_init', sql }])
+  applyAllMigrationsForModule(db, 'projects')
   const storage = new RecordingStorage()
   const service = createProjectsService({
     db,

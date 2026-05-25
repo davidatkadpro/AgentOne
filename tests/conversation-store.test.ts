@@ -28,7 +28,7 @@ describe('ConversationStore migration', () => {
 
   it('installs turns_fts and reaches the current schema version on a fresh db', () => {
     const version = h.db.pragma('user_version', { simple: true })
-    expect(version).toBe(7)
+    expect(version).toBe(8)
     const fts = h.db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='turns_fts'")
       .get()
@@ -41,6 +41,73 @@ describe('ConversationStore migration', () => {
       'turns_fts_ai',
       'turns_fts_au',
     ])
+  })
+
+  it('creates the compression_state table on a fresh db', () => {
+    const row = h.db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='compression_state'",
+      )
+      .get()
+    expect(row).toBeTruthy()
+  })
+})
+
+describe('ConversationStore.compression_state', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = newHarness()
+  })
+  afterEach(() => {
+    disposeHarness(h)
+  })
+
+  it('round-trips save → get → clear', () => {
+    const session = h.store.createSession({ agentProfile: 'p', title: 't' })
+    expect(h.store.getCompressionState(session.id)).toBeUndefined()
+
+    h.store.saveCompressionState({
+      sessionId: session.id,
+      summaryText: 'a digest',
+      throughTurnCount: 12,
+    })
+    const got = h.store.getCompressionState(session.id)
+    expect(got?.summaryText).toBe('a digest')
+    expect(got?.throughTurnCount).toBe(12)
+    expect(got?.updatedAt).toBeGreaterThan(0)
+
+    h.store.clearCompressionState(session.id)
+    expect(h.store.getCompressionState(session.id)).toBeUndefined()
+  })
+
+  it('upsert replaces an existing row', () => {
+    const session = h.store.createSession({ agentProfile: 'p', title: 't' })
+    h.store.saveCompressionState({
+      sessionId: session.id,
+      summaryText: 'first',
+      throughTurnCount: 4,
+    })
+    h.store.saveCompressionState({
+      sessionId: session.id,
+      summaryText: 'second',
+      throughTurnCount: 7,
+    })
+    const got = h.store.getCompressionState(session.id)
+    expect(got?.summaryText).toBe('second')
+    expect(got?.throughTurnCount).toBe(7)
+  })
+
+  it('cascades on session delete', () => {
+    const session = h.store.createSession({ agentProfile: 'p', title: 't' })
+    h.store.saveCompressionState({
+      sessionId: session.id,
+      summaryText: 's',
+      throughTurnCount: 1,
+    })
+    // No store method to delete a session; do it directly via the FK
+    // cascade — sessions.id REFERENCES drives the deletion below.
+    h.db.prepare('DELETE FROM sessions WHERE id = ?').run(session.id)
+    expect(h.store.getCompressionState(session.id)).toBeUndefined()
   })
 })
 

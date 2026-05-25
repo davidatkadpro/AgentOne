@@ -1,8 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { createDatabase, type Db } from '@/storage/db.js'
-import { applyModuleMigrations } from '@/modules/migrations.js'
+import { applyAllMigrationsForModule } from './helpers/module-migrations.js'
 import { createAuditLog } from '@/modules/audit-log.js'
 import { EventBus } from '@/core/events.js'
 import {
@@ -12,11 +10,7 @@ import {
 
 function newHarness(): { db: Db; service: ProjectsService } {
   const db = createDatabase({ path: ':memory:', skipMkdir: true })
-  const sql = readFileSync(
-    join(process.cwd(), 'modules', 'projects', 'schema', '001_init.sql'),
-    'utf-8',
-  )
-  applyModuleMigrations(db, 'projects', [{ version: 1, name: '001_init', sql }])
+  applyAllMigrationsForModule(db, 'projects')
   const service = createProjectsService({
     db,
     eventBus: new EventBus(),

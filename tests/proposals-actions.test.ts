@@ -3,9 +3,8 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
 import { createDatabase, type Db } from '@/storage/db.js'
-import { applyModuleMigrations } from '@/modules/migrations.js'
+import { applyAllMigrationsForModule } from './helpers/module-migrations.js'
 import { createAuditLog } from '@/modules/audit-log.js'
 import { EventBus } from '@/core/events.js'
 import {
@@ -25,16 +24,7 @@ interface Harness {
 
 async function newHarness(): Promise<Harness> {
   const db = createDatabase({ path: ':memory:', skipMkdir: true })
-  applyModuleMigrations(db, 'projects', [
-    {
-      version: 1,
-      name: '001_init',
-      sql: readFileSync(
-        join(process.cwd(), 'modules', 'projects', 'schema', '001_init.sql'),
-        'utf-8',
-      ),
-    },
-  ])
+  applyAllMigrationsForModule(db, 'projects')
   const audit = createAuditLog(db)
   const bus = new EventBus()
   const projects = createProjectsService({ db, eventBus: bus, audit })

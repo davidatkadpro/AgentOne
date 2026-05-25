@@ -36,6 +36,13 @@ export interface StorageAdapter {
    *  per-project tree at creation time. */
   ensureDir(path: string): Promise<void>
   exists(path: string): Promise<boolean>
+  /** Cheap metadata fetch (no file content). Callers should `stat` before
+   *  `read` when they want to enforce a size cap; reading first and then
+   *  truncating still buffers the whole file. */
+  stat(path: string): Promise<StorageListEntry>
+  /** Read a byte range without buffering the whole file. `end` is
+   *  inclusive (Node's createReadStream convention). */
+  readRange(path: string, end: number, start?: number): Promise<StorageReadResult>
   delete(path: string): Promise<void>
   list(prefix?: string): AsyncIterable<StorageListEntry>
   /** Optional. Returns an unsubscribe function. */

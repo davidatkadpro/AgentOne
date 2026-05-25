@@ -123,6 +123,13 @@ export type AgentEvent =
   | { type: 'turn.cancel_requested'; sessionId: string; ts: number }
   | { type: 'turn.cancelled'; sessionId: string; kind: 'soft' | 'hard'; ts: number }
   | {
+      type: 'turn.failed'
+      sessionId: string
+      source: 'provider' | 'tool' | 'runtime'
+      message: string
+      ts: number
+    }
+  | {
       type: 'session.awaiting_input'
       sessionId: string
       notificationId: number
@@ -246,6 +253,7 @@ const KNOWN_TYPES = new Set<string>([
   'drafts.pruned',
   'turn.cancel_requested',
   'turn.cancelled',
+  'turn.failed',
   'session.awaiting_input',
   'notification.created',
   'notification.updated',

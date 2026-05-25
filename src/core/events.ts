@@ -208,6 +208,18 @@ export type AgentEvent =
       ts: number
     }
   | {
+      type: 'turn.failed'
+      sessionId: string
+      /** Where the failure originated. `provider` = chat stream rejected;
+       *  `tool` = tool runtime; `runtime` = anything else (orchestrator
+       *  invariant, storage, etc.). The orchestrator already emits its own
+       *  fine-grained events for the success path — this is the single
+       *  durable "the turn could not complete" signal. */
+      source: 'provider' | 'tool' | 'runtime'
+      message: string
+      ts: number
+    }
+  | {
       type: 'session.awaiting_input'
       sessionId: string
       /** Id of the notification surfaced when the agent requested input. */
@@ -247,6 +259,20 @@ export type AgentEvent =
   | { type: 'task.updated'; projectId: string; taskId: string; ts: number }
   | { type: 'task.completed'; projectId: string; taskId: string; ts: number }
   | { type: 'task.blocked'; projectId: string; taskId: string; reason: string | null; ts: number }
+  | {
+      type: 'task.file_attached'
+      projectId: string
+      taskId: string
+      filePath: string
+      ts: number
+    }
+  | {
+      type: 'task.file_detached'
+      projectId: string
+      taskId: string
+      filePath: string
+      ts: number
+    }
   // -- contributed by modules/email --
   | {
       type: 'email.received'

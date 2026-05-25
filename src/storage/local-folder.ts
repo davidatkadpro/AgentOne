@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, stat, unlink, readdir } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, stat, unlink, readdir, open } from 'node:fs/promises'
 import { join, dirname, isAbsolute, posix, relative, sep } from 'node:path'
 import {
   StorageError,
@@ -63,6 +63,53 @@ export class LocalFolderAdapter implements StorageAdapter {
     }
   }
 
+  async stat(path: string): Promise<StorageListEntry> {
+    const abs = this.resolve(path)
+    try {
+      const s = await stat(abs)
+      return { path, size: s.size, mtime: s.mtime }
+    } catch (err) {
+      if (isNotFound(err)) throw new StorageError(`Not found: ${path}`, 'NOT_FOUND', err)
+      throw new StorageError(`Stat failed: ${path}`, 'IO', err)
+    }
+  }
+
+  /**
+   * Read a contiguous byte range. Uses a positioned read so a multi-GB
+   * file doesn't get buffered just to slice off a small head/tail.
+   */
+  async readRange(
+    path: string,
+    end: number,
+    start = 0,
+  ): Promise<StorageReadResult> {
+    if (end < start) {
+      throw new StorageError(
+        `readRange: end (${end}) must be >= start (${start})`,
+        'INVALID_PATH',
+      )
+    }
+    const abs = this.resolve(path)
+    const length = end - start + 1
+    const buf = Buffer.alloc(length)
+    let fh
+    try {
+      fh = await open(abs, 'r')
+      const { bytesRead } = await fh.read(buf, 0, length, start)
+      const s = await fh.stat()
+      return {
+        content: buf.subarray(0, bytesRead),
+        size: s.size,
+        mtime: s.mtime,
+      }
+    } catch (err) {
+      if (isNotFound(err)) throw new StorageError(`Not found: ${path}`, 'NOT_FOUND', err)
+      throw new StorageError(`readRange failed: ${path}`, 'IO', err)
+    } finally {
+      await fh?.close()
+    }
+  }
+
   async delete(path: string): Promise<void> {
     const abs = this.resolve(path)
     try {
@@ -73,23 +120,42 @@ export class LocalFolderAdapter implements StorageAdapter {
     }
   }
 
+  /**
+   * Walks the tree iteratively (BFS) and yields entries one at a time, so
+   * an async consumer's `break` short-circuits the traversal mid-walk.
+   * The historical implementation called `readdir(..., recursive: true)`,
+   * which buffered the entire descendant list before yielding the first
+   * entry — fine for small trees, very expensive (and slow to first byte)
+   * on a 10k+ entry storage root.
+   */
   async *list(prefix?: string): AsyncIterable<StorageListEntry> {
     const startAbs = prefix ? this.resolve(prefix) : this.cfg.root
-    let entries
-    try {
-      entries = await readdir(startAbs, { recursive: true, withFileTypes: true })
-    } catch (err) {
-      if (isNotFound(err)) return
-      throw new StorageError(`List failed: ${startAbs}`, 'IO', err)
-    }
-    for (const entry of entries) {
-      if (!entry.isFile()) continue
-      const childAbs = join(entry.parentPath ?? startAbs, entry.name)
-      const s = await stat(childAbs)
-      yield {
-        path: this.relativize(childAbs),
-        size: s.size,
-        mtime: s.mtime,
+    const queue: string[] = [startAbs]
+    while (queue.length > 0) {
+      const dir = queue.shift()!
+      let entries
+      try {
+        entries = await readdir(dir, { withFileTypes: true })
+      } catch (err) {
+        if (isNotFound(err)) {
+          if (dir === startAbs) return
+          continue
+        }
+        throw new StorageError(`List failed: ${dir}`, 'IO', err)
+      }
+      for (const entry of entries) {
+        const childAbs = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          queue.push(childAbs)
+          continue
+        }
+        if (!entry.isFile()) continue
+        const s = await stat(childAbs)
+        yield {
+          path: this.relativize(childAbs),
+          size: s.size,
+          mtime: s.mtime,
+        }
       }
     }
   }

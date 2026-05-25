@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { MemoryRouter } from 'react-router-dom'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { ArtifactListRow } from '@/routes/modules/proposals/components/ArtifactListRow'
+import { TestRouter } from './helpers/test-router'
 import type { ArtifactRow } from '@/types/domain'
 
 function makeRow(overrides: Partial<ArtifactRow> = {}): ArtifactRow {
@@ -24,9 +24,9 @@ function makeRow(overrides: Partial<ArtifactRow> = {}): ArtifactRow {
 
 function renderRow(row: ArtifactRow, isActive = false) {
   return render(
-    <MemoryRouter>
+    <TestRouter>
       <ArtifactListRow row={row} isActive={isActive} />
-    </MemoryRouter>,
+    </TestRouter>,
   )
 }
 

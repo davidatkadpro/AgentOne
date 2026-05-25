@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import {
   ContextManager,
   renderMessageForCompressor,
+  snapToSafeSplit,
 } from '@/context/context-manager.js'
 import { EventBus, type AgentEvent } from '@/core/events.js'
 import type { Message } from '@/core/types.js'
@@ -150,6 +151,369 @@ describe('ContextManager', () => {
         (m) => m.role === 'system' && (m.content ?? '').includes(SUMMARY_TEXT),
       ),
     ).toBe(true)
+  })
+
+  describe('does not re-compress an already-summarised prefix (the original bug)', () => {
+    it('compressor is called exactly once when prepare is invoked twice with a growing history', async () => {
+      // The orchestrator reloads the full conversation from the store on
+      // every user message. Without the compression watermark, the summary
+      // gets stacked on top of the same prefix every turn and trips the
+      // threshold again — the user sees compression after every message.
+      //
+      // contextWindow chosen so the post-compression assembly (system +
+      // summary + recency window + small new turns) sits comfortably under
+      // the threshold. The bug was that pre-fix logic ignored this and
+      // re-counted the whole prefix every turn.
+      const { cm, compressor, events } = makeManager({
+        contextWindow: 4000,
+        recencyWindow: 2,
+      })
+
+      const history: Message[] = []
+      for (let i = 0; i < 10; i++) history.push(makeBigUserMessage(200))
+
+      const first = await cm.prepare('s1', system, history)
+      expect(first.compressed).toBe(true)
+      expect(compressor.calls.length).toBe(1)
+
+      // Simulate the next user turn: orchestrator reloads the full
+      // history from the store and appends a couple of new (modest)
+      // turns. Pre-fix, this would re-trigger compression because the
+      // summary got stacked on top of the same 6-message prefix.
+      history.push({ role: 'assistant', content: 'short response' })
+      history.push({ role: 'user', content: 'follow-up' })
+
+      const second = await cm.prepare('s1', system, history)
+
+      // The fix: prefix already covered by the summary is sliced off, so
+      // total tokens are well under the threshold and no second compress
+      // call happens — even though the caller passed the full 8-message
+      // history.
+      expect(second.compressed).toBe(false)
+      expect(compressor.calls.length).toBe(1)
+      // We should still see the summary attached to the (now shorter)
+      // tail in the messages sent to the model.
+      expect(
+        second.messages.some(
+          (m) => m.role === 'system' && (m.content ?? '').includes(SUMMARY_TEXT),
+        ),
+      ).toBe(true)
+      // Only one context.compressed event total across both prepare calls.
+      expect(events.filter((e) => e.type === 'context.compressed')).toHaveLength(1)
+    })
+
+    it('records a watermark equal to the number of turns rolled into the summary', async () => {
+      const { cm } = makeManager({ contextWindow: 1000, recencyWindow: 2 })
+      const history: Message[] = []
+      for (let i = 0; i < 6; i++) history.push(makeBigUserMessage(200))
+      await cm.prepare('s1', system, history)
+      // 6 turns total, recencyWindow=2 → 4 turns folded into summary.
+      expect(cm.getCompressionWatermark('s1')).toBe(4)
+    })
+
+    it('eventually compresses again once enough new turns accumulate past the watermark', async () => {
+      const { cm, compressor } = makeManager({
+        contextWindow: 1000,
+        recencyWindow: 2,
+      })
+      const history: Message[] = []
+      for (let i = 0; i < 6; i++) history.push(makeBigUserMessage(200))
+      await cm.prepare('s1', system, history)
+      expect(compressor.calls.length).toBe(1)
+      expect(cm.getCompressionWatermark('s1')).toBe(4)
+
+      // Append enough big turns that the *post-watermark* slice itself
+      // exceeds the threshold.
+      for (let i = 0; i < 6; i++) history.push(makeBigUserMessage(200))
+      await cm.prepare('s1', system, history)
+
+      expect(compressor.calls.length).toBe(2)
+      // Watermark advanced: 4 (initial) + (post-slice toCompress count).
+      const wm = cm.getCompressionWatermark('s1')
+      expect(wm).toBeGreaterThan(4)
+    })
+
+    it('passes the prior summary into the compressor on subsequent compressions', async () => {
+      const { cm, compressor } = makeManager({
+        contextWindow: 1000,
+        recencyWindow: 2,
+      })
+      const history: Message[] = []
+      for (let i = 0; i < 6; i++) history.push(makeBigUserMessage(200))
+      await cm.prepare('s1', system, history)
+      // Force a second compression by extending history past the threshold.
+      for (let i = 0; i < 6; i++) history.push(makeBigUserMessage(200))
+      await cm.prepare('s1', system, history)
+
+      expect(compressor.calls.length).toBe(2)
+      // The second compressor call should contain the prior summary in
+      // its user prompt so old context isn't dropped.
+      const secondCall = compressor.calls[1]!
+      const userMsg = secondCall.messages.find((m) => m.role === 'user')
+      expect(userMsg?.content).toContain('Existing summary of earlier turns')
+    })
+  })
+
+  describe('compression slice respects tool-call boundaries', () => {
+    // The original bug: compress() did a blunt slice at `history.length -
+    // recencyWindow`. If that landed inside an agent task (between an
+    // assistant's tool_calls and the tool result), `recency` began with an
+    // orphan tool message. Local models (LMStudio) silently returned ""
+    // rather than erroring, surfacing as "[The model produced no response]"
+    // in the UI.
+
+    function makeHistory(): Message[] {
+      // Realistic shape: user → assistant+tool_call → tool → assistant
+      return [
+        { role: 'user', content: 'u1' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'tc1', type: 'function', function: { name: 'f', arguments: '{}' } },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'tc1', content: 'result1' },
+        { role: 'assistant', content: 'answer 1' },
+        { role: 'user', content: 'u2' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'tc2', type: 'function', function: { name: 'f', arguments: '{}' } },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'tc2', content: 'result2' },
+        { role: 'assistant', content: 'answer 2' },
+        { role: 'user', content: 'u3' },
+      ]
+    }
+
+    it('snaps a candidate that lands on a tool message backward to a user boundary', () => {
+      const h = makeHistory()
+      // Index 2 is a tool result — orphan if we cut here.
+      expect(h[2]?.role).toBe('tool')
+      expect(snapToSafeSplit(h, 2)).toBe(0) // back to u1
+    })
+
+    it('snaps a candidate landing on an assistant-with-tool_calls backward', () => {
+      const h = makeHistory()
+      // Index 5 is assistant with tool_calls — if we cut here, tc2 result
+      // ends up in recency without its assistant parent... wait no, the
+      // assistant IS the parent and would be in toCompress. The dangerous
+      // case is index 6 (tool result), but assistants-with-calls are also
+      // best treated as task-start. We snap back to u2 for symmetry.
+      expect(snapToSafeSplit(h, 5)).toBe(4)
+    })
+
+    it('keeps a candidate that already sits on a user boundary', () => {
+      const h = makeHistory()
+      expect(h[4]?.role).toBe('user')
+      expect(snapToSafeSplit(h, 4)).toBe(4)
+    })
+
+    it('walks forward when no earlier user message exists', () => {
+      const h: Message[] = [
+        { role: 'tool', tool_call_id: 'tc0', content: 'orphan' },
+        { role: 'assistant', content: 'a' },
+        { role: 'user', content: 'u' },
+      ]
+      expect(snapToSafeSplit(h, 0)).toBe(0) // candidate=0 returns 0
+      expect(snapToSafeSplit(h, 1)).toBe(2) // walk forward, no earlier user
+    })
+
+    it('returns candidate unchanged when history has no user messages at all', () => {
+      const h: Message[] = [
+        { role: 'assistant', content: 'a1' },
+        { role: 'tool', tool_call_id: 'tc', content: 'r' },
+      ]
+      expect(snapToSafeSplit(h, 1)).toBe(1)
+    })
+
+    it('end-to-end: compression never leaves an orphan tool at recency[0]', async () => {
+      const { cm, compressor } = makeManager({
+        contextWindow: 600, // small window forces compression
+        recencyWindow: 3, // configured small to bias the natural cut into a tool cluster
+      })
+
+      const big = (s: string) => ({ role: 'user' as const, content: s + 'x'.repeat(800) })
+      const bigAns = (s: string) => ({
+        role: 'assistant' as const,
+        content: s + 'x'.repeat(800),
+      })
+      const history: Message[] = [
+        big('u1 '),
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'tc1', type: 'function', function: { name: 'f', arguments: '{}' } },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'tc1', content: 'r1' },
+        bigAns('a1 '),
+        big('u2 '),
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'tc2', type: 'function', function: { name: 'f', arguments: '{}' } },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'tc2', content: 'r2' },
+        bigAns('a2 '),
+        { role: 'user', content: 'u3' },
+      ]
+
+      const prepared = await cm.prepare('s1', system, history)
+      expect(prepared.compressed).toBe(true)
+      expect(compressor.calls.length).toBe(1)
+
+      // The first message after [system, summary] must NOT be a `tool`.
+      // Find the first non-system message.
+      const nonSystem = prepared.messages.find((m) => m.role !== 'system')
+      expect(nonSystem?.role).not.toBe('tool')
+    })
+  })
+
+  describe('compression watermark persistence', () => {
+    // The in-memory watermark dies with the process. Without a persistence
+    // store, every restart re-runs compression on the full conversation
+    // prefix at the next user message — burning the compressor model
+    // and (in practice) yielding an empty response when the recency
+    // slice landed mid-tool-call.
+
+    interface PersistedRow {
+      summaryText: string
+      throughTurnCount: number
+    }
+
+    function makeStubStore() {
+      const map = new Map<string, PersistedRow>()
+      const calls = { save: 0, get: 0, clear: 0 }
+      return {
+        map,
+        calls,
+        getCompressionState(sessionId: string) {
+          calls.get += 1
+          const row = map.get(sessionId)
+          return row ? { ...row } : undefined
+        },
+        saveCompressionState(input: {
+          sessionId: string
+          summaryText: string
+          throughTurnCount: number
+        }) {
+          calls.save += 1
+          map.set(input.sessionId, {
+            summaryText: input.summaryText,
+            throughTurnCount: input.throughTurnCount,
+          })
+        },
+        clearCompressionState(sessionId: string) {
+          calls.clear += 1
+          map.delete(sessionId)
+        },
+      }
+    }
+
+    it('writes watermark + summary to the store after compression', async () => {
+      const store = makeStubStore()
+      const bus = new EventBus()
+      const compressor = new FakeProvider({ respond: () => SUMMARY_TEXT })
+      const cm = new ContextManager({
+        compressorProvider: compressor,
+        compressorModel: 'c',
+        contextWindow: 4000,
+        eventBus: bus,
+        recencyWindow: 2,
+        compressionStore: store,
+      })
+      const history: Message[] = []
+      for (let i = 0; i < 10; i++) history.push(makeBigUserMessage(200))
+      await cm.prepare('s1', system, history)
+
+      expect(store.calls.save).toBe(1)
+      const row = store.map.get('s1')
+      expect(row).toBeDefined()
+      expect(row?.throughTurnCount).toBe(8) // 10 - recencyWindow=2
+      expect(row?.summaryText).toContain(SUMMARY_TEXT)
+    })
+
+    it('hydrates watermark from the store on first prepare (simulates process restart)', async () => {
+      const store = makeStubStore()
+      // Pretend a previous process compressed this session and persisted state.
+      store.map.set('s1', {
+        summaryText: '[Summary of prior conversation]\n\nseeded\n',
+        throughTurnCount: 8,
+      })
+
+      const bus = new EventBus()
+      const compressor = new FakeProvider({ respond: () => SUMMARY_TEXT })
+      const cm = new ContextManager({
+        compressorProvider: compressor,
+        compressorModel: 'c',
+        contextWindow: 4000,
+        eventBus: bus,
+        recencyWindow: 2,
+        compressionStore: store,
+      })
+
+      // Simulate "the orchestrator reloaded full history from the DB" —
+      // 10 messages, but 8 were already folded into the summary.
+      const history: Message[] = []
+      for (let i = 0; i < 10; i++) history.push(makeBigUserMessage(200))
+      const prepared = await cm.prepare('s1', system, history)
+
+      // Compressor must not have been called — the watermark told us to
+      // slice off 8 turns; effective history is the last 2 only.
+      expect(compressor.calls.length).toBe(0)
+      expect(prepared.compressed).toBe(false)
+      // The summary text should be the seeded one, not a fresh roll.
+      expect(
+        prepared.messages.some(
+          (m) => m.role === 'system' && (m.content ?? '').includes('seeded'),
+        ),
+      ).toBe(true)
+      // Watermark exposed via test seam — proves hydration ran.
+      expect(cm.getCompressionWatermark('s1')).toBe(8)
+    })
+
+    it('reset clears persisted state too', async () => {
+      const store = makeStubStore()
+      store.map.set('s1', {
+        summaryText: 'persisted',
+        throughTurnCount: 3,
+      })
+      const bus = new EventBus()
+      const cm = new ContextManager({
+        compressorProvider: new FakeProvider({ respond: () => SUMMARY_TEXT }),
+        compressorModel: 'c',
+        contextWindow: 4000,
+        eventBus: bus,
+        compressionStore: store,
+      })
+      cm.reset('s1')
+      expect(store.map.has('s1')).toBe(false)
+      expect(store.calls.clear).toBe(1)
+    })
+
+    it('still works when no compressionStore is provided (transient mode)', async () => {
+      const bus = new EventBus()
+      const compressor = new FakeProvider({ respond: () => SUMMARY_TEXT })
+      const cm = new ContextManager({
+        compressorProvider: compressor,
+        compressorModel: 'c',
+        contextWindow: 4000,
+        eventBus: bus,
+        recencyWindow: 2,
+        // no compressionStore
+      })
+      const history: Message[] = []
+      for (let i = 0; i < 10; i++) history.push(makeBigUserMessage(200))
+      await cm.prepare('s1', system, history)
+      expect(cm.getCompressionWatermark('s1')).toBe(8)
+    })
   })
 
   it('reset clears stored summary for the session', async () => {

@@ -4,6 +4,10 @@ import { isAbsolute, resolve, basename } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { FastifyInstance } from 'fastify'
+import { renderPandoc } from '../../../src/render/pandoc.js'
+import { moneyNonNegative, moneyPositive, qtyNonNegative } from '../../../src/modules/numeric.js'
+import { escapeBlock, escapeTableCell, pandocSafeInputArgs } from '../../../src/render/markdown-escape.js'
+import { mapDomainError } from '../../../src/errors/domain.js'
 import type { EventBus } from '../../../src/core/events.js'
 import type { SecretVault } from '../../../src/storage/secret-vault.js'
 import type { QboHttpClient } from '../../../src/modules/qbo/source.js'
@@ -47,7 +51,7 @@ const PaymentMethodEnum: z.ZodType<PaymentMethod> = z.enum([
 
 const CreateInvoiceBody = z.object({
   proposalId: z.string().optional(),
-  taxAmount: z.number().nonnegative().optional(),
+  taxAmount: moneyNonNegative().optional(),
   dueDate: z.number().int().optional(),
   notes: z.string().optional(),
   metadata: z.record(z.unknown()).optional(),
@@ -55,9 +59,9 @@ const CreateInvoiceBody = z.object({
     z.object({
       kind: LineKindEnum.optional(),
       description: z.string().min(1),
-      qty: z.number().nonnegative().optional(),
+      qty: qtyNonNegative().optional(),
       unit: z.string().optional(),
-      unitPrice: z.number().nonnegative().optional(),
+      unitPrice: moneyNonNegative().optional(),
       metadata: z.record(z.unknown()).optional(),
     }),
   ),
@@ -65,13 +69,13 @@ const CreateInvoiceBody = z.object({
 
 const CreateFromProposalBody = z.object({
   proposalId: z.string().min(1),
-  taxAmount: z.number().nonnegative().optional(),
+  taxAmount: moneyNonNegative().optional(),
   dueDate: z.number().int().optional(),
   notes: z.string().optional(),
 })
 
 const RecordPaymentBody = z.object({
-  amount: z.number().positive(),
+  amount: moneyPositive(),
   receivedAt: z.number().int().optional(),
   method: PaymentMethodEnum.optional(),
   reference: z.string().optional(),
@@ -83,7 +87,7 @@ const PatchStatusBody = z.object({ status: InvoiceStatusEnum })
 const UpdateInvoiceBody = z
   .object({
     status: InvoiceStatusEnum.optional(),
-    taxAmount: z.number().nonnegative().optional(),
+    taxAmount: moneyNonNegative().optional(),
     dueDate: z.number().int().nullable().optional(),
     notes: z.string().nullable().optional(),
     metadata: z.record(z.unknown()).optional(),
@@ -93,9 +97,9 @@ const UpdateInvoiceBody = z
           id: z.string().optional(),
           kind: LineKindEnum.optional(),
           description: z.string().min(1),
-          qty: z.number().nonnegative().optional(),
+          qty: qtyNonNegative().optional(),
           unit: z.string().nullable().optional(),
-          unitPrice: z.number().nonnegative().optional(),
+          unitPrice: moneyNonNegative().optional(),
           metadata: z.record(z.unknown()).optional(),
         }),
       )
@@ -140,41 +144,21 @@ export interface RegisterInvoicingRoutesDeps {
 const DEFAULT_AUTHORIZE_URL = 'https://appcenter.intuit.com/connect/oauth2'
 const DEFAULT_SPA_CALLBACK = '/settings?tab=integrations'
 
-type ListListInvoicesQuery = {
-  projectId?: string
-  status?: InvoiceStatus | InvoiceStatus[]
-  syncStatus?: SyncStatus | SyncStatus[]
-  limit?: number
-}
-
-function parseListQuery(q: unknown): ListListInvoicesQuery {
-  const o = (q ?? {}) as Record<string, unknown>
-  const out: ListListInvoicesQuery = {}
-  if (typeof o.projectId === 'string') out.projectId = o.projectId
-  if (typeof o.status === 'string') {
-    if (InvoiceStatusEnum.safeParse(o.status).success) out.status = o.status as InvoiceStatus
-  } else if (Array.isArray(o.status)) {
-    const arr = o.status.filter(
-      (s): s is InvoiceStatus =>
-        typeof s === 'string' && InvoiceStatusEnum.safeParse(s).success,
-    )
-    if (arr.length > 0) out.status = arr
-  }
-  if (typeof o.syncStatus === 'string') {
-    if (SyncStatusEnum.safeParse(o.syncStatus).success) out.syncStatus = o.syncStatus as SyncStatus
-  } else if (Array.isArray(o.syncStatus)) {
-    const arr = o.syncStatus.filter(
-      (s): s is SyncStatus =>
-        typeof s === 'string' && SyncStatusEnum.safeParse(s).success,
-    )
-    if (arr.length > 0) out.syncStatus = arr
-  }
-  if (typeof o.limit === 'string') {
-    const n = Number.parseInt(o.limit, 10)
-    if (Number.isFinite(n) && n > 0) out.limit = n
-  }
-  return out
-}
+// Strict query schema for GET /invoicing/invoices. Replaces hand-rolled
+// parsing that silently dropped invalid filters (broadening the result set
+// instead of returning 400) and had no upper bound on `limit` (a caller
+// could request millions of rows). Both behaviours surprised callers and
+// could degrade the DB.
+const ListInvoicesQuery = z.object({
+  projectId: z.string().min(1).optional(),
+  status: z
+    .union([InvoiceStatusEnum, z.array(InvoiceStatusEnum).min(1)])
+    .optional(),
+  syncStatus: z
+    .union([SyncStatusEnum, z.array(SyncStatusEnum).min(1)])
+    .optional(),
+  limit: z.coerce.number().int().positive().max(500).optional(),
+})
 
 function projectionStatus(s: InvoiceStatus): 'draft' | 'issued' | 'partially_paid' | 'paid' | 'void' {
   return s === 'partial' ? 'partially_paid' : s
@@ -268,8 +252,13 @@ export async function registerInvoicingRoutes(
   // ── Cross-project list (P5P2) ─────────────────────────────────────────
 
   for (const url of bothPaths('/invoicing/invoices')) {
-    app.get(url, async (req) => {
-      const q = parseListQuery(req.query)
+    app.get(url, async (req, reply) => {
+      const parsed = ListInvoicesQuery.safeParse(req.query)
+      if (!parsed.success) {
+        reply.code(400)
+        return { error: 'INVALID_QUERY', details: parsed.error.flatten() }
+      }
+      const q = parsed.data
       const opts: Parameters<typeof service.listInvoices>[0] = {}
       if (q.projectId) opts.projectId = q.projectId
       if (q.status) opts.status = asArr(q.status)
@@ -403,9 +392,13 @@ export async function registerInvoicingRoutes(
       }
       try {
         service.setInvoiceStatus(params.data.id, body.data.status, HTTP_ACTOR)
-      } catch {
-        reply.code(404)
-        return { error: 'NOT_FOUND' }
+      } catch (err) {
+        const mapped = mapDomainError(err)
+        if (mapped) {
+          reply.code(mapped.status)
+          return mapped.body
+        }
+        throw err
       }
       return { invoice: service.getInvoice(params.data.id) }
     })
@@ -425,9 +418,13 @@ export async function registerInvoicingRoutes(
       }
       try {
         service.setInvoiceStatus(params.data.id, body.data.status, HTTP_ACTOR)
-      } catch {
-        reply.code(404)
-        return { error: 'NOT_FOUND' }
+      } catch (err) {
+        const mapped = mapDomainError(err)
+        if (mapped) {
+          reply.code(mapped.status)
+          return mapped.body
+        }
+        throw err
       }
       return { invoice: service.getInvoice(params.data.id) }
     })
@@ -948,7 +945,7 @@ function renderInvoiceMarkdown(invoice: {
   notes: string | null
 }): string {
   const lines: string[] = []
-  lines.push(`# Invoice ${invoice.number}`)
+  lines.push(`# Invoice ${escapeBlock(invoice.number)}`)
   lines.push('')
   lines.push(`**Status:** ${projectionStatus(invoice.status)}`)
   if (invoice.dueDate !== null) {
@@ -959,7 +956,7 @@ function renderInvoiceMarkdown(invoice: {
   lines.push('|---|---:|---:|---:|')
   for (const l of invoice.lines) {
     lines.push(
-      `| ${l.description} | ${l.qty} | ${l.unitPrice.toFixed(2)} | ${l.lineTotal.toFixed(2)} |`,
+      `| ${escapeTableCell(l.description)} | ${escapeTableCell(l.qty)} | ${l.unitPrice.toFixed(2)} | ${l.lineTotal.toFixed(2)} |`,
     )
   }
   lines.push('')
@@ -970,30 +967,33 @@ function renderInvoiceMarkdown(invoice: {
   lines.push(`Balance: ${(invoice.total - invoice.amountPaid).toFixed(2)}`)
   if (invoice.notes) {
     lines.push('')
-    lines.push(invoice.notes)
+    lines.push(escapeBlock(invoice.notes))
   }
   return lines.join('\n')
 }
 
 async function renderPdfViaPandoc(md: string): Promise<Buffer> {
-  // pandoc -f markdown -t pdf -  (stdin → stdout)
-  const child = execFile('pandoc', ['-f', 'markdown', '-t', 'pdf'], {
-    encoding: 'buffer',
-    maxBuffer: 32 * 1024 * 1024,
+  // Use a markdown variant that disables raw HTML + raw TeX, so any
+  // user-supplied notes/descriptions cannot smuggle in raw constructs.
+  // The escape helpers already neutralise the leading characters; this is
+  // defence in depth.
+  const result = await renderPandoc({
+    input: Buffer.from(md, 'utf-8'),
+    to: 'pdf',
+    extraArgs: pandocSafeInputArgs('markdown'),
   })
-  child.stdin?.write(md)
-  child.stdin?.end()
-  const chunks: Buffer[] = []
-  for await (const chunk of child.stdout ?? []) {
-    chunks.push(chunk as Buffer)
+  if (result.kind === 'ok') return result.output
+  if (result.kind === 'timeout') {
+    throw new Error(`pandoc timed out (stderr: ${result.stderr.slice(0, 200)})`)
   }
-  await new Promise<void>((res, rej) => {
-    child.once('exit', (code) => (code === 0 ? res() : rej(new Error(`pandoc exit ${code}`))))
-    child.once('error', rej)
-  })
-  return Buffer.concat(chunks)
+  if (result.kind === 'spawn_failed') {
+    throw new Error(`pandoc spawn failed: ${result.error}`)
+  }
+  throw new Error(
+    `pandoc exit ${result.exitCode ?? 'unknown'} (stderr: ${result.stderr.slice(0, 200)})`,
+  )
 }
 
-// Prevent dead-code elim warnings — `isAbsolute`/`resolve`/`basename`/`readdir`/`readFile`/`stat`/`execFileAsync`
-// are imported for symmetry with proposals/routes; the download path uses execFile (sync child) above.
-void [isAbsolute, resolve, basename, readdir, readFile, stat, execFileAsync]
+// Prevent dead-code elim warnings — these are imported for symmetry with
+// proposals/routes; the download path uses renderPandoc above.
+void [isAbsolute, resolve, basename, readdir, readFile, stat, execFileAsync, execFile]

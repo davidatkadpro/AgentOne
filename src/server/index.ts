@@ -72,6 +72,8 @@ import type { CommandRegistry } from './commands/registry.js'
 import type { CommandResult } from './commands/types.js'
 import { buildHybridRecall } from '../search/hybrid.js'
 import { EmbeddingIndexer } from '../search/embedding-indexer.js'
+import { defaultAllowedOrigins, ensureAuthToken, installAuthGate, type AuthOptions } from './auth.js'
+import { runTurnInBackground as runTurnInBackgroundImpl } from './background-drain.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -152,6 +154,9 @@ export interface AppDeps {
     redirectUri: string
     authorizeUrl: string
   }
+  /** Optional auth gate. When omitted, no auth is enforced (tests + legacy
+   *  paths). Bootstrap always supplies one with `enabled: true`. */
+  auth?: AuthOptions
 }
 
 const CommandRequestBody = z.object({
@@ -168,6 +173,9 @@ const GlobalCommandBody = CommandRequestBody.extend({
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({ logger: false })
   await app.register(fastifyWebsocket)
+  if (deps.auth) {
+    installAuthGate(app, deps.auth)
+  }
   const frontendRoot = resolve(__dirname, '..', '..', deps.config.frontendDir)
   const { existsSync } = await import('node:fs')
   const frontendBuilt = existsSync(resolve(frontendRoot, 'index.html'))
@@ -471,7 +479,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       if (parsed.data.title != null) spawnInput.title = parsed.data.title
       if (requested !== undefined) spawnInput.agentProfile = requested
       const result = await deps.orchestrator.spawnSession(spawnInput)
-      void drain(result.handle.stream)
+      runTurnInBackground(deps, result.session.id, result.handle.stream)
       return { session: result.session }
     }
     const session = deps.store.createSession({
@@ -530,7 +538,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       return { error: 'Invalid body', details: body.error.flatten() }
     }
     const handle = await deps.orchestrator.handleUserMessage(params.data.id, body.data.text)
-    void drain(handle.stream)
+    runTurnInBackground(deps, params.data.id, handle.stream)
     return { ok: true }
   })
 
@@ -664,7 +672,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         params.data.id,
         body.data.value,
       )
-      void drain(handle.stream)
+      runTurnInBackground(deps, params.data.id, handle.stream)
       // 2. Resolve the notification.
       deps.notifications.resolve(params.data.notifId)
       return { ok: true }
@@ -943,11 +951,13 @@ async function discoverModuleSkillRoots(
   return out
 }
 
-async function drain(stream: AsyncIterable<string>): Promise<void> {
-  // The orchestrator's stream emits deltas as observer events; iterating
-  // here only drives its generator past completion so the finally-block
-  // persists the assistant turn.
-  for await (const _ of stream) void _
+/** Thin wrapper that captures `deps.bus` for the per-route call sites. */
+function runTurnInBackground(
+  deps: AppDeps,
+  sessionId: string,
+  stream: AsyncIterable<string>,
+): void {
+  runTurnInBackgroundImpl({ bus: deps.bus }, sessionId, stream)
 }
 
 function profileMismatchResponse(
@@ -1011,7 +1021,7 @@ async function dispatchCommand(
   const forwarded = !!body.text && body.text.trim().length > 0
   if (forwarded) {
     const handle = await deps.orchestrator.handleUserMessage(sessionId, body.text as string)
-    void drain(handle.stream)
+    runTurnInBackground(deps, sessionId, handle.stream)
   }
   return {
     kind: 'skill_invoked',
@@ -1150,6 +1160,9 @@ export async function bootstrap(): Promise<void> {
     compressorModel: compressorModel.model,
     contextWindow: conversationModel.contextWindow,
     eventBus: bus,
+    // Persist the compression watermark per session so a process restart
+    // doesn't re-run compression on the full prefix at the next message.
+    compressionStore: store,
   })
 
   // The agent profile may also reference its own system_prompt_file, layered
@@ -1376,6 +1389,29 @@ export async function bootstrap(): Promise<void> {
     console.log('  QBO sync: disabled (QBO_CLIENT_ID / QBO_CLIENT_SECRET not set)')
   }
 
+  // Refuse to bind to a non-loopback host unless the operator has explicitly
+  // opted in. The opt-in still demands auth (no `enabled: false` escape).
+  const isLoopback =
+    config.host === '127.0.0.1' ||
+    config.host === 'localhost' ||
+    config.host === '::1'
+  if (!isLoopback && !config.allowUnauthNetwork) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `Refusing to bind to non-loopback HOST=${config.host}.\n` +
+        `  This would expose the bundled shell/filesystem skills to anyone on the network.\n` +
+        `  To proceed, set ALLOW_UNAUTH_NETWORK=1 (auth is still enforced — the flag is an\n` +
+        `  acknowledgement that the bearer token is your only line of defence).`,
+    )
+    process.exit(2)
+  }
+
+  const auth = await ensureAuthToken(config.storageRoot)
+  const allowedOrigins = [
+    ...defaultAllowedOrigins(config.host, config.port),
+    ...config.allowedOrigins,
+  ]
+
   const app = await buildApp({
     config,
     bus,
@@ -1393,6 +1429,7 @@ export async function bootstrap(): Promise<void> {
     notifications,
     audit,
     ...(qboBundle && { qbo: qboBundle }),
+    auth: { enabled: true, token: auth.token, allowedOrigins },
   })
 
   await wiki.whenReady()
@@ -1401,9 +1438,17 @@ export async function bootstrap(): Promise<void> {
   const displayHost = config.host === '0.0.0.0' ? '<lan-ip>' : config.host
   // eslint-disable-next-line no-console
   console.log(`AgentOne listening on http://${displayHost}:${config.port}`)
-  if (config.host === '0.0.0.0') {
+  // eslint-disable-next-line no-console
+  console.log(`  auth token (${auth.created ? 'new — store this' : 'persisted at'}): ${auth.path}`)
+  if (auth.created) {
     // eslint-disable-next-line no-console
-    console.log('  WARNING: bound to 0.0.0.0 — reachable by anyone on this network. No auth is enforced.')
+    console.log(`  AGENTONE_TOKEN=${auth.token}`)
+  }
+  if (!isLoopback) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `  bound to non-loopback host (${config.host}); auth gate is the only barrier.`,
+    )
   }
   // eslint-disable-next-line no-console
   console.log(
