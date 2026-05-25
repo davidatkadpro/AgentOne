@@ -675,104 +675,19 @@ export class Orchestrator {
           return
         }
 
-        // Append the assistant message + (eventually) tool results to the
-        // in-memory history. Tool result strings get filled in below.
-        const toolMessagesByCallId = new Map<string, Message>()
-        history.push({
-          role: 'assistant',
-          content: collected.length > 0 ? collected : null,
-          tool_calls: toolCalls,
+        const dispatch = await this.dispatchToolCallsPhase({
+          state,
+          assistantTurn,
+          collected,
+          toolCalls,
+          history,
+          signal,
         })
-        for (const call of toolCalls) {
-          const placeholder: Message = {
-            role: 'tool',
-            tool_call_id: call.id,
-            content: '',
-          }
-          toolMessagesByCallId.set(call.id, placeholder)
-          history.push(placeholder)
+        if (dispatch.cancelled) {
+          await emitCancelled('soft')
+          return
         }
-
-        const ctx: ToolContext = {
-          sessionId: state.sessionId,
-          agentProfile: this.cfg.profile.id,
-          services: this.cfg.services,
-          permissions: state.permissions,
-          expertSpend: state.expertSpend,
-          ...(signal ? { signal } : {}),
-        }
-        for (const call of toolCalls) {
-          // Soft-cancel check between tool calls — drop further work but
-          // tool results already obtained on this iteration stay persisted.
-          if (signal?.aborted) {
-            await emitCancelled('soft')
-            return
-          }
-          const row = this.cfg.store.appendToolCall({
-            turnId: assistantTurn.id,
-            toolCallId: call.id,
-            tool: call.function.name,
-            argsJson: call.function.arguments,
-          })
-
-          await this.cfg.eventBus.emit({
-            type: 'tool.called',
-            sessionId: state.sessionId,
-            turnId: assistantTurn.id,
-            toolCallId: call.id,
-            tool: call.function.name,
-            args: safeParseJson(call.function.arguments),
-            ts: Date.now(),
-          })
-
-          const exec = await state.registry.execute(
-            call.function.name,
-            call.function.arguments,
-            ctx,
-          )
-          const resultJson = stringifyResult(exec.result)
-          this.cfg.store.recordToolCallResult({
-            id: row.id,
-            resultJson,
-            ok: exec.result.ok,
-            durationMs: exec.durationMs,
-          })
-
-          const placeholder = toolMessagesByCallId.get(call.id)
-          if (placeholder) placeholder.content = resultJson
-
-          if (exec.result.ok) {
-            await this.cfg.eventBus.emit({
-              type: 'tool.completed',
-              sessionId: state.sessionId,
-              turnId: assistantTurn.id,
-              toolCallId: call.id,
-              tool: call.function.name,
-              ok: true,
-              durationMs: exec.durationMs,
-              ts: Date.now(),
-            })
-          } else {
-            await this.cfg.eventBus.emit({
-              type: 'tool.failed',
-              sessionId: state.sessionId,
-              turnId: assistantTurn.id,
-              toolCallId: call.id,
-              tool: call.function.name,
-              code: exec.result.error.code,
-              message: exec.result.error.message,
-              ts: Date.now(),
-            })
-          }
-        }
-
-        // If any tool transitioned the session to awaiting_input (the
-        // request_user_input core tool, today; any future tool that does the
-        // same would behave identically), end the turn. Don't schedule a
-        // next iteration — the agent has explicitly asked to wait for the
-        // user. The session resumes the next time handleUserMessage runs.
-        const sessionAfterTools = this.cfg.store.getSession(state.sessionId)
-        if (sessionAfterTools?.state === 'awaiting_input') {
+        if (dispatch.awaitingInput) {
           finalTurnId = assistantTurn.id
           return
         }
@@ -806,6 +721,135 @@ export class Orchestrator {
         state.currentCancellation = null
       }
     }
+  }
+
+  /**
+   * Tool-dispatch phase of a single tool-loop iteration. Mutates `history`
+   * in place (appends the assistant message + per-tool placeholder messages
+   * whose `content` is filled with the tool result). Emits `tool.called` and
+   * `tool.completed`/`tool.failed` per call. Persists tool-call rows and
+   * results via the conversation store.
+   *
+   * Returns one of three signals to the loop:
+   *   - cancelled: a soft cancel fired between tools → caller emits
+   *     `turn.cancelled` and returns.
+   *   - awaitingInput: a tool moved the session to `awaiting_input` (today
+   *     only `request_user_input`) → caller ends the turn.
+   *   - neither: dispatch completed normally, caller continues to next
+   *     iteration.
+   *
+   * Extracted from runToolLoop so the tool-dispatch concern can be unit-
+   * tested independently of streaming and per-iteration setup, and so the
+   * outer loop reads as a coordinator rather than a 280-line monolith.
+   */
+  private async dispatchToolCallsPhase(args: {
+    state: SessionState
+    assistantTurn: { id: string }
+    collected: string
+    toolCalls: ToolCallSpec[]
+    history: Message[]
+    signal: AbortSignal | undefined
+  }): Promise<{ cancelled: boolean; awaitingInput: boolean }> {
+    const { state, assistantTurn, collected, toolCalls, history, signal } = args
+
+    const toolMessagesByCallId = new Map<string, Message>()
+    history.push({
+      role: 'assistant',
+      content: collected.length > 0 ? collected : null,
+      tool_calls: toolCalls,
+    })
+    for (const call of toolCalls) {
+      const placeholder: Message = {
+        role: 'tool',
+        tool_call_id: call.id,
+        content: '',
+      }
+      toolMessagesByCallId.set(call.id, placeholder)
+      history.push(placeholder)
+    }
+
+    const ctx: ToolContext = {
+      sessionId: state.sessionId,
+      agentProfile: this.cfg.profile.id,
+      services: this.cfg.services,
+      permissions: state.permissions,
+      expertSpend: state.expertSpend,
+      ...(signal ? { signal } : {}),
+    }
+
+    for (const call of toolCalls) {
+      // Soft-cancel check between tool calls — drop further work but
+      // tool results already obtained on this iteration stay persisted.
+      if (signal?.aborted) {
+        return { cancelled: true, awaitingInput: false }
+      }
+      const row = this.cfg.store.appendToolCall({
+        turnId: assistantTurn.id,
+        toolCallId: call.id,
+        tool: call.function.name,
+        argsJson: call.function.arguments,
+      })
+
+      await this.cfg.eventBus.emit({
+        type: 'tool.called',
+        sessionId: state.sessionId,
+        turnId: assistantTurn.id,
+        toolCallId: call.id,
+        tool: call.function.name,
+        args: safeParseJson(call.function.arguments),
+        ts: Date.now(),
+      })
+
+      const exec = await state.registry.execute(
+        call.function.name,
+        call.function.arguments,
+        ctx,
+      )
+      const resultJson = stringifyResult(exec.result)
+      this.cfg.store.recordToolCallResult({
+        id: row.id,
+        resultJson,
+        ok: exec.result.ok,
+        durationMs: exec.durationMs,
+      })
+
+      const placeholder = toolMessagesByCallId.get(call.id)
+      if (placeholder) placeholder.content = resultJson
+
+      if (exec.result.ok) {
+        await this.cfg.eventBus.emit({
+          type: 'tool.completed',
+          sessionId: state.sessionId,
+          turnId: assistantTurn.id,
+          toolCallId: call.id,
+          tool: call.function.name,
+          ok: true,
+          durationMs: exec.durationMs,
+          ts: Date.now(),
+        })
+      } else {
+        await this.cfg.eventBus.emit({
+          type: 'tool.failed',
+          sessionId: state.sessionId,
+          turnId: assistantTurn.id,
+          toolCallId: call.id,
+          tool: call.function.name,
+          code: exec.result.error.code,
+          message: exec.result.error.message,
+          ts: Date.now(),
+        })
+      }
+    }
+
+    // If any tool transitioned the session to awaiting_input (the
+    // request_user_input core tool, today; any future tool that does the
+    // same would behave identically), signal the loop to end. The session
+    // resumes the next time handleUserMessage runs.
+    const sessionAfterTools = this.cfg.store.getSession(state.sessionId)
+    if (sessionAfterTools?.state === 'awaiting_input') {
+      return { cancelled: false, awaitingInput: true }
+    }
+    return { cancelled: false, awaitingInput: false }
   }
 }
 
