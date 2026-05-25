@@ -1,33 +1,34 @@
-import { readdir, readFile, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { stat } from 'node:fs/promises'
 import { z } from 'zod'
 import type { FastifyInstance } from 'fastify'
-import { SkillFrontmatterSchema } from '../../../src/skills/frontmatter.js'
-import { parseFrontmatter } from '../../../src/memory/wiki/frontmatter.js'
 import type { Orchestrator } from '../../../src/orchestrator/turn.js'
 import type { EventBus } from '../../../src/core/events.js'
+import {
+  discoverActions,
+  type ActionDiscovery,
+} from '../../../src/modules/action-discovery.js'
+import {
+  registerModuleActionDispatch,
+  renderTemplate as renderTemplateShared,
+} from '../../../src/modules/action-dispatch.js'
 import type { Email, EmailService } from './service.js'
 
-export interface EmailActionDescriptor {
-  name: string
-  label: string
-  description: string
-  icon: string | null
-  defaultProfile: string | null
-  requiresConfirmation: boolean
-  surface: 'action' | 'ask_agent' | 'both'
-  tabs: string[]
-}
+/**
+ * Email-specific bits of action discovery + dispatch. ADR-0007's canonical
+ * `GET /api/email/actions` is mounted globally via `registerModuleActionsDiscovery`.
+ * This file mounts the legacy `GET /api/v1/email/actions` (for clients that
+ * still hit the v1 path) and the POST dispatcher, which differs from the
+ * generic only by:
+ *   1. accepting `emailId` alongside `contextId` (back-compat),
+ *   2. resolving the entity via `EmailService.getEmail`,
+ *   3. emitting `email.action_started` / `email.action_completed`,
+ *   4. exposing a fuller `email` scope object for prompt templates.
+ */
 
-export interface EmailActionDiscovery {
-  actions: EmailActionDescriptor[]
-  errors: Array<{ skill: string; error: string }>
-}
-
-// ADR-0007 / P3P5: accept both the legacy `emailId` field and the canonical
-// `contextId` field. After the next minor we can drop `emailId` — until then
-// either is accepted with a `.refine` that ensures at least one is present.
-const DispatchBody = z
+// Legacy + canonical body shape — both `emailId` (deprecated) and `contextId`
+// are accepted. `.transform` projects either into the canonical shape the
+// shared dispatcher expects.
+const EmailDispatchBody = z
   .object({
     action: z.string().regex(/^[a-z0-9-]+$/),
     emailId: z.string().min(1).optional(),
@@ -37,247 +38,103 @@ const DispatchBody = z
   .refine((b) => b.emailId !== undefined || b.contextId !== undefined, {
     message: 'Either contextId or emailId is required',
   })
+  .transform((b) => ({
+    action: b.action,
+    contextId: (b.contextId ?? b.emailId) as string,
+    args: b.args ?? {},
+  }))
 
 export interface RegisterEmailActionsDeps {
   service: EmailService
   orchestrator: Orchestrator
-  /** Absolute path to `modules/email/skills/`. Used both for action
-   *  discovery (scan SKILL.md files) and for the dispatcher to re-read the
-   *  prompt_template on each call. */
+  /** Absolute path to `modules/email/skills/`. */
   skillsDir: string
-  /** Required to emit `email.action_started` / `email.action_completed`
-   *  alongside the spawn — without it the dispatcher still works but the
-   *  email row list won't show the per-row "▶ filing… → ✓ filed" chip. */
+  /** Required to emit `email.action_started` / `email.action_completed`. */
   eventBus?: EventBus
 }
 
 interface CachedDiscovery {
   mtimeMs: number
-  result: EmailActionDiscovery
+  result: ActionDiscovery
 }
 
-let discoveryCache: CachedDiscovery | null = null
+let legacyDiscoveryCache: CachedDiscovery | null = null
 
 /**
- * Walk `modules/email/skills/<name>/SKILL.md` files, parse each via the
- * shared frontmatter schema, and return action descriptors. Broken skills
- * surface in `errors[]` instead of crashing the panel — same pattern as
- * `GET /api/profiles`'s `ok: false` mode.
+ * Back-compat wrapper used by `tests/email-skills.test.ts` and any callers
+ * importing it directly. Identical to `discoverActions({ skillsDir })`.
  */
-export async function discoverEmailActions(
-  skillsDir: string,
-): Promise<EmailActionDiscovery> {
-  let entries
-  try {
-    entries = await readdir(skillsDir, { withFileTypes: true })
-  } catch (err) {
-    if ((err as { code?: string }).code === 'ENOENT') {
-      return { actions: [], errors: [] }
-    }
-    throw err
-  }
-  const actions: EmailActionDescriptor[] = []
-  const errors: Array<{ skill: string; error: string }> = []
-  for (const ent of entries) {
-    if (!ent.isDirectory()) continue
-    const skillMd = join(skillsDir, ent.name, 'SKILL.md')
-    let raw: string
-    try {
-      raw = await readFile(skillMd, 'utf-8')
-    } catch {
-      errors.push({ skill: ent.name, error: 'SKILL.md missing' })
-      continue
-    }
-    const parsed = parseFrontmatter(raw)
-    const validated = SkillFrontmatterSchema.safeParse(parsed.frontmatter)
-    if (!validated.success) {
-      errors.push({ skill: ent.name, error: validated.error.message })
-      continue
-    }
-    const fm = validated.data
-    actions.push({
-      name: fm.name,
-      label: fm.label ?? titleCase(fm.name),
-      description: fm.description,
-      icon: fm.icon ?? null,
-      defaultProfile: fm.default_profile ?? null,
-      requiresConfirmation: fm.requires_confirmation ?? false,
-      surface: fm.surface ?? 'ask_agent',
-      tabs: fm.tabs ?? [],
-    })
-  }
-  actions.sort((a, b) => a.name.localeCompare(b.name))
-  return { actions, errors }
+export async function discoverEmailActions(skillsDir: string): Promise<ActionDiscovery> {
+  return discoverActions({ skillsDir })
 }
 
-function titleCase(kebab: string): string {
-  return kebab
-    .split('-')
-    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
-    .join(' ')
+/** @deprecated Use `renderTemplate` from `src/modules/action-dispatch.ts`. */
+export const renderTemplate = renderTemplateShared
+
+/** Test hook — clears the legacy v1 discovery cache. */
+export function __resetDiscoveryCache(): void {
+  legacyDiscoveryCache = null
 }
 
 /**
- * Render the simple `{{path.to.value}}` placeholders we support. Not a full
- * Mustache implementation — no sections, no partials, no escaping logic.
- * Templates that need richer rendering should be handled inside the Skill
- * itself.
- */
-export function renderTemplate(
-  template: string,
-  scope: Record<string, unknown>,
-): string {
-  return template.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, path: string) => {
-    const parts = path.split('.')
-    let cur: unknown = scope
-    for (const p of parts) {
-      if (cur && typeof cur === 'object' && p in (cur as Record<string, unknown>)) {
-        cur = (cur as Record<string, unknown>)[p]
-      } else {
-        return ''
-      }
-    }
-    return cur == null ? '' : String(cur)
-  })
-}
-
-interface ActionLookupResult {
-  fm: ReturnType<typeof SkillFrontmatterSchema['parse']>
-  promptTemplate: string
-}
-
-async function loadActionFrontmatter(
-  skillsDir: string,
-  action: string,
-): Promise<ActionLookupResult | null> {
-  const path = join(skillsDir, action, 'SKILL.md')
-  let raw: string
-  try {
-    raw = await readFile(path, 'utf-8')
-  } catch {
-    return null
-  }
-  const parsed = parseFrontmatter(raw)
-  const validated = SkillFrontmatterSchema.safeParse(parsed.frontmatter)
-  if (!validated.success) return null
-  return {
-    fm: validated.data,
-    promptTemplate: validated.data.prompt_template ?? parsed.body.trim(),
-  }
-}
-
-/**
- * Mount `GET /api/v1/email/actions` (discovery, cached by skillsDir mtime)
- * and `POST /api/v1/email/actions` (dispatch via `Orchestrator.spawnSession`).
- *
- * The dispatcher loads the email entity, renders the Skill's
- * `prompt_template` against `{ email, args, contextId }`, and spawns a
- * session under the Skill's `default_profile` (falling back to the boot
- * profile).
+ * Mount the legacy `GET /api/v1/email/actions` discovery path and both
+ * dispatcher URLs. The canonical `GET /api/email/actions` is registered
+ * globally per ADR-0007.
  */
 export async function registerEmailActions(
   app: FastifyInstance,
   deps: RegisterEmailActionsDeps,
 ): Promise<void> {
-  const { service, orchestrator, skillsDir, eventBus } = deps
-
-  // Legacy discovery path only — ADR-0007's canonical
-  // `GET /api/<module>/actions` is registered globally via
-  // `registerModuleActionsDiscovery`. POST is mounted at both prefixes so
-  // both shapes of dispatch (legacy `emailId`, ADR-0007 `contextId`) work.
   app.get('/api/v1/email/actions', async () => {
     let mtimeMs: number
     try {
-      const s = await stat(skillsDir)
+      const s = await stat(deps.skillsDir)
       mtimeMs = s.mtimeMs
     } catch {
       return { actions: [], errors: [] }
     }
-    if (discoveryCache && discoveryCache.mtimeMs === mtimeMs) {
-      return discoveryCache.result
+    if (legacyDiscoveryCache && legacyDiscoveryCache.mtimeMs === mtimeMs) {
+      return legacyDiscoveryCache.result
     }
-    const result = await discoverEmailActions(skillsDir)
-    discoveryCache = { mtimeMs, result }
+    const result = await discoverActions({ skillsDir: deps.skillsDir })
+    legacyDiscoveryCache = { mtimeMs, result }
     return result
   })
 
-  for (const url of ['/api/v1/email/actions', '/api/email/actions']) {
-    app.post(url, async (req, reply) => {
-      const body = DispatchBody.safeParse(req.body ?? {})
-      if (!body.success) {
-        reply.code(400)
-        return { error: 'INVALID_BODY', details: body.error.flatten() }
-      }
-      const emailId = body.data.contextId ?? body.data.emailId
-      if (!emailId) {
-        reply.code(400)
-        return { error: 'INVALID_BODY', message: 'Missing contextId / emailId' }
-      }
-      const email = service.getEmail(emailId)
-      if (!email) {
-        reply.code(404)
-        return { error: 'EMAIL_NOT_FOUND' }
-      }
-      const skill = await loadActionFrontmatter(skillsDir, body.data.action)
-      if (!skill) {
-        reply.code(404)
-        return { error: 'UNKNOWN_ACTION', action: body.data.action }
-      }
-      const scope = {
-        email: serializeEmail(email),
-        contextId: emailId,
-        args: body.data.args ?? {},
-      }
-      const seedMessage = renderTemplate(skill.promptTemplate, scope).trim()
-      if (seedMessage.length === 0) {
-        reply.code(422)
-        return {
-          error: 'EMPTY_PROMPT_TEMPLATE',
-          message: `Skill "${body.data.action}" rendered to an empty prompt.`,
-        }
-      }
-      const spawnInput: Parameters<typeof orchestrator.spawnSession>[0] = {
-        spawnedBy: `modules/email/${body.data.action}`,
-        initialMessage: seedMessage,
-        title: skill.fm.label ?? body.data.action,
-        allowedSkills: [`email/${body.data.action}`],
-      }
-      if (skill.fm.default_profile) {
-        spawnInput.agentProfile = skill.fm.default_profile
-      }
-      const result = await orchestrator.spawnSession(spawnInput)
-      if (eventBus) {
-        void eventBus.emit({
-          type: 'email.action_started',
-          emailId,
-          action: body.data.action,
-          sessionId: result.session.id,
-          ts: Date.now(),
-        })
-      }
-      void (async () => {
-        let ok = true
-        try {
-          for await (const _ of result.handle.stream) {
-            // discard
-          }
-        } catch {
-          ok = false
-        }
-        if (eventBus) {
-          await eventBus.emit({
+  await registerModuleActionDispatch<Email, z.output<typeof EmailDispatchBody>>(app, {
+    module: 'email',
+    urls: ['/api/v1/email/actions', '/api/email/actions'],
+    skillsDir: deps.skillsDir,
+    orchestrator: deps.orchestrator,
+    body: EmailDispatchBody,
+    lookup: (contextId) => deps.service.getEmail(contextId) ?? null,
+    notFoundError: 'EMAIL_NOT_FOUND',
+    scopeBuilder: (email, contextId, args) => ({
+      email: serializeEmail(email),
+      contextId,
+      args,
+    }),
+    events: deps.eventBus
+      ? {
+          bus: deps.eventBus,
+          onStarted: ({ contextId, action, sessionId }) => ({
+            type: 'email.action_started',
+            emailId: contextId,
+            action,
+            sessionId,
+            ts: Date.now(),
+          }),
+          onCompleted: ({ contextId, action, sessionId, ok }) => ({
             type: 'email.action_completed',
-            emailId,
-            action: body.data.action,
-            sessionId: result.session.id,
+            emailId: contextId,
+            action,
+            sessionId,
             ok,
             ts: Date.now(),
-          })
+          }),
         }
-      })()
-      return { sessionId: result.session.id, action: body.data.action }
-    })
-  }
+      : undefined,
+  })
 }
 
 /** Light JSON-safe view of the Email row for template rendering. We expose
@@ -296,9 +153,4 @@ function serializeEmail(e: Email): Record<string, unknown> {
     hasAttachments: e.hasAttachments,
     filedProjectId: e.filedProjectId,
   }
-}
-
-/** Test hook — discoveryCache is module-scoped. */
-export function __resetDiscoveryCache(): void {
-  discoveryCache = null
 }
