@@ -10,11 +10,11 @@ export const parameters = z.object({
 })
 
 export const handler: ToolHandler<typeof parameters> = async (_args, ctx) => {
-  const handle = ctx.services.modules.get('projects')
-  if (!handle?.service) {
+  const service = ctx.services.modules.getActiveService<ProjectsService>('projects')
+  if (!service) {
     return fail('RESOURCE_UNAVAILABLE', 'projects module is not active', false)
   }
-  const projects = (handle.service as ProjectsService).listProjects({ limit: 500 })
+  const projects = service.listProjects({ limit: 500 })
   const yy = String(new Date().getUTCFullYear() % 100).padStart(2, '0')
   const prefix = yy
   // Find the highest XXX suffix among numbers that match `<yy>###`.

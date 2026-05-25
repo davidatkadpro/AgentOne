@@ -21,11 +21,11 @@ export const parameters = z.object({
 })
 
 export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
-  const emailHandle = ctx.services.modules.get('email')
-  if (!emailHandle?.service) {
+  const emailService = ctx.services.modules.getActiveService<EmailService>('email')
+  if (!emailService) {
     return fail('RESOURCE_UNAVAILABLE', 'email module is not active', false)
   }
-  const email = (emailHandle.service as EmailService).getEmail(args.email_id)
+  const email = emailService.getEmail(args.email_id)
   if (!email) {
     return fail('TOOL_VALIDATION', `Email not found: ${args.email_id}`, false)
   }

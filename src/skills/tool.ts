@@ -64,8 +64,11 @@ export interface ToolServices {
    *  planned extension. The surface stays wide on ToolServices so adding
    *  Module writers later doesn't require reshaping the dep bag. */
   notifications: Notifications
-  /** Per-module service handles. Skills reach typed module services via
-   *  e.g. `(ctx.services.modules.get('projects')?.service as ProjectsService)`. */
+  /** Per-module service handles. Skills should reach typed module services
+   *  via `ctx.services.modules.getActiveService<ProjectsService>('projects')`
+   *  — the helper returns undefined when the module is missing or degraded,
+   *  replacing the (get → status check → unsafe cast) trio handlers used to
+   *  open-code. `.get()` remains available for diagnostic introspection. */
   modules: ModuleRegistry
 }
 

@@ -23,11 +23,10 @@ export const parameters = z.object({
 })
 
 export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
-  const handle = ctx.services.modules.get('proposals')
-  if (!handle?.service) {
+  const service = ctx.services.modules.getActiveService<ProposalsService>('proposals')
+  if (!service) {
     return fail('RESOURCE_UNAVAILABLE', 'proposals module is not active', false)
   }
-  const service = handle.service as ProposalsService
   try {
     const input: Parameters<typeof service.createEstimate>[0] = {
       projectId: args.project_id,

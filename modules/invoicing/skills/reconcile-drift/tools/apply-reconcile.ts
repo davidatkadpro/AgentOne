@@ -21,11 +21,10 @@ export const parameters = z.object({
  * the UI button to drive those strategies.
  */
 export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
-  const handle = ctx.services.modules.get('invoicing')
-  if (!handle?.service) {
+  const service = ctx.services.modules.getActiveService<InvoicingService>('invoicing')
+  if (!service) {
     return fail('RESOURCE_UNAVAILABLE', 'invoicing module is not active', false)
   }
-  const service = handle.service as InvoicingService
   const invoice = service.getInvoice(args.invoice_id)
   if (!invoice) {
     return fail('TOOL_VALIDATION', `Invoice ${args.invoice_id} not found`, true)

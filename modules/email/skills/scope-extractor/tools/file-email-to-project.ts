@@ -10,11 +10,10 @@ export const parameters = z.object({
 })
 
 export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
-  const handle = ctx.services.modules.get('email')
-  if (!handle?.service) {
+  const service = ctx.services.modules.getActiveService<EmailService>('email')
+  if (!service) {
     return fail('RESOURCE_UNAVAILABLE', 'email module is not active', false)
   }
-  const service = handle.service as EmailService
   try {
     const result = await service.fileToProject(
       {

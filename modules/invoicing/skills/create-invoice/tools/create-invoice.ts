@@ -20,11 +20,10 @@ export const parameters = z.object({
 })
 
 export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
-  const handle = ctx.services.modules.get('invoicing')
-  if (!handle?.service) {
+  const service = ctx.services.modules.getActiveService<InvoicingService>('invoicing')
+  if (!service) {
     return fail('RESOURCE_UNAVAILABLE', 'invoicing module is not active', false)
   }
-  const service = handle.service as InvoicingService
   try {
     const input: Parameters<typeof service.createInvoice>[0] = {
       projectId: args.project_id,

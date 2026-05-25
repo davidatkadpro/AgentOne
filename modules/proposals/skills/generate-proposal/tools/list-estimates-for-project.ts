@@ -8,13 +8,11 @@ export const parameters = z.object({
 })
 
 export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
-  const handle = ctx.services.modules.get('proposals')
-  if (!handle?.service) {
+  const service = ctx.services.modules.getActiveService<ProposalsService>('proposals')
+  if (!service) {
     return fail('RESOURCE_UNAVAILABLE', 'proposals module is not active', false)
   }
-  const estimates = (handle.service as ProposalsService).listEstimatesForProject(
-    args.project_id,
-  )
+  const estimates = service.listEstimatesForProject(args.project_id)
   return ok({
     estimates: estimates.map((e) => ({
       id: e.id,

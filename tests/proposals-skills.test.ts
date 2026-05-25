@@ -125,6 +125,8 @@ function newHarness(): Harness {
                 service: proposals,
               }
             : undefined,
+        getActiveService: <T>(name: string): T | undefined =>
+          name === 'proposals' ? (proposals as unknown as T) : undefined,
         list: () => [],
       },
     } as never,

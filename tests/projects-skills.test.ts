@@ -50,6 +50,8 @@ function newHarness(): Harness {
   }
   const modules: ModuleRegistry = {
     get: (n) => (n === 'projects' ? handle : undefined),
+    getActiveService: <T>(n: string): T | undefined =>
+      n === 'projects' ? (service as unknown as T) : undefined,
     list: () => [handle],
   }
   return { db, service, modules }

@@ -810,11 +810,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     })
     // POST /api/proposals/actions — dispatch a Skill against a project
     // context. Mirrors modules/email/src/actions.ts.
-    const projectsHandleForProposals = deps.modules.get('projects')
-    if (projectsHandleForProposals?.status === 'active' && projectsHandleForProposals.service) {
+    const projectsForProposals = deps.modules.getActiveService<ProjectsService>('projects')
+    if (projectsForProposals) {
       await registerProposalsActions(app, {
         orchestrator: deps.orchestrator,
-        projects: projectsHandleForProposals.service as ProjectsService,
+        projects: projectsForProposals,
         skillsDir: join(proposalsHandle.rootPath, 'skills'),
         eventBus: deps.bus,
       })
@@ -843,12 +843,15 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       }
     }
     await registerInvoicingRoutes(app, invoicingDeps)
-    await registerInvoicingActions(app, {
-      orchestrator: deps.orchestrator,
-      invoicing: invoicingService as InvoicingService,
-      skillsDir: join(invoicingHandle.rootPath, 'skills'),
-      eventBus: deps.bus,
-    })
+    const invoicingForActions = deps.modules.getActiveService<InvoicingService>('invoicing')
+    if (invoicingForActions) {
+      await registerInvoicingActions(app, {
+        orchestrator: deps.orchestrator,
+        invoicing: invoicingForActions,
+        skillsDir: join(invoicingHandle.rootPath, 'skills'),
+        eventBus: deps.bus,
+      })
+    }
   }
 
   const emailHandle = deps.modules.get('email')

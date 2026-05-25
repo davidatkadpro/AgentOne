@@ -92,7 +92,11 @@ export function fakeServices(overrides: Partial<ToolServices> = {}): ToolService
     modelProfiles: new Map<string, ModelProfile>(),
     eventBus: new EventBus(),
     notifications: {} as unknown as Notifications,
-    modules: { get: () => undefined, list: () => [] } as ModuleRegistry,
+    modules: {
+      get: () => undefined,
+      getActiveService: () => undefined,
+      list: () => [],
+    } as ModuleRegistry,
     ...overrides,
   }
 }

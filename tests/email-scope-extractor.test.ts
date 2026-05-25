@@ -90,6 +90,11 @@ function fakeCtx(h: Harness): ToolContext {
           }
           return undefined
         },
+        getActiveService: <T>(name: string): T | undefined => {
+          if (name === 'email') return h.email as unknown as T
+          if (name === 'projects') return h.projects as unknown as T
+          return undefined
+        },
         list: () => [],
       },
     } as never,

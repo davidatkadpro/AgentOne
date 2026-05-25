@@ -14,11 +14,11 @@ export const parameters = z.object({
 })
 
 export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
-  const handle = ctx.services.modules.get('projects')
-  if (!handle?.service) {
+  const service = ctx.services.modules.getActiveService<ProjectsService>('projects')
+  if (!service) {
     return fail('RESOURCE_UNAVAILABLE', 'projects module is not active', false)
   }
-  const projects = (handle.service as ProjectsService).listProjects({
+  const projects = service.listProjects({
     status: ['pending', 'active', 'blocked'],
     limit: args.limit ?? 20,
   })

@@ -30,6 +30,12 @@ export interface ModuleHandle {
 
 export interface ModuleRegistry {
   get(name: string): ModuleHandle | undefined
+  /** Typed access to a module's service. Returns undefined when the module
+   *  is missing, degraded, or has no service registered — folds the
+   *  (get → status check → unsafe cast) trio that every Skill handler used
+   *  to open-code. Callers receive a typed value or undefined; the caller's
+   *  `RESOURCE_UNAVAILABLE` branch handles the undefined case. */
+  getActiveService<T>(name: string): T | undefined
   list(): ModuleHandle[]
 }
 
@@ -95,6 +101,13 @@ export async function bootModules(opts: BootModulesOptions): Promise<ModuleRegis
   // came before it in topo order.
   const registryView: ModuleRegistry = {
     get: (name) => handles.get(name),
+    getActiveService<T>(name: string): T | undefined {
+      const handle = handles.get(name)
+      if (!handle || handle.status !== 'active' || handle.service === undefined) {
+        return undefined
+      }
+      return handle.service as T
+    },
     list: () => Array.from(handles.values()),
   }
 

@@ -25,15 +25,14 @@ export const parameters = z.object({
 })
 
 export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
-  const handle = ctx.services.modules.get('projects')
-  if (!handle?.service) {
+  const service = ctx.services.modules.getActiveService<ProjectsService>('projects')
+  if (!service) {
     return fail(
       'RESOURCE_UNAVAILABLE',
       'projects module is not active in this runtime',
       false,
     )
   }
-  const service = handle.service as ProjectsService
   try {
     const input: Parameters<typeof service.createProject>[0] = {
       number: args.number,
