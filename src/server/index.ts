@@ -1195,11 +1195,7 @@ export async function bootstrap(): Promise<void> {
           storage: ctx.storage,
         }),
       email: (ctx) => {
-        const projectsHandle = ctx.modules.get('projects')
-        const projects =
-          projectsHandle?.status === 'active' && projectsHandle.service
-            ? (projectsHandle.service as ProjectsService)
-            : undefined
+        const projects = ctx.modules.getActiveService<ProjectsService>('projects')
         const deps: Parameters<typeof createEmailService>[0] = {
           db: ctx.db,
           eventBus: ctx.eventBus,
@@ -1210,11 +1206,7 @@ export async function bootstrap(): Promise<void> {
         return createEmailService(deps)
       },
       proposals: (ctx) => {
-        const projectsHandle = ctx.modules.get('projects')
-        const projects =
-          projectsHandle?.status === 'active' && projectsHandle.service
-            ? (projectsHandle.service as ProjectsService)
-            : undefined
+        const projects = ctx.modules.getActiveService<ProjectsService>('projects')
         const deps: Parameters<typeof createProposalsService>[0] = {
           db: ctx.db,
           eventBus: ctx.eventBus,
@@ -1225,16 +1217,8 @@ export async function bootstrap(): Promise<void> {
         return createProposalsService(deps)
       },
       invoicing: (ctx) => {
-        const projectsHandle = ctx.modules.get('projects')
-        const projects =
-          projectsHandle?.status === 'active' && projectsHandle.service
-            ? (projectsHandle.service as ProjectsService)
-            : undefined
-        const proposalsHandle = ctx.modules.get('proposals')
-        const proposals =
-          proposalsHandle?.status === 'active' && proposalsHandle.service
-            ? (proposalsHandle.service as ProposalsService)
-            : undefined
+        const projects = ctx.modules.getActiveService<ProjectsService>('projects')
+        const proposals = ctx.modules.getActiveService<ProposalsService>('proposals')
         const deps: Parameters<typeof createInvoicingService>[0] = {
           db: ctx.db,
           eventBus: ctx.eventBus,

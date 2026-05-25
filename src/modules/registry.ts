@@ -33,16 +33,38 @@ export interface ModuleRegistry {
   list(): ModuleHandle[]
 }
 
+/**
+ * Registry view passed to a Module's factory. Restricted to the calling
+ * module's declared `depends_on` so that asking for an undeclared module
+ * throws at boot (when the factory runs) rather than returning `undefined`
+ * and surfacing later as an unsafe-cast failure inside a Skill handler.
+ *
+ * The unscoped `ModuleRegistry` is what Skill handlers receive at runtime —
+ * Skills have legitimate cross-module needs (e.g. `email/file-to-project`
+ * reaches into both `email` and `projects`) and Skills don't declare
+ * `depends_on` of their own.
+ */
+export interface ScopedModuleRegistry {
+  /** Resolve a declared dependency to its handle (or undefined if degraded).
+   *  Throws if `name` is not in the calling module's depends_on. */
+  get(name: string): ModuleHandle | undefined
+  /** Convenience: typed access to a dependency's service. Returns undefined
+   *  when the target module is degraded or has no service registered.
+   *  Replaces the (get → status check → unsafe cast) trio every factory
+   *  open-codes today. */
+  getActiveService<T>(name: string): T | undefined
+  /** All modules booted so far (unrestricted — used for diagnostics).
+   *  Prefer `get` for dependency wiring. */
+  list(): ModuleHandle[]
+}
+
 export interface ModuleServiceContext {
   db: Db
   eventBus: EventBus
   audit: AuditLog
   storage: StorageAdapter
-  /** Snapshot of modules booted so far — keyed by name. A factory may read
-   *  from this to wire cross-module references (e.g. `email` reading the
-   *  `projects` service). Modules later in topo order see modules earlier in
-   *  the order; the registry is built up incrementally. */
-  modules: ModuleRegistry
+  /** Scoped to the factory's declared `depends_on`. See `ScopedModuleRegistry`. */
+  modules: ScopedModuleRegistry
 }
 
 export type ModuleServiceFactory = (ctx: ModuleServiceContext) => unknown
@@ -131,7 +153,7 @@ export async function bootModules(opts: BootModulesOptions): Promise<ModuleRegis
             eventBus: opts.eventBus,
             audit: opts.audit,
             storage: opts.storage,
-            modules: registryView,
+            modules: makeScopedView(registryView, d.manifest.name, d.manifest.dependsOn),
           })
         } catch (err) {
           handle.status = 'degraded'
@@ -144,6 +166,45 @@ export async function bootModules(opts: BootModulesOptions): Promise<ModuleRegis
   }
 
   return registryView
+}
+
+/**
+ * Wrap the global registry in a view that enforces `depends_on`. The check
+ * runs at `.get()` / `.getActiveService()` call time; the factory still
+ * runs synchronously, so the failure surfaces at the same boot step that
+ * registered the module — easy to attribute. The thrown error names the
+ * calling module so the operator knows which MODULE.md to update.
+ */
+function makeScopedView(
+  global: ModuleRegistry,
+  callerModule: string,
+  callerDeps: string[],
+): ScopedModuleRegistry {
+  const allowed = new Set(callerDeps)
+  const ensureAllowed = (name: string): void => {
+    if (allowed.has(name)) return
+    throw new Error(
+      `Module "${callerModule}" tried to access undeclared dependency "${name}". ` +
+        `Add "${name}" to depends_on in modules/${callerModule}/MODULE.md.`,
+    )
+  }
+  return {
+    get(name) {
+      ensureAllowed(name)
+      return global.get(name)
+    },
+    getActiveService<T>(name: string): T | undefined {
+      ensureAllowed(name)
+      const handle = global.get(name)
+      if (!handle || handle.status !== 'active' || handle.service === undefined) {
+        return undefined
+      }
+      return handle.service as T
+    },
+    list() {
+      return global.list()
+    },
+  }
 }
 
 function validateManifest(manifest: ModuleManifest): string | null {

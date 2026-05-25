@@ -359,3 +359,115 @@ describe('bootModules — service factories', () => {
     expect(handle?.service).toBeUndefined()
   })
 })
+
+describe('bootModules — scoped module access', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = newHarness()
+  })
+  afterEach(() => {
+    disposeHarness(h)
+  })
+
+  const stubStorage = {} as unknown as StorageAdapter
+
+  it('a factory accessing a module not in its depends_on degrades with a clear error', async () => {
+    // `consumer` declares no deps but its factory tries to read `producer`.
+    writeModule(h.rootDir, 'producer', {
+      migrations: [
+        { filename: '001_init.sql', sql: 'CREATE TABLE producer_t (id TEXT PRIMARY KEY);' },
+      ],
+    })
+    writeModule(h.rootDir, 'consumer', {
+      migrations: [
+        { filename: '001_init.sql', sql: 'CREATE TABLE consumer_t (id TEXT PRIMARY KEY);' },
+      ],
+      // No depends_on — but the factory below will try to read 'producer'.
+    })
+
+    const registry = await bootModules({
+      db: h.db,
+      rootDir: h.rootDir,
+      factories: {
+        producer: () => ({ id: 'producer-svc' }),
+        consumer: (ctx) => {
+          // Should throw — 'producer' is not in consumer's depends_on.
+          ctx.modules.get('producer')
+          return { id: 'consumer-svc' }
+        },
+      },
+      eventBus: new EventBus(),
+      audit: createAuditLog(h.db),
+      storage: stubStorage,
+    })
+
+    expect(registry.get('producer')?.status).toBe('active')
+    const consumer = registry.get('consumer')
+    expect(consumer?.status).toBe('degraded')
+    expect(consumer?.degradedReason).toMatch(/undeclared dependency "producer"/)
+    expect(consumer?.degradedReason).toMatch(/consumer\/MODULE\.md/)
+  })
+
+  it('a factory accessing a declared dependency reads it normally', async () => {
+    writeModule(h.rootDir, 'producer', {
+      migrations: [
+        { filename: '001_init.sql', sql: 'CREATE TABLE producer_t (id TEXT PRIMARY KEY);' },
+      ],
+    })
+    writeModule(h.rootDir, 'consumer', {
+      dependsOn: ['producer'],
+      migrations: [
+        { filename: '001_init.sql', sql: 'CREATE TABLE consumer_t (id TEXT PRIMARY KEY);' },
+      ],
+    })
+
+    const registry = await bootModules({
+      db: h.db,
+      rootDir: h.rootDir,
+      factories: {
+        producer: () => ({ id: 'producer-svc' }),
+        consumer: (ctx) => {
+          // getActiveService<T>() replaces the (get → status check → cast) trio.
+          const producer = ctx.modules.getActiveService<{ id: string }>('producer')
+          return { id: 'consumer-svc', sawProducer: producer?.id ?? null }
+        },
+      },
+      eventBus: new EventBus(),
+      audit: createAuditLog(h.db),
+      storage: stubStorage,
+    })
+
+    const consumer = registry.get('consumer')
+    expect(consumer?.status).toBe('active')
+    expect((consumer?.service as { sawProducer: string }).sawProducer).toBe('producer-svc')
+  })
+
+  it('getActiveService returns undefined when the dependency is degraded', async () => {
+    writeModule(h.rootDir, 'producer', {
+      // Missing description triggers manifest validation → degraded; no service.
+      extraFrontmatter: { description: '' },
+    })
+    writeModule(h.rootDir, 'consumer', {
+      dependsOn: ['producer'],
+    })
+
+    const registry = await bootModules({
+      db: h.db,
+      rootDir: h.rootDir,
+      factories: {
+        consumer: (ctx) => {
+          const producer = ctx.modules.getActiveService<{ id: string }>('producer')
+          return { id: 'consumer-svc', sawProducer: producer ?? null }
+        },
+      },
+      eventBus: new EventBus(),
+      audit: createAuditLog(h.db),
+      storage: stubStorage,
+    })
+
+    expect(registry.get('producer')?.status).toBe('degraded')
+    const consumer = registry.get('consumer')
+    expect(consumer?.status).toBe('active')
+    expect((consumer?.service as { sawProducer: unknown }).sawProducer).toBeNull()
+  })
+})
