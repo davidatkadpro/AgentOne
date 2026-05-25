@@ -57,8 +57,12 @@ export interface ToolServices {
    *  model and its provider here. */
   modelProfiles: Map<string, ModelProfile>
   eventBus: EventBus
-  /** User-facing notification tray. Written by request_user_input,
-   *  hooks, and modules; read by the UI via REST/WebSocket. */
+  /** User-facing notification tray. Per ADR-0005 the writer set is:
+   *  the orchestrator (on `request_user_input`), Modules (on domain events
+   *  worth surfacing), and Hooks (settings-driven). Today only the
+   *  orchestrator path is realised — Module-driven notifications are a
+   *  planned extension. The surface stays wide on ToolServices so adding
+   *  Module writers later doesn't require reshaping the dep bag. */
   notifications: Notifications
   /** Per-module service handles. Skills reach typed module services via
    *  e.g. `(ctx.services.modules.get('projects')?.service as ProjectsService)`. */
