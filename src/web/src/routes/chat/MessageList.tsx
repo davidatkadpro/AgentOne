@@ -79,14 +79,17 @@ export function MessageList({ sessionId, embedded = false }: MessageListProps) {
             }}
           />
         ) : null}
-        {stream.turns.map((turn) => (
-          <MessageItem
-            key={turn.id}
-            turn={turn}
-            toolChips={stream.toolCalls[turn.id] ?? []}
-            recallSources={stream.recallByTurn[turn.id] ?? []}
-          />
-        ))}
+        {stream.turns.map((turn) => {
+          const meta = stream.turnMetadata[turn.id]
+          return (
+            <MessageItem
+              key={turn.id}
+              turn={turn}
+              toolChips={meta?.toolChips ?? []}
+              recallSources={meta?.recallSources ?? []}
+            />
+          )
+        })}
         {activeTurn ? (
           <MessageItem turn={activeTurn} toolChips={activeChips} isActive />
         ) : null}

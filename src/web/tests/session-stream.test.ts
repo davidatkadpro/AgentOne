@@ -127,6 +127,76 @@ describe('session-stream store', () => {
     expect(useSessionStreamStore.getState().byId[SID]?.turns).toHaveLength(0)
   })
 
+  it('attaches recall.injected sources to the next finalised assistant turn', () => {
+    const store = useSessionStreamStore.getState()
+    store.applyEvent({
+      type: 'recall.injected',
+      sessionId: SID,
+      sources: [
+        { kind: 'wiki', ref: 'wiki/projects/24001/notes.md', title: 'Riverside notes' },
+        { kind: 'history', ref: 'session/abc/turn/3', title: 'Earlier on Riverside' },
+      ],
+      ts: 1,
+    } as never)
+    // While the turn is still streaming, recall is buffered (not yet visible
+    // on a finalised turn).
+    expect(useSessionStreamStore.getState().byId[SID]?.turnMetadata).toEqual({})
+    store.applyEvent({ type: 'message.assistant.started', sessionId: SID, turnId: 't1', ts: 2 } as never)
+    store.applyEvent({ type: 'message.assistant.delta', sessionId: SID, turnId: 't1', delta: 'ok', ts: 3 } as never)
+    store.applyEvent({
+      type: 'message.assistant.completed',
+      sessionId: SID,
+      turnId: 't1',
+      inputTokens: 1,
+      outputTokens: 1,
+      ts: 4,
+    } as never)
+    const after = useSessionStreamStore.getState().byId[SID]
+    expect(after?.turnMetadata['t1']?.recallSources).toHaveLength(2)
+    expect(after?.pendingRecall).toEqual([])
+  })
+
+  it('finalises tool chips alongside recall sources under one metadata entry', () => {
+    const store = useSessionStreamStore.getState()
+    store.applyEvent({ type: 'message.assistant.started', sessionId: SID, turnId: 't1', ts: 1 } as never)
+    store.applyEvent({
+      type: 'tool.called',
+      sessionId: SID,
+      turnId: 't1',
+      toolCallId: 'tc1',
+      tool: 'fs.read',
+      args: {},
+      ts: 2,
+    } as never)
+    store.applyEvent({
+      type: 'tool.completed',
+      sessionId: SID,
+      turnId: 't1',
+      toolCallId: 'tc1',
+      tool: 'fs.read',
+      ok: true,
+      durationMs: 5,
+      ts: 3,
+    } as never)
+    store.applyEvent({
+      type: 'recall.injected',
+      sessionId: SID,
+      sources: [{ kind: 'wiki', ref: 'a', title: 'A' }],
+      ts: 4,
+    } as never)
+    store.applyEvent({
+      type: 'message.assistant.completed',
+      sessionId: SID,
+      turnId: 't1',
+      inputTokens: 1,
+      outputTokens: 1,
+      ts: 5,
+    } as never)
+    const meta = useSessionStreamStore.getState().byId[SID]?.turnMetadata['t1']
+    expect(meta?.toolChips?.[0]?.toolCallId).toBe('tc1')
+    expect(meta?.recallSources).toHaveLength(1)
+  })
+
   it('replaces an optimistic turn id when message.user.received fires', () => {
     const store = useSessionStreamStore.getState()
     store.optimisticAppendUser(SID, 'hi', 'optimistic-a')
