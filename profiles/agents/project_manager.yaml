@@ -1,0 +1,26 @@
+id: project_manager
+description: Project-oriented assistant. Tracks work, deadlines, decisions, and blockers across sessions via the wiki. Concise, action-first, and asks for owners + due dates when capturing commitments.
+extends: _base
+system_prompt_file: project_manager.md
+default_skills:
+  - system/filesystem
+  - system/shell
+  - system/web
+  - system/memory
+  - system/documents
+permissions:
+  skills:
+    allow:
+      - system/*
+passive_recall:
+  enabled: true
+  wiki_hits: 3
+  history_hits: 3
+  max_chars_per_hit: 320
+auto_distill:
+  enabled: true
+  idle_minutes: 45
+  drafts_max_age_days: 30
+auto_title:
+  enabled: true
+  trigger_after: 2
