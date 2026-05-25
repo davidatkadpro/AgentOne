@@ -34,7 +34,11 @@ export const handler: ToolHandler<typeof parameters> = async (args, ctx) => {
     return fail('TOOL_VALIDATION', `Invoice is not in drift (status: ${invoice.syncStatus})`, true)
   }
   if (args.strategy === 'accept_qbo') {
-    const out = service.clearDrift(args.invoice_id)
+    const out = service.recordQboReconciled(
+      args.invoice_id,
+      { strategy: 'accept_qbo' },
+      { actor: { type: 'agent', sessionId: ctx.sessionId } },
+    )
     return ok({
       invoice_id: out.id,
       resolution: 'accept_qbo',

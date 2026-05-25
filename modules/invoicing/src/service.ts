@@ -197,6 +197,50 @@ export interface InvoicingService {
   ): Invoice
   markSyncFailed(id: string, err: { code: string; message: string }): Invoice
   clearDrift(id: string): Invoice
+  /**
+   * High-level: persist a completed QBO push (mark pushed + record connection
+   * push timestamp + audit `invoice.push`). One call replaces the three-step
+   * (markPushed, recordQboPushTs, audit.record) trio that callers used to
+   * assemble themselves. Used by `/push` and by the `keep_local`/`merge`
+   * branches of `/reconcile`.
+   */
+  recordQboPushed(
+    invoiceId: string,
+    result: { qboId: string; qboDocNumber: string | null; ts?: number },
+    ctx: ActorContext,
+  ): Invoice
+  /**
+   * High-level: persist a completed QBO pull (mark drift or in-sync + record
+   * connection pull timestamp + audit `invoice.pull`). Used by `/pull` and
+   * by the QBO poller's scheduled pulls — the poller previously called the
+   * primitives without auditing, leaving scheduled syncs invisible to the
+   * Activity tab; this method closes that gap.
+   */
+  recordQboPulled(
+    invoiceId: string,
+    result: {
+      driftFields: string[]
+      snapshot: Record<string, unknown> | null
+      ts?: number
+    },
+    ctx: ActorContext,
+  ): Invoice
+  /**
+   * High-level: persist a reconcile decision (clears drift or commits a push)
+   * + audit `invoice.reconcile`. The `accept_qbo` strategy just clears local
+   * drift; `keep_local`/`merge` require the caller to have already executed
+   * the QBO push and supply the resulting ids.
+   */
+  recordQboReconciled(
+    invoiceId: string,
+    decision:
+      | { strategy: 'accept_qbo' }
+      | {
+          strategy: 'keep_local' | 'merge'
+          pushResult: { qboId: string; qboDocNumber: string | null }
+        },
+    ctx: ActorContext,
+  ): Invoice
   // Connection ops
   getQboConnection(): QboConnectionRow | null
   upsertQboConnection(
@@ -1084,6 +1128,68 @@ export function createInvoicingService(deps: InvoicingServiceDeps): InvoicingSer
       const out = service.getInvoice(id)
       if (!out) throw new Error(`Invoice missing after clearDrift: ${id}`)
       return out
+    },
+
+    recordQboPushed(invoiceId, result, ctx) {
+      const ts = result.ts ?? Date.now()
+      const updated = service.markPushed(invoiceId, {
+        qboId: result.qboId,
+        qboDocNumber: result.qboDocNumber,
+        ts,
+      })
+      service.recordQboPushTs(ts)
+      deps.audit.record({
+        module: 'invoicing',
+        action: 'invoice.push',
+        entityType: 'invoice',
+        entityId: invoiceId,
+        actor: ctx.actor,
+        projectId: updated.projectId,
+        payload: { qboId: result.qboId, docNumber: result.qboDocNumber },
+      })
+      return updated
+    },
+
+    recordQboPulled(invoiceId, result, ctx) {
+      const ts = result.ts ?? Date.now()
+      const updated = service.markPullResult(invoiceId, {
+        ts,
+        driftFields: result.driftFields,
+        snapshot: result.snapshot,
+      })
+      service.recordQboPullTs(ts)
+      deps.audit.record({
+        module: 'invoicing',
+        action: 'invoice.pull',
+        entityType: 'invoice',
+        entityId: invoiceId,
+        actor: ctx.actor,
+        projectId: updated.projectId,
+        payload: { driftFields: result.driftFields },
+      })
+      return updated
+    },
+
+    recordQboReconciled(invoiceId, decision, ctx) {
+      let updated: Invoice
+      if (decision.strategy === 'accept_qbo') {
+        updated = service.clearDrift(invoiceId)
+      } else {
+        updated = service.markPushed(invoiceId, {
+          qboId: decision.pushResult.qboId,
+          qboDocNumber: decision.pushResult.qboDocNumber,
+        })
+      }
+      deps.audit.record({
+        module: 'invoicing',
+        action: 'invoice.reconcile',
+        entityType: 'invoice',
+        entityId: invoiceId,
+        actor: ctx.actor,
+        projectId: updated.projectId,
+        payload: { strategy: decision.strategy },
+      })
+      return updated
     },
 
     getQboConnection() {

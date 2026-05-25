@@ -4,7 +4,6 @@ import { isAbsolute, resolve, basename } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { FastifyInstance } from 'fastify'
-import type { AuditLog } from '../../../src/modules/audit-log.js'
 import type { EventBus } from '../../../src/core/events.js'
 import type { SecretVault } from '../../../src/storage/secret-vault.js'
 import type { QboHttpClient } from '../../../src/modules/qbo/source.js'
@@ -117,7 +116,6 @@ const HTTP_ACTOR: ActorContext = { actor: { type: 'user' } }
 
 export interface RegisterInvoicingRoutesDeps {
   service: InvoicingService
-  audit?: AuditLog
   eventBus?: EventBus
   /** Whether Pandoc is on PATH; gates PDF rendering. */
   pandocAvailable?: boolean
@@ -601,23 +599,11 @@ export async function registerInvoicingRoutes(
           ? await guard.qbo.client.updateInvoice(authRes.auth, doc)
           : await guard.qbo.client.createInvoice(authRes.auth, doc)
         const now = Date.now()
-        const updated = service.markPushed(invoice.id, {
-          qboId: pushed.Id,
-          qboDocNumber: pushed.DocNumber ?? null,
-          ts: now,
-        })
-        service.recordQboPushTs(now)
-        if (deps.audit) {
-          deps.audit.record({
-            module: 'invoicing',
-            action: 'invoice.push',
-            entityType: 'invoice',
-            entityId: invoice.id,
-            actor: HTTP_ACTOR.actor,
-            projectId: invoice.projectId,
-            payload: { qboId: pushed.Id, docNumber: pushed.DocNumber },
-          })
-        }
+        const updated = service.recordQboPushed(
+          invoice.id,
+          { qboId: pushed.Id, qboDocNumber: pushed.DocNumber ?? null, ts: now },
+          HTTP_ACTOR,
+        )
         return {
           qboId: pushed.Id,
           syncStatus: 'synced' as const,
@@ -670,23 +656,11 @@ export async function registerInvoicingRoutes(
         const driftFields = detectDrift(invoice, remote)
         const now = Date.now()
         if (driftFields.length === 0) {
-          const updated = service.markPullResult(invoice.id, {
-            ts: now,
-            driftFields: [],
-            snapshot: null,
-          })
-          service.recordQboPullTs(now)
-          if (deps.audit) {
-            deps.audit.record({
-              module: 'invoicing',
-              action: 'invoice.pull',
-              entityType: 'invoice',
-              entityId: invoice.id,
-              actor: HTTP_ACTOR.actor,
-              projectId: invoice.projectId,
-              payload: { driftFields: [] },
-            })
-          }
+          const updated = service.recordQboPulled(
+            invoice.id,
+            { ts: now, driftFields: [], snapshot: null },
+            HTTP_ACTOR,
+          )
           return {
             syncStatus: 'synced' as const,
             lastSyncedAt: new Date(now).toISOString(),
@@ -694,23 +668,11 @@ export async function registerInvoicingRoutes(
           }
         }
         const { qbo } = buildSnapshots(invoice, remote, driftFields)
-        const updated = service.markPullResult(invoice.id, {
-          ts: now,
-          driftFields,
-          snapshot: qbo,
-        })
-        service.recordQboPullTs(now)
-        if (deps.audit) {
-          deps.audit.record({
-            module: 'invoicing',
-            action: 'invoice.pull',
-            entityType: 'invoice',
-            entityId: invoice.id,
-            actor: HTTP_ACTOR.actor,
-            projectId: invoice.projectId,
-            payload: { driftFields },
-          })
-        }
+        const updated = service.recordQboPulled(
+          invoice.id,
+          { ts: now, driftFields, snapshot: qbo },
+          HTTP_ACTOR,
+        )
         return {
           syncStatus: 'drift' as const,
           lastSyncedAt: new Date(now).toISOString(),
@@ -767,18 +729,11 @@ export async function registerInvoicingRoutes(
         if (body.data.strategy === 'accept_qbo') {
           // We accept QBO's view by clearing local drift; the snapshot
           // already represents QBO state.
-          const updated = service.clearDrift(invoice.id)
-          if (deps.audit) {
-            deps.audit.record({
-              module: 'invoicing',
-              action: 'invoice.reconcile',
-              entityType: 'invoice',
-              entityId: invoice.id,
-              actor: HTTP_ACTOR.actor,
-              projectId: invoice.projectId,
-              payload: { strategy: 'accept_qbo' },
-            })
-          }
+          const updated = service.recordQboReconciled(
+            invoice.id,
+            { strategy: 'accept_qbo' },
+            HTTP_ACTOR,
+          )
           return {
             syncStatus: 'synced' as const,
             lastSyncedAt: new Date(now).toISOString(),
@@ -796,22 +751,14 @@ export async function registerInvoicingRoutes(
         const pushed = remote
           ? await guard.qbo.client.updateInvoice(authRes.auth, doc)
           : await guard.qbo.client.createInvoice(authRes.auth, doc)
-        const updated = service.markPushed(invoice.id, {
-          qboId: pushed.Id,
-          qboDocNumber: pushed.DocNumber ?? null,
-          ts: now,
-        })
-        if (deps.audit) {
-          deps.audit.record({
-            module: 'invoicing',
-            action: 'invoice.reconcile',
-            entityType: 'invoice',
-            entityId: invoice.id,
-            actor: HTTP_ACTOR.actor,
-            projectId: invoice.projectId,
-            payload: { strategy: body.data.strategy },
-          })
-        }
+        const updated = service.recordQboReconciled(
+          invoice.id,
+          {
+            strategy: body.data.strategy,
+            pushResult: { qboId: pushed.Id, qboDocNumber: pushed.DocNumber ?? null },
+          },
+          HTTP_ACTOR,
+        )
         return {
           syncStatus: 'synced' as const,
           lastSyncedAt: new Date(now).toISOString(),

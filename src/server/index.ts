@@ -828,7 +828,6 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     >[1]['service']
     const invoicingDeps: Parameters<typeof registerInvoicingRoutes>[1] = {
       service: invoicingService,
-      audit: deps.audit,
       eventBus: deps.bus,
       pandocAvailable,
     }

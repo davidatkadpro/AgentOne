@@ -134,6 +134,7 @@ interface PollerHarness {
   invoicing: InvoicingService
   projects: ProjectsService
   proposals: ProposalsService
+  audit: ReturnType<typeof createAuditLog>
   client: QboHttpClient & {
     fetched: Map<string, QboInvoiceDoc>
     getCalls: Array<string>
@@ -182,7 +183,7 @@ function makePollerHarness(): PollerHarness {
     env: { QBO_TOKEN_KEY: 'poller-key' } as NodeJS.ProcessEnv,
   })
   const poller = new QboPoller({ service: invoicing, client, vault, intervalMs: 60_000 })
-  return { db, invoicing, projects, proposals, client, poller }
+  return { db, invoicing, projects, proposals, audit, client, poller }
 }
 
 describe('QboPoller', () => {
@@ -263,6 +264,13 @@ describe('QboPoller', () => {
     const refreshed = h.invoicing.getInvoice(inv.id)
     expect(refreshed?.syncStatus).toBe('drift')
     expect(refreshed?.driftFields).toContain('total')
+    // Scheduled pulls must produce an audit trail — before B1 the poller
+    // called the primitive without auditing, leaving the Activity tab blank
+    // for everything the scheduler did.
+    const entries = h.audit.listByEntity('invoice', inv.id)
+    const pullEntry = entries.find((e) => e.action === 'invoice.pull')
+    expect(pullEntry).toBeTruthy()
+    expect(pullEntry?.actor).toEqual({ type: 'scheduler', id: 'qbo-poller' })
     poller.stop()
   })
 })

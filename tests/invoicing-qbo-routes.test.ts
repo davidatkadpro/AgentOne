@@ -112,7 +112,6 @@ async function newHarness(opts: { withQbo: boolean } = { withQbo: true }): Promi
   const app = Fastify({ logger: false })
   const deps: Parameters<typeof registerInvoicingRoutes>[1] = {
     service: invoicing,
-    audit,
     eventBus: bus,
   }
   if (opts.withQbo) {

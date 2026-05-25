@@ -1,7 +1,9 @@
-import type { InvoicingService } from '../../../modules/invoicing/src/service.js'
+import type { ActorContext, InvoicingService } from '../../../modules/invoicing/src/service.js'
 import type { SecretVault } from '../../storage/secret-vault.js'
 import type { QboHttpClient } from './source.js'
 import { detectDrift, buildSnapshots } from './pull.js'
+
+const POLLER_ACTOR: ActorContext = { actor: { type: 'scheduler', id: 'qbo-poller' } }
 
 export interface QboPollerOptions {
   service: InvoicingService
@@ -70,18 +72,19 @@ export class QboPoller {
         if (!remote) continue
         const driftFields = detectDrift(invoice, remote)
         if (driftFields.length === 0) {
-          this.opts.service.markPullResult(invoice.id, {
-            driftFields: [],
-            snapshot: null,
-          })
+          this.opts.service.recordQboPulled(
+            invoice.id,
+            { driftFields: [], snapshot: null, ts: now },
+            POLLER_ACTOR,
+          )
         } else {
           const { qbo } = buildSnapshots(invoice, remote, driftFields)
-          this.opts.service.markPullResult(invoice.id, {
-            driftFields,
-            snapshot: qbo,
-          })
+          this.opts.service.recordQboPulled(
+            invoice.id,
+            { driftFields, snapshot: qbo, ts: now },
+            POLLER_ACTOR,
+          )
         }
-        this.opts.service.recordQboPullTs(now)
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         this.opts.service.markSyncFailed(invoice.id, {
