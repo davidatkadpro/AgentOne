@@ -92,6 +92,92 @@ describe('LMStudioProvider.chat', () => {
     expect(calls).toBe(1)
   })
 
+  it('falls back to reasoning_content when content is empty', async () => {
+    // qwen3.x / deepseek-r1 with LM Studio's reasoning-separation config
+    // route the answer into reasoning_content and leave content empty.
+    // Without the fallback, callers like the compressor see empty output
+    // and treat the call as failed even though the model answered.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        choices: [
+          {
+            message: { content: '', reasoning_content: 'Summary of the prior turns.' },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: { prompt_tokens: 200, completion_tokens: 40 },
+      }),
+    )
+    const provider = new LMStudioProvider({
+      baseUrl: 'http://localhost:1234/v1',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+
+    const result = await provider.chat({
+      model: 't',
+      messages: [{ role: 'user', content: 'Summarise.' }],
+    })
+    expect(result.content).toBe('Summary of the prior turns.')
+  })
+
+  it('prefers content over reasoning_content when both are present', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        choices: [
+          {
+            message: {
+              content: 'The real answer.',
+              reasoning_content: 'Internal thinking that should not leak.',
+            },
+            finish_reason: 'stop',
+          },
+        ],
+      }),
+    )
+    const provider = new LMStudioProvider({
+      baseUrl: 'http://localhost:1234/v1',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+
+    const result = await provider.chat({
+      model: 't',
+      messages: [{ role: 'user', content: 'Hi' }],
+    })
+    expect(result.content).toBe('The real answer.')
+  })
+
+  it('does not promote reasoning_content when tool_calls are present', async () => {
+    // The reasoning is the model's "I should call this tool" deliberation —
+    // surfacing it as content would confuse the tool-call dispatch path.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        choices: [
+          {
+            message: {
+              content: '',
+              reasoning_content: 'I should call the lookup tool.',
+              tool_calls: [
+                { id: 'c1', type: 'function', function: { name: 'lookup', arguments: '{}' } },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      }),
+    )
+    const provider = new LMStudioProvider({
+      baseUrl: 'http://localhost:1234/v1',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+
+    const result = await provider.chat({
+      model: 't',
+      messages: [{ role: 'user', content: 'Hi' }],
+    })
+    expect(result.content).toBe('')
+    expect(result.toolCalls).toHaveLength(1)
+  })
+
   it('surfaces a NETWORK error after exhausting retries', async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'))
     const provider = new LMStudioProvider({

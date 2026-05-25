@@ -26,6 +26,9 @@ interface OpenAIChatResponse {
   choices: Array<{
     message?: {
       content?: string
+      /** Reasoning models (qwen3.x, deepseek-r1) route chain-of-thought here
+       *  when LM Studio is configured to separate reasoning from content. */
+      reasoning_content?: string
       tool_calls?: OpenAIToolCall[]
     }
     finish_reason?: string
@@ -115,12 +118,26 @@ export class LMStudioProvider implements Provider {
     const json = (await res.json()) as OpenAIChatResponse
     const choice = json.choices?.[0]
     if (!choice) throw new ProviderError('No choices in response', 'BAD_RESPONSE')
+    const rawContent = choice.message?.content ?? ''
+    const reasoning = choice.message?.reasoning_content ?? ''
+    const toolCalls = choice.message?.tool_calls?.map(normaliseToolCall)
+    // Reasoning-model fallback (mirrors the streaming path at L218): qwen3.x
+    // and deepseek-r1 route chain-of-thought into `reasoning_content` and
+    // leave `content` empty. Without this, callers like the compressor
+    // observe empty output and treat the call as a failure even though the
+    // model produced an answer.
+    const content =
+      rawContent.trim().length === 0 &&
+      reasoning.trim().length > 0 &&
+      (!toolCalls || toolCalls.length === 0)
+        ? reasoning
+        : rawContent
     return {
-      content: choice.message?.content ?? '',
+      content,
       inputTokens: json.usage?.prompt_tokens ?? 0,
       outputTokens: json.usage?.completion_tokens ?? 0,
       finishReason: mapFinishReason(choice.finish_reason),
-      toolCalls: choice.message?.tool_calls?.map(normaliseToolCall),
+      toolCalls,
     }
   }
 
