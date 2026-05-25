@@ -43,6 +43,45 @@ describe('ToolRegistry', () => {
     }
   })
 
+  it('execute retries via unknown-tool resolver and runs the lazily-registered handler', async () => {
+    const reg = new ToolRegistry()
+    let resolverCalls = 0
+    reg.setUnknownToolResolver(async (id) => {
+      resolverCalls++
+      if (id !== 'lazy') return false
+      register(reg, 'lazy', async (args) => ({ ok: true, value: args.n * 2 }))
+      return true
+    })
+    const result = await reg.execute('lazy', '{"n": 21}', fakeCtx())
+    expect(resolverCalls).toBe(1)
+    expect(result.result.ok).toBe(true)
+    if (result.result.ok) {
+      expect(result.result.value).toBe(42)
+    }
+  })
+
+  it('execute still returns TOOL_VALIDATION when the resolver declines', async () => {
+    const reg = new ToolRegistry()
+    reg.setUnknownToolResolver(async () => false)
+    const result = await reg.execute('nope', '{}', fakeCtx())
+    expect(result.result.ok).toBe(false)
+    if (!result.result.ok) {
+      expect(result.result.error.code).toBe('TOOL_VALIDATION')
+    }
+  })
+
+  it('execute swallows resolver throws and reports TOOL_VALIDATION', async () => {
+    const reg = new ToolRegistry()
+    reg.setUnknownToolResolver(async () => {
+      throw new Error('resolver exploded')
+    })
+    const result = await reg.execute('nope', '{}', fakeCtx())
+    expect(result.result.ok).toBe(false)
+    if (!result.result.ok) {
+      expect(result.result.error.code).toBe('TOOL_VALIDATION')
+    }
+  })
+
   it('execute returns TOOL_VALIDATION for non-JSON args', async () => {
     const reg = new ToolRegistry()
     register(reg, 'add', async () => ({ ok: true, value: null }))

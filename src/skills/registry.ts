@@ -10,6 +10,13 @@ export interface ToolExecutionResult {
   durationMs: number
 }
 
+/**
+ * Called by `execute` when a tool id isn't registered. If the resolver loads
+ * the missing tool (e.g. by auto-loading the skill that declares it), it
+ * returns `true` and `execute` retries the lookup once.
+ */
+export type UnknownToolResolver = (id: string) => Promise<boolean>
+
 const DEFAULT_TIMEOUT_MS = 10_000
 
 /**
@@ -20,11 +27,21 @@ const DEFAULT_TIMEOUT_MS = 10_000
 export class ToolRegistry {
   private tools = new Map<string, RegisteredTool>()
   private cachedDefs: ToolDefinition[] | null = null
+  private resolveUnknown?: UnknownToolResolver
 
   constructor(
     private readonly hooks?: HookRegistry,
     private readonly eventBus?: EventBus,
   ) {}
+
+  /**
+   * Install a fallback resolver that runs when `execute` hits an unknown
+   * tool id. Used by the orchestrator to auto-load the skill that owns a
+   * tool the model called without first invoking `load_skill`.
+   */
+  setUnknownToolResolver(fn: UnknownToolResolver | undefined): void {
+    this.resolveUnknown = fn
+  }
 
   register(tool: RegisteredTool): void {
     if (this.tools.has(tool.id)) {
@@ -72,7 +89,16 @@ export class ToolRegistry {
     ctx: ToolContext,
   ): Promise<ToolExecutionResult> {
     const start = Date.now()
-    const tool = this.tools.get(id)
+    let tool = this.tools.get(id)
+    if (!tool && this.resolveUnknown) {
+      let recovered = false
+      try {
+        recovered = await this.resolveUnknown(id)
+      } catch {
+        recovered = false
+      }
+      if (recovered) tool = this.tools.get(id)
+    }
     if (!tool) {
       return wrap(start, fail('TOOL_VALIDATION', `Unknown tool: ${id}`, false))
     }

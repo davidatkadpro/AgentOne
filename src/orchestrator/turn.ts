@@ -446,6 +446,28 @@ export class Orchestrator {
     const loadedSkills = new Set<string>()
     const permissions = new PermissionGate(this.cfg.profile)
 
+    // Self-healing dispatch: when the model calls a tool whose skill hasn't
+    // been loaded yet (common with smaller local models that ignore the
+    // "call load_skill first" instruction), look up the owning skill and
+    // load it on demand. Permissions still apply — a deny here surfaces as
+    // the regular "Unknown tool" error to the model.
+    registry.setUnknownToolResolver(async (toolId) => {
+      for (const manifest of this.cfg.skillIndex.skills.values()) {
+        if (loadedSkills.has(manifest.qualifiedName)) continue
+        const declares = manifest.frontmatter.tools?.some((t) => t.id === toolId)
+        if (!declares) continue
+        const result = await this.loadSkillIntoRegistry({
+          skillName: manifest.qualifiedName,
+          registry,
+          loadedSkills,
+          permissions,
+          sessionId,
+        })
+        if (result.loaded && registry.has(toolId)) return true
+      }
+      return false
+    })
+
     for (const t of buildCoreSkillTools({
       index: this.cfg.skillIndex,
       registry,
