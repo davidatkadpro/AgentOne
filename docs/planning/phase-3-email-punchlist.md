@@ -4,7 +4,7 @@ Trackable breakdown of the Email module's React panel + the cross-module wiring 
 
 Assumes Phase 1.5 (shell + shared components + action discovery) and Phase 2 (Projects panel with the Emails tab placeholder) have shipped.
 
-Last reviewed: 2026-05-23.
+Last reviewed: 2026-05-29.
 
 ---
 
@@ -27,8 +27,8 @@ Last reviewed: 2026-05-23.
 | P5 create-new-project + scope-extractor (S1-S2) | 2 | 0 | 0 |
 | P6 Project Emails tab content (X1) | 1 | 0 | 0 |
 | P7 Polish + agent QA (Q1-Q3) | 3 | 0 | 0 |
-| Sub-phase: GraphEmailSource (G1-G4) | 0 | 0 | 4 (deferred) |
-| **Total** | **27** | **0** | **5** (1 P0 deferred + 4 Graph sub-phase) |
+| Sub-phase: GraphEmailSource (G1-G4) | 4 | 0 | 0 (landed 2026-05-29) |
+| **Total** | **31** | **0** | **1** (1 P0 deferred) |
 
 ---
 
@@ -264,28 +264,54 @@ Last reviewed: 2026-05-23.
 
 ---
 
-## Sub-phase — GraphEmailSource (deferred)
+## Sub-phase — GraphEmailSource (landed 2026-05-29)
 
-These items land after Phase 3 ships with `MaildirEmailSource`. Tracked here so the work is visible but not blocking.
+Landed after Phase 3 shipped with `MaildirEmailSource`. Note: the original
+plan pencilled in the OAuth2 **device-code** flow; the implementation uses the
+**authorization-code redirect** flow instead, mirroring the existing QBO
+integration 1:1 (reused `OAuthStateStore`, connect/callback routes, redirect-
+button UI, query-string toast). Redirect is the natural fit because the app is
+driven from a browser on the same loopback host. See
+[`m365-oauth.test.ts`](../../tests/m365-oauth.test.ts),
+[`graph-email-source.test.ts`](../../tests/graph-email-source.test.ts).
 
-### G1. Microsoft Graph OAuth2 device-code flow
+### G1. Microsoft Graph OAuth2 authorization-code redirect flow
 **Status**: ☑ · **Depends on**: P3 complete
-- Single-tenant, single-user. Tokens encrypted at rest via the same secret-vault helper QBO uses.
-- **Acceptance**: operator can connect M365 from the Settings → Integrations tab; tokens persist across restarts.
+- Confidential client, single-tenant/single-user. Tokens encrypted at rest via
+  the shared secret-vault (`src/storage/secret-vault.ts`) — one vault instance
+  now serves QBO and M365. Routes: `GET /api/integrations/m365/connect` +
+  `/callback`, `POST /api/integrations/m365/disconnect` in
+  [`modules/email/src/routes.ts`](../../modules/email/src/routes.ts); client in
+  [`src/modules/m365/auth.ts`](../../src/modules/m365/auth.ts).
+- **Acceptance**: operator connects M365 from Settings → Integrations; encrypted
+  tokens persist across restarts; on-demand refresh re-encrypts + re-persists.
 
 ### G2. `GraphEmailSource` implementation
 **Status**: ☑ · **Depends on**: G1
-- Implements the same `EmailSource` interface as `MaildirEmailSource`. Pagination via Graph delta queries.
-- **Acceptance**: same panel renders with Graph as the source; no frontend changes needed.
+- Implements the `EmailSource` interface in
+  [`modules/email/src/sources/graph.ts`](../../modules/email/src/sources/graph.ts):
+  `list`/`get`/`getBody` (HTML sanitised) / `fetchAttachment` / `markRead`. No
+  `watch()` — Graph push needs a public webhook (out of scope); a
+  `GraphEmailPoller` (mirrors `QboPoller`) polls every `EMAIL_POLL_INTERVAL_MIN`.
+  Listing uses `$filter`/`$top`/`$orderby` (delta-query incremental sync deferred
+  — `pollSource` already dedups by `(sourceKind, sourceId)`).
+- **Acceptance**: the same panel renders with Graph as the source; no email
+  list/detail frontend changes needed.
 
 ### G3. Integrations tab gains "Microsoft 365 Email"
 **Status**: ☑ · **Depends on**: G1
-- Connect / Disconnect, last sync timestamp, token expiry.
+- Connect / Disconnect, account label, connected-at, token expiry, last poll,
+  last error —
+  [`M365IntegrationPanel.tsx`](../../src/web/src/routes/settings/M365IntegrationPanel.tsx)
+  stacked above the QBO row in `IntegrationsTab`.
 - **Acceptance**: tab UI matches the QBO row from Phase 5.
 
 ### G4. `EMAIL_SOURCE=graph|maildir` env switch + per-source config
 **Status**: ☑ · **Depends on**: G2
-- Config in `settings.json`; restart required to switch.
+- `EMAIL_SOURCE` env switch (restart required) in
+  [`src/server/config.ts`](../../src/server/config.ts); when unset, inferred
+  (`graph` if M365 creds present, else `maildir` if `EMAIL_MAILDIR_PATH` set,
+  else none). The `/api/health` `emailSource` block reports the graph kind.
 - **Acceptance**: changing the env + restart reads from the chosen source.
 
 ---

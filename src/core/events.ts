@@ -304,6 +304,10 @@ export type AgentEvent =
       ok: boolean
       ts: number
     }
+  // Microsoft 365 (Graph) email-source connection lifecycle. Mirrors the
+  // qbo.connected/disconnected pair contributed by modules/invoicing.
+  | { type: 'm365.connected'; ts: number }
+  | { type: 'm365.disconnected'; ts: number }
   // -- contributed by modules/proposals --
   | { type: 'estimate.created'; projectId: string; estimateId: string; ts: number }
   | { type: 'estimate.updated'; projectId: string; estimateId: string; ts: number }

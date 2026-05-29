@@ -58,6 +58,9 @@ export interface ProfileListEntry {
   description: string | null
   defaultModel: string
   defaultSkills: string[]
+  /** Resolved tool ids this profile may not load. Must round-trip through the
+   *  editor — sending an empty list on save erases the restriction. */
+  denyTools: string[]
   ok: boolean
   error?: string
 }
@@ -452,6 +455,16 @@ export interface QboConnection {
   tokenExpiresAt?: number
   lastPushAt?: number | null
   lastPullAt?: number | null
+  lastError?: { code: string; message: string; at: number } | null
+}
+
+export interface M365Connection {
+  connected: boolean
+  accountName?: string | null
+  accountEmail?: string | null
+  connectedAt?: number
+  tokenExpiresAt?: number
+  lastPollAt?: number | null
   lastError?: { code: string; message: string; at: number } | null
 }
 

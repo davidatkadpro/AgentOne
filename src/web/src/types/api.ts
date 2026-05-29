@@ -524,6 +524,8 @@ export interface ReconcileResponse {
 
 export type QboStatusResponse = import('./domain.js').QboConnection
 
+export type M365StatusResponse = import('./domain.js').M365Connection
+
 export interface ProjectBudgetResponse {
   budget: import('./domain.js').InvoiceBudget
 }

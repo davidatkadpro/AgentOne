@@ -77,4 +77,7 @@ export const queryKeys = {
   qbo: {
     status: () => ['qbo', 'status'] as const,
   },
+  m365: {
+    status: () => ['m365', 'status'] as const,
+  },
 } as const

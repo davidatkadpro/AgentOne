@@ -29,7 +29,7 @@ See [CONTEXT.md](CONTEXT.md) for the domain language and [docs/PRD.md](docs/PRD.
 Four shipped Modules under [`modules/`](modules/), each with its own schema, service, HTTP routes, Skills, and event contributions:
 
 - **`projects`** — projects, phases, tasks, subtasks, dependencies. The central module — every other module references project ids.
-- **`email`** — light triage surface for `MaildirEmailSource` (dev/offline). File emails to projects, create a new project from an email, extract structured scope into `<project>/in/<dated>/scope.md`. GraphEmailSource is a deferred sub-phase.
+- **`email`** — light triage surface. Real Microsoft 365 mail via `GraphEmailSource` (OAuth, read-only) or local `.eml` files via `MaildirEmailSource` (dev/offline); pick with `EMAIL_SOURCE`. File emails to projects, create a new project from an email, extract structured scope into `<project>/in/<dated>/scope.md`. See [Microsoft 365 setup](#microsoft-365-email-setup).
 - **`proposals`** — estimates + proposals with a Mustache → Markdown render path. Pandoc-based PDF/docx rendering when `pandoc` is on PATH; markdown is always produced.
 - **`invoicing`** — local invoices + payments, project budget view, and QuickBooks Online push/pull/reconcile (single-realm). When `QBO_*` env vars are unset the panel still works locally and shows a "Connect QBO" banner.
 
@@ -109,12 +109,44 @@ All settings come from environment variables (loaded from `.env` when present). 
 | `EVENT_HOOKS_PATH` | *(unset)* | YAML file declaring event-bus subscribers |
 | `LOG_EVENTS` | `0` | Persist all bus events to the `event_log` table |
 | `EMAIL_MAILDIR_PATH` | *(unset)* | Folder of `.eml` files for the Maildir email source |
+| `EMAIL_SOURCE` | *(inferred)* | `graph` or `maildir`. Unset → inferred: `graph` if M365 creds set, else `maildir` if `EMAIL_MAILDIR_PATH` set, else none |
+| `EMAIL_POLL_INTERVAL_MIN` | `5` | Minutes between Graph inbox polls (Graph has no local watch) |
+| `M365_CLIENT_ID` / `M365_CLIENT_SECRET` | *(unset)* | Entra app credentials; both required to enable Microsoft 365 email |
+| `M365_TENANT_ID` | `common` | Entra tenant GUID, verified domain, or `common`/`organizations`/`consumers` |
+| `M365_REDIRECT_URI` | `http://127.0.0.1:3737/api/integrations/m365/callback` | Must match the redirect URI registered on the Entra app |
+| `M365_SCOPES` | `offline_access Mail.Read User.Read` | Delegated scopes requested |
 | `QBO_CLIENT_ID` / `QBO_CLIENT_SECRET` | *(unset)* | Intuit OAuth2 app credentials; both required to enable QBO push/pull |
 | `QBO_AUTHORIZE_URL` | `https://appcenter.intuit.com/connect/oauth2` | Override for sandbox vs production |
-| `QBO_TOKEN_KEY` | *(unset)* | AES-GCM key for QBO token vault on non-Windows; Windows DPAPI used when available |
+| `QBO_TOKEN_KEY` | *(unset)* | AES-GCM key for the shared integration token vault (QBO + M365) on non-Windows; Windows DPAPI used when available |
 | `QBO_PULL_INTERVAL_MIN` | `15` | Minutes between scheduled QBO drift-pull passes |
 
 The bearer token at `<STORAGE_ROOT>/.auth/token` is auto-generated; it's not an env var. Delete the file to rotate.
+
+### Microsoft 365 email setup
+
+To read your real inbox (instead of the local `.eml` Maildir), register an
+Entra (Azure AD) application and point AgentOne at it:
+
+1. **Entra admin center → App registrations → New registration.** Single tenant
+   is fine for one mailbox. Add a **Web** redirect URI of
+   `http://127.0.0.1:3737/api/integrations/m365/callback` (match `M365_REDIRECT_URI`).
+2. **API permissions → Microsoft Graph → Delegated** → add `Mail.Read`,
+   `offline_access`, `User.Read`. Grant admin consent if your tenant requires it.
+3. **Certificates & secrets → New client secret.** Copy the secret *value*.
+4. Set the env vars and restart:
+   ```bash
+   M365_CLIENT_ID=<application (client) id>
+   M365_CLIENT_SECRET=<client secret value>
+   M365_TENANT_ID=<tenant id or 'common'>
+   EMAIL_SOURCE=graph
+   # Non-Windows only: a key for the token vault (Windows uses DPAPI):
+   QBO_TOKEN_KEY=<any non-empty string>
+   ```
+5. Open **Settings → Integrations → Microsoft 365 Email → Connect**, sign in,
+   and consent. Tokens are stored encrypted and refreshed automatically; the
+   inbox then polls every `EMAIL_POLL_INTERVAL_MIN` minutes.
+
+Read-only by design — AgentOne lists, reads, and files mail but never sends it.
 
 ---
 

@@ -3,115 +3,109 @@ import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/Button'
 import { Dialog } from '@/components/ui/Dialog'
-import { useQboStatus, useDisconnectQbo } from '@/api/qbo'
+import { useM365Status, useDisconnectM365 } from '@/api/m365'
 import { formatRelative } from '@/lib/time'
 
-export function QboIntegrationPanel() {
-  const { data: qbo, isLoading } = useQboStatus()
-  const disconnect = useDisconnectQbo()
+export function M365IntegrationPanel() {
+  const { data: m365, isLoading } = useM365Status()
+  const disconnect = useDisconnectM365()
   const [search, setSearch] = useSearchParams()
   const [confirmOpen, setConfirmOpen] = useState(false)
 
-  // Read ?qbo=connected|error on mount and toast accordingly, then strip.
+  // Read ?m365=connected|error on mount and toast accordingly, then strip.
   useEffect(() => {
-    const param = search.get('qbo')
+    const param = search.get('m365')
     if (!param) return
     if (param === 'connected') {
-      toast.success('QuickBooks connected')
+      toast.success('Microsoft 365 connected')
     } else if (param === 'error') {
       const reason = search.get('reason') ?? 'unknown'
-      toast.error(`QuickBooks connect failed — ${reason}`)
+      toast.error(`Microsoft 365 connect failed — ${reason}`)
     }
     const next = new URLSearchParams(search)
-    next.delete('qbo')
+    next.delete('m365')
     next.delete('reason')
     setSearch(next, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  if (isLoading || !qbo) {
+  if (isLoading || !m365) {
     return (
       <div className="p-4 bg-surface border border-border rounded-md text-xs text-muted">
-        Loading QuickBooks status…
+        Loading Microsoft 365 status…
       </div>
     )
   }
 
-  const tail = qbo.realmId ? qbo.realmId.slice(-4) : null
   const expiresSoon =
-    typeof qbo.tokenExpiresAt === 'number' && qbo.tokenExpiresAt - Date.now() < 10 * 60_000
+    typeof m365.tokenExpiresAt === 'number' && m365.tokenExpiresAt - Date.now() < 10 * 60_000
 
   return (
     <>
-      <div className="bg-surface border border-border rounded-md" data-testid="qbo-panel">
+      <div className="bg-surface border border-border rounded-md" data-testid="m365-panel">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <div>
-            <div className="text-sm font-medium text-fg">QuickBooks Online</div>
+            <div className="text-sm font-medium text-fg">Microsoft 365 Email</div>
             <div className="text-xs text-muted">
-              {qbo.connected ? `Connected · ${qbo.companyName ?? 'no company name'}` : 'Not connected'}
+              {m365.connected
+                ? `Connected · ${m365.accountEmail ?? m365.accountName ?? 'account'}`
+                : 'Not connected'}
             </div>
           </div>
-          {qbo.connected ? (
+          {m365.connected ? (
             <Button
               variant="danger"
               size="sm"
               onClick={() => setConfirmOpen(true)}
-              data-testid="qbo-disconnect"
+              data-testid="m365-disconnect"
             >
               Disconnect
             </Button>
           ) : (
             <a
-              href="/api/integrations/qbo/connect"
+              href="/api/integrations/m365/connect"
               className="h-9 px-3 inline-flex items-center text-sm rounded-md bg-accent text-white hover:bg-accent/90"
-              data-testid="qbo-connect"
+              data-testid="m365-connect"
             >
               Connect
             </a>
           )}
         </div>
-        {qbo.connected ? (
-          <div className="px-4 py-3 text-xs space-y-1 text-muted" data-testid="qbo-details">
-            <div>
-              Realm · <span className="font-mono">…{tail}</span>
-            </div>
-            {qbo.connectedAt ? (
-              <div>Connected · {formatRelative(qbo.connectedAt)}</div>
+        {m365.connected ? (
+          <div className="px-4 py-3 text-xs space-y-1 text-muted" data-testid="m365-details">
+            {m365.accountName ? <div>Account · {m365.accountName}</div> : null}
+            {m365.connectedAt ? (
+              <div>Connected · {formatRelative(m365.connectedAt)}</div>
             ) : null}
-            {qbo.tokenExpiresAt ? (
+            {m365.tokenExpiresAt ? (
               <div className={expiresSoon ? 'text-warn' : ''}>
-                Token expires · {new Date(qbo.tokenExpiresAt).toLocaleString()}
+                Token expires · {new Date(m365.tokenExpiresAt).toLocaleString()}
               </div>
             ) : null}
-            {qbo.lastPushAt ? (
-              <div>Last push · {formatRelative(qbo.lastPushAt)}</div>
-            ) : null}
-            {qbo.lastPullAt ? (
-              <div>Last pull · {formatRelative(qbo.lastPullAt)}</div>
-            ) : null}
-            {qbo.lastError ? (
-              <div className="text-danger mt-2">
-                Last error · {qbo.lastError.message}
-              </div>
+            {m365.lastPollAt ? <div>Last poll · {formatRelative(m365.lastPollAt)}</div> : null}
+            {m365.lastError ? (
+              <div className="text-danger mt-2">Last error · {m365.lastError.message}</div>
             ) : null}
           </div>
         ) : (
           <div className="px-4 py-3 text-xs text-muted">
-            Connect to enable pushing draft invoices into QuickBooks and pulling
-            payment status back into AgentOne. Push & pull are paused while
-            disconnected.
+            Connect your Microsoft 365 mailbox to triage real email into AgentOne.
+            Read-only — AgentOne lists, reads, and files messages but never sends
+            mail. Requires <span className="font-mono">EMAIL_SOURCE=graph</span> to
+            be the active source.
           </div>
         )}
       </div>
       <Dialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
-        title="Disconnect QuickBooks?"
+        title="Disconnect Microsoft 365?"
       >
         <div className="text-sm space-y-3">
           <p>
-            All push & pull operations will be paused. Invoices already pushed
-            stay in QBO; AgentOne keeps its local copy with the cached QBO id.
+            Email polling will stop and stored tokens will be cleared. Emails
+            already filed to projects stay where they are; AgentOne keeps its
+            local index. Reconnect any time to resume.
           </p>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setConfirmOpen(false)}>
@@ -123,7 +117,7 @@ export function QboIntegrationPanel() {
                 await disconnect.mutateAsync()
                 setConfirmOpen(false)
               }}
-              data-testid="qbo-disconnect-confirm"
+              data-testid="m365-disconnect-confirm"
             >
               Disconnect
             </Button>

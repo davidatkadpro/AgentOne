@@ -34,6 +34,31 @@ const Env = z.object({
    *  MaildirEmailSource (dev / offline fallback). Unset means no email
    *  source is wired and `POST /api/v1/email/poll` returns 503. */
   EMAIL_MAILDIR_PATH: z.string().optional(),
+  /** Which email connector to wire. Explicit switch (restart required). When
+   *  unset we infer: `graph` if M365 creds are present, else `maildir` if
+   *  EMAIL_MAILDIR_PATH is set, else none. */
+  EMAIL_SOURCE: z.enum(['graph', 'maildir']).optional(),
+  /** Graph has no cheap local watch (webhooks need a public URL), so we poll.
+   *  Interval in minutes for the GraphEmailPoller. */
+  EMAIL_POLL_INTERVAL_MIN: z.coerce.number().int().positive().default(5),
+  /** Microsoft 365 (Graph) OAuth app credentials. When client id+secret are
+   *  unset, the M365 connect/status routes report not-configured and the
+   *  graph source can't be wired. Single-tenant, single-user. */
+  M365_CLIENT_ID: z.string().optional(),
+  M365_CLIENT_SECRET: z.string().optional(),
+  /** Entra tenant: a tenant GUID, a verified domain, or `common`/`organizations`
+   *  /`consumers`. Used to build the authorize/token URLs. */
+  M365_TENANT_ID: z.string().default('common'),
+  M365_REDIRECT_URI: z
+    .string()
+    .default('http://127.0.0.1:3737/api/integrations/m365/callback'),
+  /** Space-delimited delegated scopes. `offline_access` is required for a
+   *  refresh token; `Mail.Read` for the inbox; `User.Read` for /me. */
+  M365_SCOPES: z.string().default('offline_access Mail.Read User.Read'),
+  /** Optional overrides for the authorize/token endpoints (sovereign clouds).
+   *  When unset they are derived from M365_TENANT_ID against login.microsoftonline.com. */
+  M365_AUTHORIZE_URL: z.string().optional(),
+  M365_TOKEN_URL: z.string().optional(),
   /** QuickBooks Online OAuth client id (Phase 5). When unset, the QBO sync
    *  routes return 503 QBO_NOT_CONFIGURED. */
   QBO_CLIENT_ID: z.string().optional(),
@@ -87,6 +112,16 @@ export interface ServerConfig {
   auditLogPath: string | null
   eventHooksPath: string | null
   emailMaildirPath: string | null
+  /** Resolved active email connector: explicit EMAIL_SOURCE, else inferred. */
+  emailSourceKind: 'graph' | 'maildir' | 'none'
+  emailPollIntervalMinutes: number
+  m365ClientId: string | null
+  m365ClientSecret: string | null
+  m365TenantId: string
+  m365RedirectUri: string
+  m365Scopes: string
+  m365AuthorizeUrl: string
+  m365TokenUrl: string
   qboClientId: string | null
   qboClientSecret: string | null
   qboRedirectUri: string
@@ -102,6 +137,19 @@ export interface ServerConfig {
 
 export function loadConfigFromEnv(): ServerConfig {
   const parsed = Env.parse(process.env)
+  const m365Configured = Boolean(parsed.M365_CLIENT_ID && parsed.M365_CLIENT_SECRET)
+  const maildirConfigured = Boolean(parsed.EMAIL_MAILDIR_PATH)
+  // Explicit switch wins; otherwise infer from what's configured.
+  const emailSourceKind: ServerConfig['emailSourceKind'] =
+    parsed.EMAIL_SOURCE ??
+    (m365Configured ? 'graph' : maildirConfigured ? 'maildir' : 'none')
+  // Entra v2 endpoints, derived from the tenant unless explicitly overridden.
+  const authorizeUrl =
+    parsed.M365_AUTHORIZE_URL ??
+    `https://login.microsoftonline.com/${parsed.M365_TENANT_ID}/oauth2/v2.0/authorize`
+  const tokenUrl =
+    parsed.M365_TOKEN_URL ??
+    `https://login.microsoftonline.com/${parsed.M365_TENANT_ID}/oauth2/v2.0/token`
   return {
     port: parsed.PORT,
     host: parsed.HOST,
@@ -125,6 +173,15 @@ export function loadConfigFromEnv(): ServerConfig {
     auditLogPath: parsed.AUDIT_LOG_PATH ? resolve(parsed.AUDIT_LOG_PATH) : null,
     eventHooksPath: parsed.EVENT_HOOKS_PATH ? resolve(parsed.EVENT_HOOKS_PATH) : null,
     emailMaildirPath: parsed.EMAIL_MAILDIR_PATH ? resolve(parsed.EMAIL_MAILDIR_PATH) : null,
+    emailSourceKind,
+    emailPollIntervalMinutes: parsed.EMAIL_POLL_INTERVAL_MIN,
+    m365ClientId: parsed.M365_CLIENT_ID ?? null,
+    m365ClientSecret: parsed.M365_CLIENT_SECRET ?? null,
+    m365TenantId: parsed.M365_TENANT_ID,
+    m365RedirectUri: parsed.M365_REDIRECT_URI,
+    m365Scopes: parsed.M365_SCOPES,
+    m365AuthorizeUrl: authorizeUrl,
+    m365TokenUrl: tokenUrl,
     qboClientId: parsed.QBO_CLIENT_ID ?? null,
     qboClientSecret: parsed.QBO_CLIENT_SECRET ?? null,
     qboRedirectUri: parsed.QBO_REDIRECT_URI,

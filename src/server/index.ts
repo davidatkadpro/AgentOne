@@ -52,6 +52,12 @@ import { registerEmailRoutes } from '../../modules/email/src/routes.js'
 import { registerEmailActions } from '../../modules/email/src/actions.js'
 import { registerModuleActionsDiscovery } from '../modules/action-discovery.js'
 import { MaildirEmailSource } from '../../modules/email/src/sources/maildir.js'
+import {
+  GraphEmailSource,
+  GraphEmailPoller,
+  createGraphAuth,
+} from '../../modules/email/src/sources/graph.js'
+import { HttpGraphClient } from '../modules/m365/auth.js'
 import { createProposalsService, type ProposalsService } from '../../modules/proposals/src/service.js'
 import { registerProposalsRoutes } from '../../modules/proposals/src/routes.js'
 import { registerProposalsActions } from '../../modules/proposals/src/actions.js'
@@ -154,6 +160,18 @@ export interface AppDeps {
     redirectUri: string
     authorizeUrl: string
   }
+  /** Microsoft 365 (Graph) email wiring — present only when the operator has
+   *  set M365_CLIENT_ID/SECRET (and a viable vault key path). Drives the graph
+   *  EmailSource + poller and the /integrations/m365 OAuth routes. */
+  m365?: {
+    client: InstanceType<typeof HttpGraphClient>
+    vault: SecretVault
+    oauthState: ReturnType<typeof createOAuthStateStore>
+    clientId: string
+    scopes: string
+    redirectUri: string
+    authorizeUrl: string
+  }
   /** Optional auth gate. When omitted, no auth is enforced (tests + legacy
    *  paths). Bootstrap always supplies one with `enabled: true`. */
   auth?: AuthOptions
@@ -215,10 +233,19 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.get('/api/health', async () => {
     await deps.wiki.whenReady()
     // Q2: surface the email source's state so the top-bar can show a banner
-    // when the configured maildir is unreachable. We re-stat on each request
-    // — cheap on local disk and avoids stale "ok" reports.
+    // when the source is configured but not usable. For maildir we re-stat the
+    // folder per request (cheap on local disk, avoids stale "ok"); for graph
+    // "ok" means a connection row exists (tokens present).
     let emailSource: { kind: string; ok: boolean; configured: boolean } | undefined
-    if (deps.config.emailMaildirPath) {
+    if (deps.config.emailSourceKind === 'graph') {
+      const emailHandle = deps.modules.get('email')
+      const svc =
+        emailHandle?.status === 'active'
+          ? (emailHandle.service as { getM365Connection(): unknown } | undefined)
+          : undefined
+      const connected = Boolean(svc?.getM365Connection?.())
+      emailSource = { kind: 'graph', ok: connected, configured: Boolean(deps.m365) }
+    } else if (deps.config.emailSourceKind === 'maildir' && deps.config.emailMaildirPath) {
       try {
         const { stat: fsstat } = await import('node:fs/promises')
         await fsstat(deps.config.emailMaildirPath)
@@ -870,7 +897,27 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     const emailDeps: Parameters<typeof registerEmailRoutes>[1] = {
       service: emailService,
     }
-    if (deps.config.emailMaildirPath) {
+    const sourceKind = deps.config.emailSourceKind
+    if (sourceKind === 'graph' && deps.m365) {
+      // Microsoft 365 via Graph. No local watch (push needs a public webhook);
+      // freshness comes from the GraphEmailPoller on EMAIL_POLL_INTERVAL_MIN.
+      const auth = createGraphAuth({
+        service: emailService,
+        vault: deps.m365.vault,
+        client: deps.m365.client,
+      })
+      const source = new GraphEmailSource({ client: deps.m365.client, auth })
+      emailDeps.source = source
+      const poller = new GraphEmailPoller({
+        service: emailService,
+        source,
+        intervalMs: deps.config.emailPollIntervalMinutes * 60_000,
+      })
+      poller.start()
+      app.addHook('onClose', async () => {
+        poller.stop()
+      })
+    } else if (sourceKind === 'maildir' && deps.config.emailMaildirPath) {
       const source = new MaildirEmailSource({ root: deps.config.emailMaildirPath })
       emailDeps.source = source
       // P3P7: fs-watcher on the maildir root. New `.eml` files auto-ingest
@@ -886,6 +933,20 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         app.addHook('onClose', async () => {
           stopWatch()
         })
+      }
+    }
+    // M365 OAuth + status routes are available whenever creds are configured,
+    // regardless of which source is active — so the operator can connect first
+    // and flip EMAIL_SOURCE=graph afterwards.
+    if (deps.m365) {
+      emailDeps.m365 = {
+        client: deps.m365.client,
+        vault: deps.m365.vault,
+        oauthState: deps.m365.oauthState,
+        clientId: deps.m365.clientId,
+        scopes: deps.m365.scopes,
+        redirectUri: deps.m365.redirectUri,
+        authorizeUrl: deps.m365.authorizeUrl,
       }
     }
     await registerEmailRoutes(app, emailDeps)
@@ -1339,54 +1400,98 @@ export async function bootstrap(): Promise<void> {
     )
   }
 
-  // ── QBO sync wiring (Phase 5) ────────────────────────────────────────
-  // Only wired when QBO_CLIENT_ID + QBO_CLIENT_SECRET are present. The
-  // secret-vault throws at construct time if neither DPAPI nor QBO_TOKEN_KEY
-  // is available on a non-Windows host — we surface that as a degraded boot
-  // line so the operator can see why the integration is off.
-  let qboBundle: AppDeps['qbo']
-  if (config.qboClientId && config.qboClientSecret) {
+  // ── Integration token vault (QBO + M365) ────────────────────────────
+  // Both integrations encrypt OAuth tokens at rest through one shared vault.
+  // createSecretVault throws on a non-Windows host without QBO_TOKEN_KEY, so
+  // we build it once, only when an integration needs it, and surface a failure
+  // as a degraded boot line that disables both integrations.
+  const wantQbo = Boolean(config.qboClientId && config.qboClientSecret)
+  const wantM365 = Boolean(config.m365ClientId && config.m365ClientSecret)
+  let sharedVault: SecretVault | null = null
+  if (wantQbo || wantM365) {
     try {
-      const vault = createSecretVault()
-      const client = new HttpQboClient({
-        clientId: config.qboClientId,
-        clientSecret: config.qboClientSecret,
-      })
-      const oauthState = createOAuthStateStore()
-      qboBundle = {
-        client,
-        vault,
-        oauthState,
-        clientId: config.qboClientId,
-        clientSecret: config.qboClientSecret,
-        redirectUri: config.qboRedirectUri,
-        authorizeUrl: config.qboAuthorizeUrl,
-      }
-      // eslint-disable-next-line no-console
-      console.log(`  QBO sync: enabled (vault=${vault.backend})`)
-
-      const invoicingHandle = modules.get('invoicing')
-      if (invoicingHandle?.status === 'active' && invoicingHandle.service) {
-        const invoicingService = invoicingHandle.service as ReturnType<
-          typeof createInvoicingService
-        >
-        const poller = new QboPoller({
-          service: invoicingService,
-          client,
-          vault,
-          intervalMs: config.qboPullIntervalMinutes * 60_000,
-        })
-        poller.start()
-      }
+      sharedVault = createSecretVault()
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn(
-        `  QBO sync: disabled — ${err instanceof Error ? err.message : String(err)}`,
+        `  integrations: secret vault unavailable — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       )
     }
+  }
+
+  // ── QBO sync wiring (Phase 5) ────────────────────────────────────────
+  let qboBundle: AppDeps['qbo']
+  if (wantQbo && sharedVault) {
+    const client = new HttpQboClient({
+      clientId: config.qboClientId as string,
+      clientSecret: config.qboClientSecret as string,
+    })
+    qboBundle = {
+      client,
+      vault: sharedVault,
+      oauthState: createOAuthStateStore(),
+      clientId: config.qboClientId as string,
+      clientSecret: config.qboClientSecret as string,
+      redirectUri: config.qboRedirectUri,
+      authorizeUrl: config.qboAuthorizeUrl,
+    }
+    // eslint-disable-next-line no-console
+    console.log(`  QBO sync: enabled (vault=${sharedVault.backend})`)
+
+    const invoicingHandle = modules.get('invoicing')
+    if (invoicingHandle?.status === 'active' && invoicingHandle.service) {
+      const invoicingService = invoicingHandle.service as ReturnType<
+        typeof createInvoicingService
+      >
+      const poller = new QboPoller({
+        service: invoicingService,
+        client,
+        vault: sharedVault,
+        intervalMs: config.qboPullIntervalMinutes * 60_000,
+      })
+      poller.start()
+    }
+  } else if (wantQbo) {
+    // eslint-disable-next-line no-console
+    console.log('  QBO sync: disabled (secret vault unavailable)')
   } else {
     // eslint-disable-next-line no-console
     console.log('  QBO sync: disabled (QBO_CLIENT_ID / QBO_CLIENT_SECRET not set)')
+  }
+
+  // ── Microsoft 365 (Graph) email wiring (G1–G4) ───────────────────────
+  // The graph EmailSource + poller are wired in buildApp's email block when
+  // EMAIL_SOURCE resolves to 'graph'; the OAuth routes are live whenever this
+  // bundle is present, so the operator can connect before flipping the source.
+  let m365Bundle: AppDeps['m365']
+  if (wantM365 && sharedVault) {
+    const client = new HttpGraphClient({
+      clientId: config.m365ClientId as string,
+      clientSecret: config.m365ClientSecret as string,
+      tokenUrl: config.m365TokenUrl,
+      scopes: config.m365Scopes,
+    })
+    m365Bundle = {
+      client,
+      vault: sharedVault,
+      oauthState: createOAuthStateStore(),
+      clientId: config.m365ClientId as string,
+      scopes: config.m365Scopes,
+      redirectUri: config.m365RedirectUri,
+      authorizeUrl: config.m365AuthorizeUrl,
+    }
+    // eslint-disable-next-line no-console
+    console.log(
+      `  M365 email: enabled (vault=${sharedVault.backend}, source=${config.emailSourceKind})`,
+    )
+  } else if (wantM365) {
+    // eslint-disable-next-line no-console
+    console.log('  M365 email: disabled (secret vault unavailable)')
+  } else {
+    // eslint-disable-next-line no-console
+    console.log('  M365 email: disabled (M365_CLIENT_ID / M365_CLIENT_SECRET not set)')
   }
 
   // Refuse to bind to a non-loopback host unless the operator has explicitly
@@ -1429,6 +1534,7 @@ export async function bootstrap(): Promise<void> {
     notifications,
     audit,
     ...(qboBundle && { qbo: qboBundle }),
+    ...(m365Bundle && { m365: m365Bundle }),
     auth: { enabled: true, token: auth.token, allowedOrigins },
   })
 

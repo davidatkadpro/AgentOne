@@ -67,6 +67,28 @@ export interface FileToProjectResult {
   folderPath: string
 }
 
+/** Operator-level Microsoft 365 (Graph) OAuth connection. Tokens are stored
+ *  encrypted; callers encrypt before handing them to the service and decrypt
+ *  what they read back. Mirrors invoicing's QboConnectionRow. */
+export interface M365ConnectionRow {
+  accountName: string | null
+  accountEmail: string | null
+  accessTokenEncrypted: Buffer
+  refreshTokenEncrypted: Buffer
+  tokenExpiresAt: number
+  connectedAt: number
+  lastPollAt: number | null
+  lastError: { code: string; message: string; at: number } | null
+}
+
+export interface UpsertM365ConnectionInput {
+  accountName: string | null
+  accountEmail: string | null
+  accessTokenEncrypted: Buffer
+  refreshTokenEncrypted: Buffer
+  tokenExpiresAt: number
+}
+
 export interface EmailService {
   ingestEmail(input: IngestEmailInput, ctx: ActorContext): Email
   getEmail(id: string): Email | undefined
@@ -97,6 +119,15 @@ export interface EmailService {
     sourceId: string,
     ctx: ActorContext,
   ): Promise<Email | null>
+  // Microsoft 365 (Graph) connection ops — mirror invoicing's QBO surface.
+  getM365Connection(): M365ConnectionRow | null
+  upsertM365Connection(
+    input: UpsertM365ConnectionInput,
+    ctx: ActorContext,
+  ): M365ConnectionRow
+  recordM365PollTs(ts: number): void
+  recordM365Error(err: { code: string; message: string }): void
+  clearM365Connection(ctx: ActorContext): void
 }
 
 export interface EmailServiceDeps {
@@ -151,6 +182,33 @@ function slugify(raw: string | null | undefined): string {
   return cleaned.length > 0 ? cleaned : 'email'
 }
 
+interface M365ConnectionDbRow {
+  id: number
+  account_name: string | null
+  account_email: string | null
+  access_token_encrypted: Buffer
+  refresh_token_encrypted: Buffer
+  token_expires_at: number
+  connected_at: number
+  last_poll_at: number | null
+  last_error_json: string | null
+}
+
+function rowToM365Connection(row: M365ConnectionDbRow): M365ConnectionRow {
+  return {
+    accountName: row.account_name,
+    accountEmail: row.account_email,
+    accessTokenEncrypted: row.access_token_encrypted,
+    refreshTokenEncrypted: row.refresh_token_encrypted,
+    tokenExpiresAt: row.token_expires_at,
+    connectedAt: row.connected_at,
+    lastPollAt: row.last_poll_at,
+    lastError: row.last_error_json
+      ? (JSON.parse(row.last_error_json) as { code: string; message: string; at: number })
+      : null,
+  }
+}
+
 function rowToEmail(row: EmailRow): Email {
   return {
     id: row.id,
@@ -190,6 +248,35 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
        SET filed_project_id = ?, filed_folder_path = ?, filed_at = ?
      WHERE id = ?`,
   )
+
+  // --- Microsoft 365 (Graph) connection statements ---
+  const getM365ConnStmt = deps.db.prepare('SELECT * FROM m365_connection WHERE id = 1')
+  const upsertM365ConnStmt = deps.db.prepare(
+    `INSERT INTO m365_connection
+       (id, account_name, account_email, access_token_encrypted,
+        refresh_token_encrypted, token_expires_at, connected_at)
+     VALUES (1, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       account_name = excluded.account_name,
+       account_email = excluded.account_email,
+       access_token_encrypted = excluded.access_token_encrypted,
+       refresh_token_encrypted = excluded.refresh_token_encrypted,
+       token_expires_at = excluded.token_expires_at,
+       connected_at = excluded.connected_at,
+       last_error_json = NULL`,
+  )
+  const updateM365PollTsStmt = deps.db.prepare(
+    'UPDATE m365_connection SET last_poll_at = ? WHERE id = 1',
+  )
+  const updateM365ErrorStmt = deps.db.prepare(
+    'UPDATE m365_connection SET last_error_json = ? WHERE id = 1',
+  )
+  const deleteM365ConnStmt = deps.db.prepare('DELETE FROM m365_connection WHERE id = 1')
+
+  function readM365Connection(): M365ConnectionRow | null {
+    const row = getM365ConnStmt.get() as M365ConnectionDbRow | undefined
+    return row ? rowToM365Connection(row) : null
+  }
 
   return {
     ingestEmail(input, ctx) {
@@ -450,6 +537,57 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         hasAttachments: detail.hasAttachments,
       }
       return this.ingestEmail(ingestInput, ctx)
+    },
+
+    getM365Connection() {
+      return readM365Connection()
+    },
+
+    upsertM365Connection(input, ctx) {
+      const now = Date.now()
+      upsertM365ConnStmt.run(
+        input.accountName,
+        input.accountEmail,
+        input.accessTokenEncrypted,
+        input.refreshTokenEncrypted,
+        input.tokenExpiresAt,
+        now,
+      )
+      deps.audit.record({
+        module: 'email',
+        action: 'm365.connect',
+        entityType: 'm365_connection',
+        entityId: 'm365',
+        actor: ctx.actor,
+        // Tokens never enter the audit log — only the surfaceable account label.
+        payload: { accountEmail: input.accountEmail, accountName: input.accountName },
+      })
+      void deps.eventBus.emit({ type: 'm365.connected', ts: now })
+      return readM365Connection() as M365ConnectionRow
+    },
+
+    recordM365PollTs(ts) {
+      updateM365PollTsStmt.run(ts)
+    },
+
+    recordM365Error(err) {
+      updateM365ErrorStmt.run(JSON.stringify({ ...err, at: Date.now() }))
+    },
+
+    clearM365Connection(ctx) {
+      const had = readM365Connection()
+      deleteM365ConnStmt.run()
+      if (had) {
+        deps.audit.record({
+          module: 'email',
+          action: 'm365.disconnect',
+          entityType: 'm365_connection',
+          entityId: 'm365',
+          actor: ctx.actor,
+          payload: { accountEmail: had.accountEmail },
+        })
+        void deps.eventBus.emit({ type: 'm365.disconnected', ts: Date.now() })
+      }
     },
   }
 }

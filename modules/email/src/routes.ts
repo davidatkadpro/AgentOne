@@ -2,6 +2,9 @@ import { z } from 'zod'
 import type { FastifyInstance } from 'fastify'
 import type { EmailSource } from './source.js'
 import type { ActorContext, EmailService } from './service.js'
+import type { GraphHttpClient } from '../../../src/modules/m365/source.js'
+import type { SecretVault } from '../../../src/storage/secret-vault.js'
+import type { OAuthStateStore } from '../../../src/modules/qbo/oauth-state.js'
 
 const ListQuery = z.object({
   isRead: z.coerce.boolean().optional(),
@@ -24,7 +27,27 @@ export interface RegisterEmailRoutesDeps {
   /** Optional. When provided, `POST /api/email/poll` calls source.list()
    *  and ingests new messages. Without it, the route returns 503. */
   source?: EmailSource
+  /** Microsoft 365 (Graph) OAuth bundle. When present the connect/callback/
+   *  disconnect/status routes are live; absent → connect returns 503. The
+   *  client already carries client_secret + scopes; the routes only need the
+   *  client_id and scopes to build the authorize URL. */
+  m365?: {
+    client: GraphHttpClient
+    vault: SecretVault
+    oauthState: OAuthStateStore
+    clientId: string
+    /** Space-delimited delegated scopes (offline_access + Mail.Read + User.Read). */
+    scopes: string
+    /** Redirect URI registered with Entra. */
+    redirectUri: string
+    /** Entra v2 authorize endpoint (tenant-scoped). */
+    authorizeUrl: string
+    /** SPA URL to redirect to after callback. Defaults to /settings?tab=integrations. */
+    spaCallbackUrl?: string
+  }
 }
+
+const M365_DEFAULT_SPA_CALLBACK = '/settings?tab=integrations'
 
 export async function registerEmailRoutes(
   app: FastifyInstance,
@@ -186,13 +209,24 @@ export async function registerEmailRoutes(
         reply.code(400)
         return { error: 'NO_FIELDS_TO_UPDATE' }
       }
+      let email
       try {
         service.markRead(params.data.id, body.data.isRead, HTTP_ACTOR)
+        email = service.getEmail(params.data.id)
       } catch {
         reply.code(404)
         return { error: 'NOT_FOUND' }
       }
-      return { email: service.getEmail(params.data.id) }
+      // Propagate read-state to the mailbox for sources that track it remotely
+      // (Graph). Best-effort: a source outage must not fail the local update.
+      if (email && source?.markRead) {
+        try {
+          await source.markRead(email.sourceId, body.data.isRead)
+        } catch {
+          // swallow — local state is authoritative for the UI
+        }
+      }
+      return { email }
     })
   }
 
@@ -212,4 +246,109 @@ export async function registerEmailRoutes(
   // POST /api/email/:id/file-to-project was retired in favour of action
   // dispatch (POST /api/email/actions { action: 'file-to-project' }) — see
   // ADR-0007 + modules/email/src/actions.ts.
+
+  // ── Microsoft 365 (Graph) connection status ──────────────────────────────
+  // Status lives under the email namespace (the email module owns the source);
+  // OAuth lifecycle lives under /integrations/m365 alongside QBO's /integrations/qbo.
+  for (const url of bothPaths('/m365/status')) {
+    app.get(url, async () => {
+      const conn = service.getM365Connection()
+      if (!conn) return { connected: false }
+      return {
+        connected: true,
+        accountName: conn.accountName,
+        accountEmail: conn.accountEmail,
+        connectedAt: conn.connectedAt,
+        tokenExpiresAt: conn.tokenExpiresAt,
+        lastPollAt: conn.lastPollAt,
+        lastError: conn.lastError,
+      }
+    })
+  }
+
+  // ── M365 OAuth: connect / callback / disconnect ───────────────────────────
+  function integrationsPaths(suffix: string): string[] {
+    return [`/api/v1/integrations/m365${suffix}`, `/api/integrations/m365${suffix}`]
+  }
+
+  for (const url of integrationsPaths('/connect')) {
+    app.get(url, async (_req, reply) => {
+      if (!deps.m365) {
+        reply.code(503)
+        return { error: 'M365_NOT_CONFIGURED' }
+      }
+      const state = deps.m365.oauthState.mint()
+      const params = new URLSearchParams({
+        client_id: deps.m365.clientId,
+        response_type: 'code',
+        response_mode: 'query',
+        scope: deps.m365.scopes,
+        redirect_uri: deps.m365.redirectUri,
+        state,
+      })
+      reply.code(302).header('location', `${deps.m365.authorizeUrl}?${params.toString()}`)
+      return reply.send('')
+    })
+  }
+
+  for (const url of integrationsPaths('/callback')) {
+    app.get(url, async (req, reply) => {
+      const q = (req.query as Record<string, string | undefined>) ?? {}
+      const spaUrl = deps.m365?.spaCallbackUrl ?? M365_DEFAULT_SPA_CALLBACK
+      if (!deps.m365) {
+        reply.code(503)
+        return { error: 'M365_NOT_CONFIGURED' }
+      }
+      if (typeof q.state !== 'string' || !deps.m365.oauthState.consume(q.state)) {
+        reply.code(302).header('location', `${spaUrl}&m365=error&reason=bad_state`)
+        return reply.send('')
+      }
+      if (q.error) {
+        reply
+          .code(302)
+          .header('location', `${spaUrl}&m365=error&reason=${encodeURIComponent(q.error)}`)
+        return reply.send('')
+      }
+      if (typeof q.code !== 'string') {
+        reply.code(302).header('location', `${spaUrl}&m365=error&reason=missing_code`)
+        return reply.send('')
+      }
+      try {
+        const tokens = await deps.m365.client.exchangeCode(q.code, deps.m365.redirectUri)
+        const me = await deps.m365.client.me(tokens.accessToken).catch(() => null)
+        service.upsertM365Connection(
+          {
+            accountName: me?.displayName ?? null,
+            accountEmail: me?.mail ?? me?.userPrincipalName ?? null,
+            accessTokenEncrypted: deps.m365.vault.encrypt(tokens.accessToken),
+            refreshTokenEncrypted: deps.m365.vault.encrypt(tokens.refreshToken),
+            tokenExpiresAt: Date.now() + tokens.expiresIn * 1000,
+          },
+          HTTP_ACTOR,
+        )
+        reply.code(302).header('location', `${spaUrl}&m365=connected`)
+        return reply.send('')
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
+        reply
+          .code(302)
+          .header('location', `${spaUrl}&m365=error&reason=${encodeURIComponent(reason)}`)
+        return reply.send('')
+      }
+    })
+  }
+
+  for (const url of integrationsPaths('/disconnect')) {
+    app.post(url, async (_req, reply) => {
+      const conn = service.getM365Connection()
+      if (!conn) {
+        reply.code(404)
+        return { error: 'NOT_CONNECTED' }
+      }
+      // Microsoft has no per-token revocation analogous to QBO; clearing the
+      // local row is sufficient. In-flight calls fail NOT_CONNECTED next time.
+      service.clearM365Connection(HTTP_ACTOR)
+      return { ok: true }
+    })
+  }
 }
